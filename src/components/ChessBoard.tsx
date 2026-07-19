@@ -1145,7 +1145,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
               className={`${isSetupMode ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
               style={{
                   zIndex: isSelected ? 20 : isMoving ? 15 : 1,
-                  transition: animationTransition,
+                  // 被将闪动时不要挂 CSS transition:transform，否则会冲掉子节点的 shake
+                  transition: isInCheck ? undefined : animationTransition,
                   transformOrigin: 'center',
                   transformBox: 'fill-box', // 确保变换原点相对于元素本身计算
                   filter: isSelected ? 'drop-shadow(0 0 10px rgba(255, 255, 0, 0.8))' : 'url(#dropShadow)',

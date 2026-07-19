@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useId } from 'react';
 import { PieceType, Color, PieceMaterial } from '../types';
 
 interface ChessPieceProps {
@@ -115,8 +115,9 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
     
     const isDark = variant === 'dark';
     const config = MATERIAL_CONFIGS[material][color];
-    // 生成唯一ID，避免多个棋子的滤镜ID冲突
-    const uniqueId = `${material}-${color}-${Math.random().toString(36).substr(2, 9)}`;
+    // 稳定唯一ID，避免每次渲染重建滤镜导致将军动画被重置
+    const reactId = useId().replace(/:/g, '');
+    const uniqueId = `${material}-${color}-${reactId}`;
     
     // 暗色变体使用固定的深色
     const fillColor = isDark ? "#3e2723" : `url(#pieceGradient-${material}-${color})`;
@@ -133,7 +134,7 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
     const shouldShake = isInCheck && type === 'general';
     
     // 确定应用的动画
-    let animationStyle = {};
+    let animationStyle: React.CSSProperties = {};
     if (isRecentlyCaptured) {
         // 最近被吃的棋子应用旋转动画：4秒转2圈，然后停止
         animationStyle = {
@@ -142,7 +143,7 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
             transformBox: 'fill-box' // 确保旋转基于元素自身坐标系
         };
     } else if (shouldShake) {
-        // 将军状态应用抖动动画
+        // 将军状态应用抖动动画（写在子节点 style 上，不依赖外部 CSS 类）
         animationStyle = {
             animation: 'shake 0.5s infinite',
             transformOrigin: 'center',
@@ -152,7 +153,7 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
     
     return (
         <g style={{ ...animationStyle, ...style }}>
-            {/* 动画定义 */}
+            {/* 动画定义：挂在棋子内部，确保 SVG 内也能播 */}
             <style>{`
                 @keyframes shake {
                     0%, 100% { transform: translate(0, 0); }

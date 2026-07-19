@@ -2992,15 +2992,15 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
     }
     
     // 检查斜线攻击（马、士、象）
-    // 检查马的攻击
+    // 检查马的攻击：从将位反推马的位置时，马腿应在马一侧（与 getPieceMoves 一致）
     const horseMoves = [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]];
     for (const [dr, dc] of horseMoves) {
         const nr = gr + dr;
         const nc = gc + dc;
         if (isValidPos(nr, nc)) {
-            // 检查马腿
-            const legR = gr + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-            const legC = gc + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+            // 马在 (nr,nc)，走向将时马腿紧贴马：长轴方向退一步
+            const legR = nr - (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
+            const legC = nc - (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
             if (board[legR][legC] === null) {
                 const p = board[nr][nc];
                 if (p && p.color === enemyColor && p.type === 'horse') {
@@ -3466,11 +3466,12 @@ if (typeof self !== 'undefined') {
         }
             
         case 'checkGameState': {
-            const { board: cgsBoard, turn: cgsTurn } = payload;
+            const { board: cgsBoard, turn: cgsTurn, requestId } = payload;
             const gameState = checkGameState(cgsBoard, cgsTurn);
             self.postMessage({
                 type: 'gameState',
-                state: gameState
+                state: gameState,
+                requestId
             });
             break;
         }
@@ -3553,11 +3554,12 @@ if (typeof self !== 'undefined') {
         }
             
         case 'isCheck': {
-            const { board: cBoard, color: cColor } = payload;
+            const { board: cBoard, color: cColor, requestId } = payload;
             const inCheck = isCheck(cBoard, cColor);
             self.postMessage({
                 type: 'check',
-                isCheck: inCheck
+                isCheck: inCheck,
+                requestId
             });
             break;
         }
