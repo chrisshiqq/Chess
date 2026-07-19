@@ -623,6 +623,8 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
 };
 
 // 着法排序函数：根据优先级排序着法
+// 被将时：吃将子 > 反将 > 其它吃子 > 走将逃逸 > 垫将/其余
+// 未被将时：
 // 1. 优先处理我方无保护的被单向威胁的棋子执行逃跑着法，如有多个棋子按材料值从高到低排序
 // 2. 其次处理我方单向威胁对方无保护棋子的棋子执行吃子着法，如有多个棋子按棋子材料值从高到低排序
 // 3. 最后处理不涉及吃和被吃的着法，要求避免移动到被吃的位置
@@ -630,10 +632,25 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
     // 使用传入的gameStage参数，避免重复调用getGamePhase
     
     // 用预计算的被将状态（不能用 boardInfo.checks：那是“谁在将军”，不是“谁被将”）
-    const currentIsInCheck = boardInfo && (
-        (currentPlayer === 'red' && boardInfo.redIsInCheck) ||
-        (currentPlayer === 'black' && boardInfo.blackIsInCheck)
-    );
+    const currentIsInCheck = boardInfo
+        ? ((currentPlayer === 'red' && boardInfo.redIsInCheck) ||
+           (currentPlayer === 'black' && boardInfo.blackIsInCheck))
+        : isCheck(board, currentPlayer);
+
+    // 被将时收集正在将军的敌方棋子位置，用于优先吃将子
+    let checkerKeys = null;
+    if (currentIsInCheck && piecesInfo && piecesInfo.length > 0) {
+        const generalInfo = piecesInfo.find(
+            p => p.piece && p.piece.type === 'general' && p.piece.color === currentPlayer
+        );
+        if (generalInfo && generalInfo.threatenedBy) {
+            checkerKeys = new Set(
+                generalInfo.threatenedBy
+                    .filter(t => t.piece && t.piece.color !== currentPlayer)
+                    .map(t => `${t.r},${t.c}`)
+            );
+        }
+    }
     
     // 为每个着法计算优先级分数并保存原始索引
     moves.forEach((move, index) => {
@@ -647,17 +664,35 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
         let priority = 4;
         let score = 0;
         
-        // 只有当前将军状态时才检查将军着法（优先级0）
-        // 因为只有需要解除将军时，将军着法才重要
+        // 被将：合法着法均已解除将军，按应将手段排序
         if (currentIsInCheck) {
-            const nextBoard = board.map(row => [...row]);
-            nextBoard[to.r][to.c] = nextBoard[from.r][from.c];
-            nextBoard[from.r][from.c] = null;
-            const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
-            if (isCheck(nextBoard, enemyColor)) {
-                // 将军着法，优先级最高
+            const capturesChecker = targetPiece && checkerKeys && checkerKeys.has(`${to.r},${to.c}`);
+            if (capturesChecker) {
+                // 吃掉正在将军的棋子，最高优先
                 priority = 0;
-                score = 10000;
+                score = 10000 + targetPieceValue;
+            } else {
+                const nextBoard = board.map(row => [...row]);
+                nextBoard[to.r][to.c] = nextBoard[from.r][from.c];
+                nextBoard[from.r][from.c] = null;
+                const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
+                if (isCheck(nextBoard, enemyColor)) {
+                    // 解将同时反将
+                    priority = 1;
+                    score = 5000 + targetPieceValue;
+                } else if (targetPiece) {
+                    // 其它吃子（含部分垫将吃子）
+                    priority = 2;
+                    score = targetPieceValue;
+                } else if (piece.type === 'general') {
+                    // 走将逃逸
+                    priority = 3;
+                    score = pieceValue;
+                } else {
+                    // 垫将等其余应将着法
+                    priority = 4;
+                    score = 0;
+                }
             }
         } else {
             // 检查逃跑着法（我方被捉的棋子移动）
@@ -2990,18 +3025,23 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
         }
     }
     
-    // 检查兵的攻击
-    const soldierDir = color === 'red' ? 1 : -1;
-    const soldierMoves = [[soldierDir, 0], [0, 1], [0, -1]];
-    for (const [dr, dc] of soldierMoves) {
-        const nr = gr + dr;
+    // 检查兵的攻击（从将位置反推敌兵来源）
+    // 红兵向前 +1，黑兵向前 -1；正前方攻击始终有效，左右仅过河兵可攻击
+    const enemyForward = enemyColor === 'red' ? 1 : -1;
+    const forwardFromR = gr - enemyForward;
+    if (isValidPos(forwardFromR, gc)) {
+        const p = board[forwardFromR][gc];
+        if (p && p.color === enemyColor && p.type === 'soldier') {
+            return true;
+        }
+    }
+    for (const dc of [1, -1]) {
         const nc = gc + dc;
-        if (isValidPos(nr, nc)) {
-            const p = board[nr][nc];
+        if (isValidPos(gr, nc)) {
+            const p = board[gr][nc];
             if (p && p.color === enemyColor && p.type === 'soldier') {
-                // 检查兵是否可以攻击到将（过河后的兵可以左右移动）
-                const crossedRiver = color === 'red' ? nr >= 5 : nr <= 4;
-                if (dr !== 0 && crossedRiver || dr === 0) {
+                const crossedRiver = enemyColor === 'red' ? gr >= 5 : gr <= 4;
+                if (crossedRiver) {
                     return true;
                 }
             }
@@ -3609,8 +3649,10 @@ const iterativeDeepening = (board, turn, maxDepth = 4, timeLimit = 5000, enableT
   const rootPiecesInfo = rootEvalResult.piecesInfo;
   const rootBoardInfo = rootEvalResult.boardInfo;
 
-  // 收集所有根节点走法，过滤掉会送吃的走法
+  // 收集所有根节点走法；未被将时过滤送吃，被将时保留全部合法应将着法
   let rootMoves = [];
+  const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
+                      (turn === 'black' && rootBoardInfo.blackIsInCheck);
   
   // 收集根节点走法，使用预计算的boardInfo和piecesInfo
   //console.log(`开始收集根节点走法，当前玩家: ${turn}`);
@@ -3621,8 +3663,8 @@ const iterativeDeepening = (board, turn, maxDepth = 4, timeLimit = 5000, enableT
         const validDestinations = getValidMoves(board, { r, c });
         //console.log(`棋子(${r},${c}) ${piece.type} 有 ${validDestinations.length} 个有效移动`);
         validDestinations.forEach(to => {
-          // 检查目标位置是否被纯敌方控制，传递预计算的boardInfo和piecesInfo
-          const isAcceptable = isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
+          // 被将时不得用送吃过滤丢掉唯一出路；否则检查目标是否可接受
+          const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
           //console.log(`移动 (${r},${c}) -> (${to.r},${to.c}) 是否安全: ${isAcceptable}`);
           if (isAcceptable) {
             rootMoves.push({ from: {r,c}, to, score: 0 });
@@ -3816,12 +3858,13 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
       }
     }
     
-    // 只遍历当前玩家的棋子，生成走法，过滤掉会送吃的走法
+    // 只遍历当前玩家的棋子生成走法；被将时保留全部合法应将着法，否则过滤送吃
+    const abInCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
+                      (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
     for (const { r, c, piece } of playerPieces) {
       const validDestinations = getValidMoves(b, { r, c });
       validDestinations.forEach(to => {
-         // 检查目标位置是否被纯敌方控制，传递预计算的boardInfo和piecesInfo
-         if (isPositionAcceptable(b, { r, c }, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
+         if (abInCheck || isPositionAcceptable(b, { r, c }, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
            moves.push({ from: {r,c}, to, score: 0 });
          }
       });
