@@ -347,82 +347,6 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
     };
 };
 
-// 轻量级搜索信息准备函数：只计算搜索需要的基本信息
-// 不计算完整的威胁值和安全值，只计算棋子关系和游戏状态
-const prepareSearchInfo = (board, currentPlayer, gameStage) => {
-    // 统计
-    perfStats.prepareSearchInfoCount[currentPlayer]++;
-    
-    // 收集棋子基本信息
-    let piecesInfo = [];
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece) continue;
-            
-            const materialValue = getMaterialValue(piece, gameStage);
-            const positionValue = getPositionValue(piece, r, c);
-            const moves = getPieceMoves(board, { r, c }, piece);
-            
-            // 计算机动性
-            const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
-            let mobilityValue = 0;
-            for (const move of moves) {
-                const target = board[move.r][move.c];
-                if (!target) {
-                    mobilityValue += baseMoveValue;
-                }
-            }
-            
-            piecesInfo.push({
-                piece,
-                r, c, moves,
-                materialValue,
-                positionValue,
-                threatValue: 0,
-                safetyValue: 0,
-                tacticValue: 0,
-                mobilityValue: mobilityValue,
-                threat: [],
-                protect: []
-            });
-        }
-    }
-    
-    // 初始化boardInfo
-    const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
-    
-    // 计算棋子关系
-    calculatePieceRelations(board, piecesInfo, boardInfo);
-    
-    // 计算游戏状态
-    let hasMoves = false;
-    for (const info of piecesInfo) {
-        if (info.piece.color === currentPlayer) {
-            if (getValidMoves(board, { r: info.r, c: info.c }).length > 0) {
-                hasMoves = true;
-                break;
-            }
-        }
-    }
-    
-    let gameState = { status: 'playing' };
-    if (!hasMoves) {
-        const inCheck = currentPlayer === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
-        const opponent = currentPlayer === 'red' ? 'black' : 'red';
-        
-        if (inCheck) {
-            gameState = { status: 'checkmate', winner: opponent };
-        } else {
-            gameState = { status: 'stalemate', winner: opponent };
-        }
-    }
-    
-    boardInfo.gameState = gameState;
-    
-    return { piecesInfo, boardInfo };
-};
-
 // 搜索用原地走子 / 恢复（避免每次递归 board.map）
 const makeMove = (board, from, to) => {
     const captured = board[to.r][to.c];
@@ -434,6 +358,89 @@ const makeMove = (board, from, to) => {
 const unmakeMove = (board, from, to, captured) => {
     board[from.r][from.c] = board[to.r][to.c];
     board[to.r][to.c] = captured;
+};
+
+// 从伪合法着法中过滤出不送将/不飞将的合法着法（复用已有 moves，避免再 getPieceMoves）
+const filterLegalMoves = (board, from, piece, pseudoMoves) => {
+    const validMoves = [];
+    for (const to of pseudoMoves) {
+        const captured = makeMove(board, from, to);
+        const illegal = isFlyingGeneral(board) || isCheck(board, piece.color);
+        unmakeMove(board, from, to, captured);
+        if (!illegal) validMoves.push(to);
+    }
+    return validMoves;
+};
+
+// 搜索信息准备：关系 + 威胁（一次）+ 当前方合法着法（一次，供着法生成与终局判定共用）
+const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = null, depth = 0) => {
+    perfStats.prepareSearchInfoCount[currentPlayer]++;
+    
+    let piecesInfo = [];
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const piece = board[r][c];
+            if (!piece) continue;
+            
+            const materialValue = getMaterialValue(piece, gameStage);
+            const positionValue = getPositionValue(piece, r, c);
+            const moves = getPieceMoves(board, { r, c }, piece);
+            
+            const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+            let mobilityValue = 0;
+            for (const move of moves) {
+                if (!board[move.r][move.c]) {
+                    mobilityValue += baseMoveValue;
+                }
+            }
+            
+            piecesInfo.push({
+                piece,
+                r, c, moves,
+                legalMoves: null, // 仅当前行棋方填充
+                materialValue,
+                positionValue,
+                threatValue: 0,
+                safetyValue: 0,
+                tacticValue: 0,
+                mobilityValue,
+                threat: [],
+                protect: []
+            });
+        }
+    }
+    
+    const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
+    calculatePieceRelations(board, piecesInfo, boardInfo);
+
+    // 威胁/捉子信息只算一次，供 sortMoves 使用（不再在 alphaBeta 里重算）
+    calculateThreatValues(
+        board, piecesInfo, currentPlayer, depth,
+        searchInitiator || currentPlayer, gameStage, boardInfo
+    );
+    
+    // 当前方合法着法只生成一次：兼作终局判定与着法列表
+    let hasMoves = false;
+    for (const info of piecesInfo) {
+        if (info.piece.color !== currentPlayer) continue;
+        info.legalMoves = filterLegalMoves(
+            board, { r: info.r, c: info.c }, info.piece, info.moves
+        );
+        if (info.legalMoves.length > 0) hasMoves = true;
+    }
+    
+    let gameState = { status: 'playing' };
+    if (!hasMoves) {
+        const inCheck = currentPlayer === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
+        const opponent = currentPlayer === 'red' ? 'black' : 'red';
+        gameState = inCheck
+            ? { status: 'checkmate', winner: opponent }
+            : { status: 'stalemate', winner: opponent };
+    }
+    
+    boardInfo.gameState = gameState;
+    
+    return { piecesInfo, boardInfo };
 };
 
 // 计算衍生值：威胁值、安全值、战术值、机动值
@@ -3051,44 +3058,12 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
     return false;
 };
 
-// 使用原地走子/撤销（make/unmake）判断走法合法性，避免逐个伪着法深拷贝棋盘
+// 合法着法：伪合法 + 不送将/不飞将（make/unmake）
 const getValidMoves = (board, pos) => {
   const piece = board[pos.r][pos.c];
   if (!piece) return [];
-  
   const pseudoMoves = getPieceMoves(board, pos, piece);
-  const validMoves = [];
-
-  const fromR = pos.r;
-  const fromC = pos.c;
-
-  for (const to of pseudoMoves) {
-    const toR = to.r;
-    const toC = to.c;
-
-    // 原地走子（make），避免每个伪着法都深拷贝整个棋盘
-    const captured = board[toR][toC];
-    board[toR][toC] = piece;
-    board[fromR][fromC] = null;
-
-    // 检查走法是否合法（isFlyingGeneral / isCheck 逻辑不变，仅在原棋盘上临时走子后调用）
-    let isValid = true;
-    if (isFlyingGeneral(board)) {
-      isValid = false;
-    } else if (isCheck(board, piece.color)) {
-      isValid = false;
-    }
-
-    // 撤销走子（unmake），恢复棋盘原状
-    board[fromR][fromC] = piece;
-    board[toR][toC] = captured;
-
-    if (isValid) {
-      validMoves.push(to);
-    }
-  }
-
-  return validMoves;
+  return filterLegalMoves(board, pos, piece, pseudoMoves);
 };
 
 const isValidPlacement = (type, color, r, c) => {
@@ -3715,7 +3690,7 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
         }
     }
 
-    const searchInfo = prepareSearchInfo(b, currentPlayer, gameStage);
+    const searchInfo = prepareSearchInfo(b, currentPlayer, gameStage, searchInitiator, d);
     const abPiecesInfo = searchInfo.piecesInfo;
     const abBoardInfo = searchInfo.boardInfo;
 
@@ -3732,25 +3707,30 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     }
 
     const currentPlayerColor = currentPlayer;
-    const playerPieces = [];
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            if (b[r][c]?.color === currentPlayerColor) {
-                playerPieces.push({ r, c, piece: b[r][c] });
+    const abInCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
+                      (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
+
+    // 复用 prepareSearchInfo 已算好的 legalMoves，不再二次 getValidMoves
+    let moves = [];
+    for (const info of abPiecesInfo) {
+        if (info.piece.color !== currentPlayerColor || !info.legalMoves) continue;
+        const piece = info.piece;
+        const from = { r: info.r, c: info.c };
+        for (const to of info.legalMoves) {
+            if (abInCheck || isPositionAcceptable(b, from, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
+                moves.push({ from: { r: info.r, c: info.c }, to, score: 0 });
             }
         }
     }
 
-    let moves = [];
-    const abInCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
-                      (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
-    for (const { r, c, piece } of playerPieces) {
-        const validDestinations = getValidMoves(b, { r, c });
-        validDestinations.forEach(to => {
-            if (abInCheck || isPositionAcceptable(b, { r, c }, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
-                moves.push({ from: { r, c }, to, score: 0 });
+    // 送吃过滤后若无着，回退为全部合法着（避免把仍可走的局面当成终局）
+    if (moves.length === 0) {
+        for (const info of abPiecesInfo) {
+            if (info.piece.color !== currentPlayerColor || !info.legalMoves) continue;
+            for (const to of info.legalMoves) {
+                moves.push({ from: { r: info.r, c: info.c }, to, score: 0 });
             }
-        });
+        }
     }
 
     if (moves.length === 0) {
@@ -3759,8 +3739,7 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
             const isInitiatorWinner = gameState.winner === searchInitiator;
             const baseScore = isInitiatorWinner ? 100000 : -100000;
             const stepsFromRoot = searchDepth - d;
-            const adjustedScore = baseScore + (isInitiatorWinner ? d : stepsFromRoot);
-            return { value: adjustedScore, moveSequence: [] };
+            return { value: baseScore + (isInitiatorWinner ? d : stepsFromRoot), moveSequence: [] };
         }
         return { value: 0, moveSequence: [] };
     }
@@ -3768,8 +3747,7 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
     perfStats.movesGenerated[d] += moves.length;
 
-    calculateThreatValues(b, abPiecesInfo, currentPlayer, d, searchInitiator, gameStage, abBoardInfo);
-
+    // calculateThreatValues 已在 prepareSearchInfo 中完成
     const killersAtDepth = (killerMoves[d] || [null, null]);
     moves = sortMoves(moves, b, currentPlayerColor, abPiecesInfo, gameStage, abBoardInfo, {
         ttMove,
