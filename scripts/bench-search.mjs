@@ -33,7 +33,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth) {
+function runSearch(depth, exactRootScores) {
   return new Promise((resolve, reject) => {
     const w = new Worker(wrapped, { eval: true });
     const t0 = Date.now();
@@ -55,17 +55,28 @@ function runSearch(depth) {
         gameId: 1,
         openingBookEnabled: false,
         ply: 0,
-        enableTimeLimit: false
+        enableTimeLimit: false,
+        exactRootScores
       }
     });
   });
 }
 
-const depths = process.argv.slice(2).map(Number).filter((n) => n > 0);
-const list = depths.length ? depths : [4, 5];
+// usage: node bench-search.mjs 6
+//        node bench-search.mjs 6 play|analysis|both
+const depth = Number(process.argv[2]) || 6;
+const mode = (process.argv[3] || 'both').toLowerCase();
 
-for (const d of list) {
-  console.log(`\n=== Bench depth=${d} (opening, book off) ===`);
-  const { elapsed, payload } = await runSearch(d);
-  console.log(`wall=${elapsed}ms thinkingTime=${payload.thinkingTime}ms best=${JSON.stringify(payload.bestMove?.from)}->${JSON.stringify(payload.bestMove?.to)} score=${payload.bestMoveScore} allMoves=${payload.allMovesWithScores?.length ?? 0}`);
+const jobs = [];
+if (mode === 'play' || mode === 'both') jobs.push({ label: 'play(exactRootScores=false)', exact: false });
+if (mode === 'analysis' || mode === 'both') jobs.push({ label: 'analysis(exactRootScores=true)', exact: true });
+
+for (const job of jobs) {
+  console.log(`\n=== Bench depth=${depth} ${job.label} (opening, book off) ===`);
+  const { elapsed, payload } = await runSearch(depth, job.exact);
+  console.log(
+    `wall=${elapsed}ms thinkingTime=${payload.thinkingTime}ms ` +
+    `best=${JSON.stringify(payload.bestMove?.from)}->${JSON.stringify(payload.bestMove?.to)} ` +
+    `score=${payload.bestMoveScore} allMoves=${payload.allMovesWithScores?.length ?? 0}`
+  );
 }

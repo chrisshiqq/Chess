@@ -3481,13 +3481,13 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false } = payload;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
             const startTime = performance.now();
             // 执行搜索
-            const bestSearchMove = getBestMove(searchBoard, searchTurn, searchDepth, searchRandomness, searchPly, searchEnableTimeLimit);
+            const bestSearchMove = getBestMove(searchBoard, searchTurn, searchDepth, searchRandomness, searchPly, searchEnableTimeLimit, searchExactRootScores);
             // 记录搜索结束时间并计算思考时间
             const endTime = performance.now();
             const thinkingTime = endTime - startTime;
@@ -3920,7 +3920,8 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     return { value: minEval, moveSequence: bestMoveSequence };
 };
 
-const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTimeLimit = false) => {
+// exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
+const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTimeLimit = false, exactRootScores = false) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -3991,7 +3992,8 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
   }
   console.log(`Starting depth ${depth} search | turn: ${turn}, maxDepth: ${depth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`);
 
-  // 根节点 PVS：第 1 着全窗；后续零窗探测 + 按结果回搜精确分（供 Analysis）
+  // 根节点 PVS：第 1 着全窗；后续零窗探测
+  // exactRootScores：Analysis 时 fail-low 也全窗回搜拿精确分；对弈时跳过（不影响最优着）
   // 使用工作副本 + make/unmake，避免污染调用方棋盘
   const workBoard = board.map(row => [...row]);
   const NULL_WINDOW_EPS = 1e-6;
@@ -4013,11 +4015,14 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
         false, nextTurn, depth, turn, gameStage
       );
       if (probe.value > rootAlpha) {
-        // fail-high：紧窗口回搜拿精确分
+        // fail-high：紧窗口回搜拿精确分（可能成为新最优）
         alphaBetaResult = alphaBeta(workBoard, depth - 1, rootAlpha, Infinity, false, nextTurn, depth, turn, gameStage);
-      } else {
-        // fail-low：全窗回搜精确分（TT 已热，通常很快）
+      } else if (exactRootScores) {
+        // Analysis：fail-low 仍全窗回搜，保证所有根着法精确分
         alphaBetaResult = alphaBeta(workBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+      } else {
+        // 对弈：无需精确分，探测上界即可
+        alphaBetaResult = probe;
       }
     }
 
