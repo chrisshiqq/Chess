@@ -3640,146 +3640,6 @@ if (typeof self !== 'undefined') {
     };
 }
 
-// 迭代加深搜索实现
-const iterativeDeepening = (board, turn, maxDepth = 4, timeLimit = 5000, enableTimeLimit = false) => {
-  // 重置性能统计
-  resetPerfStats();
-  
-  const startTime = Date.now();
-  let bestMove = null;
-  let secondBestMove = null;
-
-  // 清空置换表
-  transpositionTable.resetStats();
-  transpositionTable.clear();
-  
-  // 第一步：获取当前游戏阶段
-  const phase = getGamePhase(board);
-  // 将游戏阶段转换为材料值计算所需的格式
-  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-
-  // 使用evaluateBoard获取完整的评估信息（包括piecesInfo和boardInfo）
-  const rootEvalResult = evaluateBoard(board, false, turn, 0, turn, gameStage);
-  const rootPiecesInfo = rootEvalResult.piecesInfo;
-  const rootBoardInfo = rootEvalResult.boardInfo;
-
-  // 收集所有根节点走法；未被将时过滤送吃，被将时保留全部合法应将着法
-  let rootMoves = [];
-  const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
-                      (turn === 'black' && rootBoardInfo.blackIsInCheck);
-  
-  // 收集根节点走法，使用预计算的boardInfo和piecesInfo
-  //console.log(`开始收集根节点走法，当前玩家: ${turn}`);
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (board[r][c]?.color === turn) {
-        const piece = board[r][c];
-        const validDestinations = getValidMoves(board, { r, c });
-        //console.log(`棋子(${r},${c}) ${piece.type} 有 ${validDestinations.length} 个有效移动`);
-        validDestinations.forEach(to => {
-          // 被将时不得用送吃过滤丢掉唯一出路；否则检查目标是否可接受
-          const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
-          //console.log(`移动 (${r},${c}) -> (${to.r},${to.c}) 是否安全: ${isAcceptable}`);
-          if (isAcceptable) {
-            rootMoves.push({ from: {r,c}, to, score: 0 });
-            //console.log(`添加安全移动: (${r},${c}) -> (${to.r},${to.c})`);
-          }
-        });
-      }
-    }
-  }
-  //console.log(`根节点走法收集完成，共收集到 ${rootMoves.length} 个安全移动`);
-
-  // 对根节点着法进行排序，传递gameStage和boardInfo避免重复计算
-  rootMoves = sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo);
-    
-  let depth = maxDepth;  
-  // 检查时间限制
-  if (enableTimeLimit && Date.now() - startTime > timeLimit) {
-    console.log(`Iterative Deepening stopped at depth ${depth-1} due to time limit`);
-  }
-  console.log(`Starting depth ${depth} search | turn: ${turn}, maxDepth: ${maxDepth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`);
-  
-  
-  // 对每个根节点走法进行alpha-beta搜索
-  for (const item of rootMoves) {
-    const nextBoard = board.map(row => [...row]);
-    nextBoard[item.to.r][item.to.c] = nextBoard[item.from.r][item.from.c];
-    nextBoard[item.from.r][item.from.c] = null;
-    
-    // 检查当前局面是否为捉子局面且已重复4次以上
-    const nextHash = zobristHasher.hash(nextBoard);
-    // 计算下一个行棋玩家，基于当前turn
-    const nextTurn = turn === 'red' ? 'black' : 'red';
-    
-    // 正确的minimax逻辑：
-    // 1. 搜索发起方是turn，AI为turn寻找最优走法
-    // 2. turn走完一步后，轮到对手(nextTurn)走棋
-    // 3. maximizing参数：当前玩家是否是搜索发起方
-    //    - 如果是，maximizing = true（最大化自己的分数）
-    //    - 如果否，maximizing = false（最小化对手的分数）
-    // 4. 传递turn作为searchInitiator，确保评估始终从turn角度计算
-    
-    const maximizing = false;
-    const alphaBetaResult = alphaBeta(nextBoard, depth - 1, -Infinity, Infinity, maximizing, nextTurn, depth, turn, gameStage);
-    const score = alphaBetaResult.value;
-    item.score = score;
-    item.moveSequence = [{ from: item.from, to: item.to }, ...alphaBetaResult.moveSequence];
-  }
-    
-    // 按分数排序 - 由于score已经是净胜分（当前玩家-对手），所以双方都应选择分数最大的走法
-    rootMoves.sort((a, b) => {
-        const scoreDiff = b.score - a.score;
-        if (Math.abs(scoreDiff) < 1e-6) {
-            // 分数相同，根据胜负情况比较序列长度
-            // 胜利分数为正，失败分数为负
-            if (a.score > 0) {
-                // 都是胜利，选择序列更短的
-                return (a.moveSequence?.length || 0) - (b.moveSequence?.length || 0);
-            } else if (a.score < 0) {
-                // 都是失败，选择序列更长的
-                return (b.moveSequence?.length || 0) - (a.moveSequence?.length || 0);
-            } else {
-                return 0;
-            }
-        }
-        return scoreDiff;
-    });
-    
-    // 更新最优走法
-    if (rootMoves.length > 0) {
-      bestMove = rootMoves[0]; // rootMoves元素直接是move对象，没有.move属性
-      secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
-    }
-  
-  // 获取并打印置换表统计信息
-  const ttStats = transpositionTable.getStats();
-
-  /*
-  console.log('\n置换表使用统计信息:');
-  console.log(`   访问总数: ${ttStats.totalAccesses}`);
-  console.log(`   命中次数: ${ttStats.hits} (${ttStats.hitRate}%)`);
-  console.log(`   - Exact命中: ${ttStats.exactHits}`);
-  console.log(`   - Lowerbound命中: ${ttStats.lowerboundHits}`);
-  console.log(`   - Upperbound命中: ${ttStats.upperboundHits}`);
-  console.log(`   未命中次数: ${ttStats.misses}`);
-  console.log(`   存储次数: ${ttStats.stores}`);
-  console.log(`   LRU驱逐次数: ${ttStats.lruEvictions}`);
-  console.log(`   表填充率: ${ttStats.currentSize}/${ttStats.maxSize} (${ttStats.fillPercentage}%)`);
-  */
-  // 找出最优着法序列和次优着法序列
-  let bestMoveSequence = [];
-  let secondMoveSequence = [];
-  if (rootMoves.length > 0) {
-    bestMoveSequence = rootMoves[0].moveSequence || [];
-  }
-  if (rootMoves.length > 1) {
-    secondMoveSequence = rootMoves[1].moveSequence || [];
-  }
-  
-  return { bestMove, secondBestMove, rootMoves, searchTime: Date.now() - startTime, ttStats, moveSequence: bestMoveSequence, secondMoveSequence };
-};
-
 // 修复：alphaBeta函数需要一个额外的参数来标识搜索发起方，确保评估始终从发起方角度计算
 const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid') => {
     // maximizing表示当前玩家是否正在最大化自己的分数
@@ -3993,10 +3853,7 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
 };
 
 const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTimeLimit = false) => {
-  let bestMove = null;
-  let secondBestMove = null;
-  let rootMoves = [];
-  let bestMoveSequence = [];
+  const timeLimit = 5000;
 
   // First try to get move from opening book
   const bookMove = openingBook.getBookMove(board, ply);
@@ -4021,33 +3878,81 @@ const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTime
     }
   }
 
-  // 使用迭代加深搜索获取最优走法
-  //console.log(`开始迭代加深搜索，深度: ${depth}`);
-  const { bestMove: idBestMove, secondBestMove: idSecondBestMove, rootMoves: idRootMoves, searchTime, moveSequence: idMoveSequence, secondMoveSequence: idSecondMoveSequence } = iterativeDeepening(board, turn, depth, 5000, enableTimeLimit);
-  
-  // 初始化rootMoves
-  rootMoves = idRootMoves;
-  //console.log(`迭代加深搜索完成，返回的bestMove: ${JSON.stringify(idBestMove)}, secondBestMove: ${JSON.stringify(idSecondBestMove)}, rootMoves数量: ${rootMoves.length}`);
+  // 根节点搜索（原 iterativeDeepening 逻辑，直接接到 alphaBeta）
+  resetPerfStats();
+  const startTime = Date.now();
+  transpositionTable.resetStats();
+  transpositionTable.clear();
 
-  // 从rootMoves中获取最优走法和次优走法
-  bestMove = idBestMove;
-  secondBestMove = idSecondBestMove;
-  bestMoveSequence = idMoveSequence;
-  secondMoveSequence = idSecondMoveSequence;
+  const phase = getGamePhase(board);
+  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
 
-  // 获取最优和次优着法的净胜分
-  let bestMoveScore = 0;
-  let secondBestMoveScore = 0;
-  if (rootMoves.length > 0) {
-    bestMoveScore = rootMoves[0].score;
+  const rootEvalResult = evaluateBoard(board, false, turn, 0, turn, gameStage);
+  const rootPiecesInfo = rootEvalResult.piecesInfo;
+  const rootBoardInfo = rootEvalResult.boardInfo;
+
+  // 收集根节点走法；未被将时过滤送吃，被将时保留全部合法应将着法
+  let rootMoves = [];
+  const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
+                      (turn === 'black' && rootBoardInfo.blackIsInCheck);
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c]?.color === turn) {
+        const piece = board[r][c];
+        const validDestinations = getValidMoves(board, { r, c });
+        validDestinations.forEach(to => {
+          const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
+          if (isAcceptable) {
+            rootMoves.push({ from: { r, c }, to, score: 0 });
+          }
+        });
+      }
+    }
   }
-  if (rootMoves.length > 1) {
-    secondBestMoveScore = rootMoves[1].score;
+
+  rootMoves = sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo);
+
+  if (enableTimeLimit && Date.now() - startTime > timeLimit) {
+    console.log(`Search stopped before depth ${depth} due to time limit`);
   }
-  
-  // 返回所有着法的分数信息（用于Analysis功能）
+  console.log(`Starting depth ${depth} search | turn: ${turn}, maxDepth: ${depth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`);
+
+  // 对每个根节点走法进行 alpha-beta 搜索
+  for (const item of rootMoves) {
+    const nextBoard = board.map(row => [...row]);
+    nextBoard[item.to.r][item.to.c] = nextBoard[item.from.r][item.from.c];
+    nextBoard[item.from.r][item.from.c] = null;
+
+    const nextTurn = turn === 'red' ? 'black' : 'red';
+    // turn 已走完，轮到对手；maximizing=false（最小化对手）
+    const alphaBetaResult = alphaBeta(nextBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+    item.score = alphaBetaResult.value;
+    item.moveSequence = [{ from: item.from, to: item.to }, ...alphaBetaResult.moveSequence];
+  }
+
+  // 按净胜分排序；同分时胜局取短、负局取长
+  rootMoves.sort((a, b) => {
+    const scoreDiff = b.score - a.score;
+    if (Math.abs(scoreDiff) < 1e-6) {
+      if (a.score > 0) {
+        return (a.moveSequence?.length || 0) - (b.moveSequence?.length || 0);
+      } else if (a.score < 0) {
+        return (b.moveSequence?.length || 0) - (a.moveSequence?.length || 0);
+      }
+      return 0;
+    }
+    return scoreDiff;
+  });
+
+  const bestMove = rootMoves.length > 0 ? rootMoves[0] : null;
+  const secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
+  const bestMoveSequence = rootMoves.length > 0 ? (rootMoves[0].moveSequence || []) : [];
+  const secondMoveSequence = rootMoves.length > 1 ? (rootMoves[1].moveSequence || []) : [];
+  const bestMoveScore = rootMoves.length > 0 ? rootMoves[0].score : 0;
+  const secondBestMoveScore = rootMoves.length > 1 ? rootMoves[1].score : 0;
+
   const allMovesWithScores = rootMoves.map(moveInfo => ({
-    // 提取moveInfo中的move属性
     move: {
       from: moveInfo.from,
       to: moveInfo.to
@@ -4055,7 +3960,7 @@ const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTime
     score: moveInfo.score,
     moveSequence: moveInfo.moveSequence || []
   }));
-  
+
   return { bestMove, secondBestMove, moveSequence: bestMoveSequence, secondMoveSequence, bestMoveScore, secondBestMoveScore, allMovesWithScores };
 };
 
