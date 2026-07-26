@@ -222,7 +222,8 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
             // 收集棋子基本信息
             const materialValue = getMaterialValue(piece, gameStage);
             const positionValue = getPositionValue(piece, r, c);
-            const moves = getPieceMoves(board, { r, c }, piece);
+            const allyGuards = [];
+            const moves = getPieceMoves(board, { r, c }, piece, allyGuards);
             
             // 立即处理moves，计算机动性（将processPieceMoves逻辑内联此处）
             const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
@@ -249,6 +250,7 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
                 r,
                 c,
                 moves,
+                allyGuards,
                 materialValue,
                 positionValue,
                 // 初始化并设置计算好的机动值
@@ -436,7 +438,8 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
             
             const materialValue = getMaterialValue(piece, gameStage);
             const positionValue = getPositionValue(piece, r, c);
-            const moves = getPieceMoves(board, { r, c }, piece);
+            const allyGuards = [];
+            const moves = getPieceMoves(board, { r, c }, piece, allyGuards);
             
             const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
             let mobilityValue = 0;
@@ -448,7 +451,7 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
             
             piecesInfo.push({
                 piece,
-                r, c, moves,
+                r, c, moves, allyGuards,
                 legalMoves: null, // 仅当前行棋方填充
                 materialValue,
                 positionValue,
@@ -560,92 +563,42 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     }
 };
 
-// 从已有 moves 补齐己方保护关系（moves 不含己方落点；炮仍走 getPieceTargets）
-const linkAllyGuards = (board, info, posByKey) => {
+// 炮：一次四向射线同时填充 threat / guard / control（对齐 getPieceTargets + getPieceControl）
+const fillCannonRelations = (board, info, posByKey) => {
     const piece = info.piece;
     const { r, c } = info;
-    const isRed = piece.color === 'red';
-
-    const tryGuard = (tr, tc) => {
-        if (!isValidPos(tr, tc)) return;
-        const target = board[tr][tc];
-        if (!target || target.color !== piece.color || target.type === 'general') return;
-        const targetInfo = posByKey.get(tr * 9 + tc);
-        if (targetInfo && targetInfo !== info) {
-            info.guard.push(targetInfo);
-            targetInfo.guardedBy.push(info);
-        }
-    };
-
-    switch (piece.type) {
-        case 'general':
-            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-                const nr = r + dr, nc = c + dc;
-                if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) tryGuard(nr, nc);
-                    else if (!isRed && nr >= 7 && nr <= 9) tryGuard(nr, nc);
-                }
-            });
-            break;
-        case 'advisor':
-            [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => {
-                const nr = r + dr, nc = c + dc;
-                if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) tryGuard(nr, nc);
-                    else if (!isRed && nr >= 7 && nr <= 9) tryGuard(nr, nc);
-                }
-            });
-            break;
-        case 'elephant':
-            [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dr, dc]) => {
-                const nr = r + dr, nc = c + dc;
-                const eyeR = r + dr / 2, eyeC = c + dc / 2;
-                if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-                    if (isRed && nr <= 4) tryGuard(nr, nc);
-                    else if (!isRed && nr >= 5) tryGuard(nr, nc);
-                }
-            });
-            break;
-        case 'horse':
-            [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(([dr, dc]) => {
-                const nr = r + dr, nc = c + dc;
-                const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-                const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
-                if (isValidPos(legR, legC) && board[legR][legC] === null) {
-                    tryGuard(nr, nc);
-                }
-            });
-            break;
-        case 'chariot':
-            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-                let nr = r + dr, nc = c + dc;
-                while (isValidPos(nr, nc)) {
-                    if (board[nr][nc] !== null) {
-                        tryGuard(nr, nc);
-                        break;
+    for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        let nr = r + dr, nc = c + dc;
+        let screenFoundCount = 0;
+        while (isValidPos(nr, nc) && screenFoundCount < 2) {
+            const p = board[nr][nc];
+            if (p !== null) {
+                screenFoundCount++;
+                if (screenFoundCount === 2) {
+                    const targetInfo = posByKey.get(nr * 9 + nc);
+                    if (targetInfo && targetInfo !== info) {
+                        if (p.color !== piece.color) {
+                            info.threat.push(targetInfo);
+                            targetInfo.threatenedBy.push(info);
+                        } else if (p.type !== 'general') {
+                            info.guard.push(targetInfo);
+                            targetInfo.guardedBy.push(info);
+                        }
                     }
-                    nr += dr; nc += dc;
+                    break;
                 }
-            });
-            break;
-        case 'soldier': {
-            const forward = isRed ? 1 : -1;
-            const crossedRiver = isRed ? r >= 5 : r <= 4;
-            tryGuard(r + forward, c);
-            if (crossedRiver) {
-                tryGuard(r, c - 1);
-                tryGuard(r, c + 1);
+            } else if (screenFoundCount === 1) {
+                info.control.push({ r: nr, c: nc });
             }
-            break;
+            nr += dr;
+            nc += dc;
         }
-        default:
-            break;
     }
 };
 
 // 计算棋子关系（威胁者、被威胁者、保护者、被保护者）
 // 同时计算boardInfo：为棋盘每个位置登记控制者
-// 优先复用 info.moves，避免 getPieceTargets + getPieceControl 二次走子生成
+// 复用 info.moves + allyGuards；炮用一次射线
 const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     // 初始化棋子关系数组
     for (const info of piecesInfo) {
@@ -671,8 +624,9 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         const piece = info.piece;
         const moves = info.moves;
 
-        if (piece.type === 'cannon' || !moves) {
-            // 炮的控制点语义特殊；无 moves 时回退原路径
+        if (piece.type === 'cannon') {
+            fillCannonRelations(board, info, posByKey);
+        } else if (!moves) {
             const { threat, guard } = getPieceTargets(board, { r: info.r, c: info.c }, piece);
             for (const threatPos of threat) {
                 const targetInfo = posByKey.get(threatPos.r * 9 + threatPos.c);
@@ -690,7 +644,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
             }
             info.control = getPieceControl(board, { r: info.r, c: info.c }, piece);
         } else {
-            // 非炮：威胁/控制直接从已有 moves 分类；保护单独补齐己方落点
+            // 非炮：威胁/控制从 moves；保护从生成 moves 时收集的 allyGuards
             for (const m of moves) {
                 const target = board[m.r][m.c];
                 if (!target) {
@@ -703,7 +657,14 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
                     }
                 }
             }
-            linkAllyGuards(board, info, posByKey);
+            const allies = info.allyGuards || [];
+            for (const g of allies) {
+                const targetInfo = posByKey.get(g.r * 9 + g.c);
+                if (targetInfo && targetInfo !== info) {
+                    info.guard.push(targetInfo);
+                    targetInfo.guardedBy.push(info);
+                }
+            }
         }
 
         const control = info.control;
@@ -966,10 +927,12 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
             for (let c = 0; c < COLS; c++) {
                 const piece = board[r][c];
                 if (piece) {
-                    const moves = getValidMoves(board, { r, c });
+                    const allyGuards = [];
+                    const moves = getPieceMoves(board, { r, c }, piece, allyGuards);
                     localPiecesInfo.push({
                         piece,
-                        r, c, moves,
+                        r, c, moves, allyGuards,
+                        materialValue: getMaterialValue(piece, gameStage),
                         threat: [],
                         threatenedBy: [],
                         guard: [],
@@ -1142,6 +1105,8 @@ const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchIn
     // 同一无根子被多方威胁时只计一次材料威胁，避免重复加分
     const scoredHangingKeys = new Set();
     const checkedGenerals = new Set();
+    const canCaptureSeen = new Set();
+    const threatenedSeen = new Set();
     
     // 遍历所有棋子，计算威胁关系
     for (const info of piecesInfo) {
@@ -1170,26 +1135,20 @@ const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchIn
                 continue;
             }
 
-            const targetValue = getMaterialValue(threatenedPiece.piece, gameStage);
+            const targetValue = threatenedPiece.materialValue;
             const hasGuard = threatenedPiece.guardedBy && threatenedPiece.guardedBy.length > 0;
             
             // SEE：仅用于判断交换是否对攻击方有利；威胁分只加在攻击方，避免净分双计
             let sseScore = 0;
             
             if (hasGuard) {
-                const attackers = threatenedPiece.threatenedBy
-                    .map(attacker => ({
-                        ...attacker,
-                        value: getMaterialValue(attacker.piece, gameStage)
-                    }))
-                    .sort((a, b) => a.value - b.value);
-                
-                const guards = threatenedPiece.guardedBy
-                    .map(guard => ({
-                        ...guard,
-                        value: getMaterialValue(guard.piece, gameStage)
-                    }))
-                    .sort((a, b) => a.value - b.value);
+                // 复用已有 materialValue，避免 map + 重复 getMaterialValue
+                const attackers = threatenedPiece.threatenedBy.slice().sort(
+                    (a, b) => a.materialValue - b.materialValue
+                );
+                const guards = threatenedPiece.guardedBy.slice().sort(
+                    (a, b) => a.materialValue - b.materialValue
+                );
                 
                 let exchangeScore = 0;
                 let attackerIndex = 0;
@@ -1199,9 +1158,9 @@ const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchIn
                     if (guardIndex === 0) {
                         exchangeScore += targetValue;
                     }
-                    exchangeScore -= attackers[attackerIndex].value;
+                    exchangeScore -= attackers[attackerIndex].materialValue;
                     if (attackerIndex + 1 < attackers.length) {
-                        exchangeScore += guards[guardIndex].value;
+                        exchangeScore += guards[guardIndex].materialValue;
                     }
                     attackerIndex++;
                     guardIndex++;
@@ -1220,10 +1179,12 @@ const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchIn
                 }
                 if (boardInfo) {
                     if (isAttackerCurrentPlayer) {
-                        if (!boardInfo.canCapture.includes(info)) {
+                        if (!canCaptureSeen.has(info)) {
+                            canCaptureSeen.add(info);
                             boardInfo.canCapture.push(info);
                         }
-                    } else if (!boardInfo.threatenedPieces.includes(threatenedPiece)) {
+                    } else if (!threatenedSeen.has(threatenedPiece)) {
+                        threatenedSeen.add(threatenedPiece);
                         boardInfo.threatenedPieces.push(threatenedPiece);
                     }
                 }
@@ -2878,16 +2839,25 @@ const getPieceTargets = (board, pos, piece) => {
   return { threat, guard };
 };
 
-const getPieceMoves = (board, pos, piece) => {
+// alliesOut: 可选，收集可保护的己方落点（不含将帅），供关系计算复用，避免二次射线
+const getPieceMoves = (board, pos, piece, alliesOut = null) => {
   const moves = [];
   const { r, c } = pos;
   const isRed = piece.color === 'red';
+
+  const addAlly = (tr, tc, target) => {
+    if (alliesOut && target && target.color === piece.color && target.type !== 'general') {
+      alliesOut.push({ r: tr, c: tc });
+    }
+  };
 
   const addIfValid = (tr, tc) => {
     if (isValidPos(tr, tc)) {
         const target = board[tr][tc];
         if (!target || target.color !== piece.color) {
             moves.push({ r: tr, c: tc });
+        } else {
+            addAlly(tr, tc, target);
         }
     }
   };
@@ -2935,10 +2905,12 @@ const getPieceMoves = (board, pos, piece) => {
       [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
         let nr = r + dr, nc = c + dc;
         while (isValidPos(nr, nc)) {
-          if (board[nr][nc] === null) {
+          const target = board[nr][nc];
+          if (target === null) {
             moves.push({ r: nr, c: nc });
           } else {
-            if (board[nr][nc].color !== piece.color) moves.push({ r: nr, c: nc });
+            if (target.color !== piece.color) moves.push({ r: nr, c: nc });
+            else addAlly(nr, nc, target);
             break;
           }
           nr += dr; nc += dc;
@@ -2946,6 +2918,7 @@ const getPieceMoves = (board, pos, piece) => {
       });
       break;
     case 'cannon':
+      // 着法仍只含敌方隔打；己方隔打保护由 fillCannonRelations 统一处理
       [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
         let nr = r + dr, nc = c + dc;
         let screenFound = false;
