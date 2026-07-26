@@ -349,17 +349,67 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
     };
 };
 
-// 搜索用原地走子 / 恢复（避免每次递归 board.map）
+// 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
+let generalPosCache = { red: null, black: null };
+
+// 将帅仅在九宫内，按九宫扫描即可
+const findGeneralPos = (board, color) => {
+    const rowStart = color === 'red' ? 0 : 7;
+    const rowEnd = color === 'red' ? 2 : 9;
+    for (let r = rowStart; r <= rowEnd; r++) {
+        for (let c = 3; c <= 5; c++) {
+            const p = board[r][c];
+            if (p && p.type === 'general' && p.color === color) {
+                return { r, c };
+            }
+        }
+    }
+    return null;
+};
+
+const syncGeneralPosCache = (board) => {
+    generalPosCache.red = findGeneralPos(board, 'red');
+    generalPosCache.black = findGeneralPos(board, 'black');
+};
+
+const getGeneralPos = (board, color) => {
+    const cached = generalPosCache[color];
+    if (cached) {
+        const p = board[cached.r]?.[cached.c];
+        if (p && p.type === 'general' && p.color === color) {
+            return cached;
+        }
+    }
+    const pos = findGeneralPos(board, color);
+    generalPosCache[color] = pos;
+    return pos;
+};
+
+// 搜索用原地走子 / 恢复（避免每次递归 board.map）；同步维护将位缓存
 const makeMove = (board, from, to) => {
+    const piece = board[from.r][from.c];
     const captured = board[to.r][to.c];
-    board[to.r][to.c] = board[from.r][from.c];
+    board[to.r][to.c] = piece;
     board[from.r][from.c] = null;
+    if (piece && piece.type === 'general') {
+        generalPosCache[piece.color] = { r: to.r, c: to.c };
+    }
+    if (captured && captured.type === 'general') {
+        generalPosCache[captured.color] = null;
+    }
     return captured;
 };
 
 const unmakeMove = (board, from, to, captured) => {
-    board[from.r][from.c] = board[to.r][to.c];
+    const piece = board[to.r][to.c];
+    board[from.r][from.c] = piece;
     board[to.r][to.c] = captured;
+    if (piece && piece.type === 'general') {
+        generalPosCache[piece.color] = { r: from.r, c: from.c };
+    }
+    if (captured && captured.type === 'general') {
+        generalPosCache[captured.color] = { r: to.r, c: to.c };
+    }
 };
 
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（复用已有 moves，避免再 getPieceMoves）
@@ -802,12 +852,9 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
                 score = 10000 + targetPieceValue;
             } else {
                 const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
-                const captured = board[to.r][to.c];
-                board[to.r][to.c] = piece;
-                board[from.r][from.c] = null;
+                const captured = makeMove(board, from, to);
                 const givesCheck = isCheck(board, enemyColor);
-                board[from.r][from.c] = piece;
-                board[to.r][to.c] = captured;
+                unmakeMove(board, from, to, captured);
                 if (givesCheck) {
                     priority = 1;
                     score = 5000 + targetPieceValue;
@@ -2986,17 +3033,8 @@ const getPieceControl = (board, pos, piece) => {
 };
 
 const isFlyingGeneral = (board) => {
-  let redG = null;
-  let blackG = null;
-  for(let r=0; r<ROWS; r++) {
-      for(let c=3; c<=5; c++) {
-          const p = board[r][c];
-          if (p?.type === 'general') {
-              if (p.color === 'red') redG = {r, c};
-              else blackG = {r, c};
-          }
-      }
-  }
+  const redG = getGeneralPos(board, 'red');
+  const blackG = getGeneralPos(board, 'black');
   if (!redG || !blackG || redG.c !== blackG.c) return false;
   
   // 确保循环方向正确，从较小的r到较大的r
@@ -3009,106 +3047,47 @@ const isFlyingGeneral = (board) => {
   return true;
 };
 
-const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
-    // 优先使用预计算的将军状态
-    if (boardInfo) {
-        return color === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
-    }
-    
-    // 如果有piecesInfo，也可以从中获取将军状态
-    if (piecesInfo && piecesInfo.length > 0) {
-        return color === 'red' ? piecesInfo[0].redIsInCheck : piecesInfo[0].blackIsInCheck;
-    }
-    
-    // 没有预计算结果时，执行原始计算
-    // 优化后的isCheck函数，避免重复调用getPieceMoves
-    let generalPos = null;
-    for(let r=0; r<ROWS; r++) {
-        for(let c=0; c<COLS; c++) { 
-            const p = board[r][c];
-            if (p && p.type === 'general' && p.color === color) {
-                generalPos = {r, c};
-                break;
-            }
-        }
-        if (generalPos) break;
-    }
-    
+// 无 boardInfo 时的快速将军检测：将位缓存 + 从将位四向射线（车/将/炮合并）
+const isCheckRaw = (board, color) => {
+    const generalPos = getGeneralPos(board, color);
     if (!generalPos) return true;
 
     const enemyColor = color === 'red' ? 'black' : 'red';
     const { r: gr, c: gc } = generalPos;
-    
-    // 检查直线攻击（车、将）
+
+    // 直线：第一子为敌车/将则将军；越过炮架后第二子为敌炮则将军
     const directions = [[0, 1], [0, -1], [1, 0], [-1, 0]];
     for (const [dr, dc] of directions) {
         let nr = gr + dr;
         let nc = gc + dc;
-        
+        let seen = 0;
+
         while (isValidPos(nr, nc)) {
             const p = board[nr][nc];
             if (p) {
-                if (p.color === enemyColor) {
-                    if ((p.type === 'chariot' || p.type === 'general')) {
+                seen++;
+                if (seen === 1) {
+                    if (p.color === enemyColor && (p.type === 'chariot' || p.type === 'general')) {
                         return true;
                     }
+                } else {
+                    if (p.color === enemyColor && p.type === 'cannon') {
+                        return true;
+                    }
+                    break;
                 }
-                break;
             }
             nr += dr;
             nc += dc;
         }
     }
-    
-    // 专门检查炮的攻击：敌方炮和我方将在一条线，中间隔着一个任意棋子
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const p = board[r][c];
-            if (p && p.color === enemyColor && p.type === 'cannon') {
-                // 检查炮和将是否在同一直线上
-                if (r === gr || c === gc) {
-                    // 同一直线上，计算中间的棋子数量
-                    let screenCount = 0;
-                    
-                    if (r === gr) {
-                        // 同一行
-                        const startCol = Math.min(c, gc);
-                        const endCol = Math.max(c, gc);
-                        
-                        for (let col = startCol + 1; col < endCol; col++) {
-                            if (board[r][col] !== null) {
-                                screenCount++;
-                            }
-                        }
-                    } else {
-                        // 同一列
-                        const startRow = Math.min(r, gr);
-                        const endRow = Math.max(r, gr);
-                        
-                        for (let row = startRow + 1; row < endRow; row++) {
-                            if (board[row][c] !== null) {
-                                screenCount++;
-                            }
-                        }
-                    }
-                    
-                    // 炮需要一个炮架才能攻击
-                    if (screenCount === 1) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    
-    // 检查斜线攻击（马、士、象）
-    // 检查马的攻击：从将位反推马的位置时，马腿应在马一侧（与 getPieceMoves 一致）
+
+    // 马：从将位反推，马腿在马一侧（与 getPieceMoves 一致）
     const horseMoves = [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]];
     for (const [dr, dc] of horseMoves) {
         const nr = gr + dr;
         const nc = gc + dc;
         if (isValidPos(nr, nc)) {
-            // 马在 (nr,nc)，走向将时马腿紧贴马：长轴方向退一步
             const legR = nr - (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
             const legC = nc - (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
             if (board[legR][legC] === null) {
@@ -3119,13 +3098,13 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
             }
         }
     }
-    
-    // 检查士的攻击（只在九宫内）
+
+    // 士（九宫内）
     const advisorMoves = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
     for (const [dr, dc] of advisorMoves) {
         const nr = gr + dr;
         const nc = gc + dc;
-        if (isValidPos(nr, nc) && 
+        if (isValidPos(nr, nc) &&
             ((color === 'red' && nr >= 0 && nr <= 2) || (color === 'black' && nr >= 7 && nr <= 9)) &&
             nc >= 3 && nc <= 5) {
             const p = board[nr][nc];
@@ -3134,9 +3113,8 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
             }
         }
     }
-    
-    // 检查兵的攻击（从将位置反推敌兵来源）
-    // 红兵向前 +1，黑兵向前 -1；正前方攻击始终有效，左右仅过河兵可攻击
+
+    // 兵：正前方始终可攻；左右仅过河兵
     const enemyForward = enemyColor === 'red' ? 1 : -1;
     const forwardFromR = gr - enemyForward;
     if (isValidPos(forwardFromR, gc)) {
@@ -3157,8 +3135,22 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
             }
         }
     }
-    
+
     return false;
+};
+
+const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
+    // 优先使用预计算的将军状态
+    if (boardInfo) {
+        return color === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
+    }
+
+    // 如果有piecesInfo，也可以从中获取将军状态
+    if (piecesInfo && piecesInfo.length > 0) {
+        return color === 'red' ? piecesInfo[0].redIsInCheck : piecesInfo[0].blackIsInCheck;
+    }
+
+    return isCheckRaw(board, color);
 };
 
 // 合法着法：伪合法 + 不送将/不飞将（make/unmake）
@@ -3529,6 +3521,7 @@ if (typeof self !== 'undefined') {
         }
         case 'getValidMoves': {
             const { board: vmBoard, pos: vmPos } = payload;
+            syncGeneralPosCache(vmBoard);
             const validMoves = getValidMoves(vmBoard, vmPos);
             self.postMessage({
                 type: 'validMoves',
@@ -3681,6 +3674,7 @@ if (typeof self !== 'undefined') {
             
         case 'isCheck': {
             const { board: cBoard, color: cColor, requestId } = payload;
+            syncGeneralPosCache(cBoard);
             const inCheck = isCheck(cBoard, cColor);
             self.postMessage({
                 type: 'check',
@@ -3958,6 +3952,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
   transpositionTable.resetStats();
   transpositionTable.clear();
   resetSearchHeuristics(depth);
+  syncGeneralPosCache(board);
 
   const phase = getGamePhase(board);
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
