@@ -672,11 +672,15 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
                 priority = 0;
                 score = 10000 + targetPieceValue;
             } else {
-                const nextBoard = board.map(row => [...row]);
-                nextBoard[to.r][to.c] = nextBoard[from.r][from.c];
-                nextBoard[from.r][from.c] = null;
+                // 原地走子后判断是否反将，避免深拷贝整个棋盘
                 const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
-                if (isCheck(nextBoard, enemyColor)) {
+                const captured = board[to.r][to.c];
+                board[to.r][to.c] = piece;
+                board[from.r][from.c] = null;
+                const givesCheck = isCheck(board, enemyColor);
+                board[from.r][from.c] = piece;
+                board[to.r][to.c] = captured;
+                if (givesCheck) {
                     // 解将同时反将
                     priority = 1;
                     score = 5000 + targetPieceValue;
@@ -3051,35 +3055,43 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
     return false;
 };
 
-// 修复：每次检查走法时克隆棋盘，避免修改原始对象
+// 使用原地走子/撤销（make/unmake）判断走法合法性，避免逐个伪着法深拷贝棋盘
 const getValidMoves = (board, pos) => {
   const piece = board[pos.r][pos.c];
   if (!piece) return [];
   
   const pseudoMoves = getPieceMoves(board, pos, piece);
   const validMoves = [];
-  
+
+  const fromR = pos.r;
+  const fromC = pos.c;
+
   for (const to of pseudoMoves) {
-    // 克隆棋盘，避免修改原始对象
-    const clonedBoard = board.map(row => [...row]);
-    
-    // 修改克隆后的棋盘
-    clonedBoard[to.r][to.c] = clonedBoard[pos.r][pos.c];
-    clonedBoard[pos.r][pos.c] = null;
-    
-    // 检查走法是否合法
+    const toR = to.r;
+    const toC = to.c;
+
+    // 原地走子（make），避免每个伪着法都深拷贝整个棋盘
+    const captured = board[toR][toC];
+    board[toR][toC] = piece;
+    board[fromR][fromC] = null;
+
+    // 检查走法是否合法（isFlyingGeneral / isCheck 逻辑不变，仅在原棋盘上临时走子后调用）
     let isValid = true;
-    if (isFlyingGeneral(clonedBoard)) {
+    if (isFlyingGeneral(board)) {
       isValid = false;
-    } else if (isCheck(clonedBoard, piece.color)) {
+    } else if (isCheck(board, piece.color)) {
       isValid = false;
     }
-    
+
+    // 撤销走子（unmake），恢复棋盘原状
+    board[fromR][fromC] = piece;
+    board[toR][toC] = captured;
+
     if (isValid) {
       validMoves.push(to);
     }
   }
-  
+
   return validMoves;
 };
 
