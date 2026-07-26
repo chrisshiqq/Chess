@@ -423,6 +423,19 @@ const prepareSearchInfo = (board, currentPlayer, gameStage) => {
     return { piecesInfo, boardInfo };
 };
 
+// 搜索用原地走子 / 恢复（避免每次递归 board.map）
+const makeMove = (board, from, to) => {
+    const captured = board[to.r][to.c];
+    board[to.r][to.c] = board[from.r][from.c];
+    board[from.r][from.c] = null;
+    return captured;
+};
+
+const unmakeMove = (board, from, to, captured) => {
+    board[from.r][from.c] = board[to.r][to.c];
+    board[to.r][to.c] = captured;
+};
+
 // 计算衍生值：威胁值、安全值、战术值、机动值
 // 修改：添加searchInitiator参数，传递给calculateThreatValues
 // 添加gameStage参数，避免在循环中重复调用getGamePhase
@@ -628,7 +641,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
 // 1. 优先处理我方无保护的被单向威胁的棋子执行逃跑着法，如有多个棋子按材料值从高到低排序
 // 2. 其次处理我方单向威胁对方无保护棋子的棋子执行吃子着法，如有多个棋子按棋子材料值从高到低排序
 // 3. 最后处理不涉及吃和被吃的着法，要求避免移动到被吃的位置
-const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null) => {
+const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null, searchHeuristics = null) => {
     // 使用传入的gameStage参数，避免重复调用getGamePhase
     
     // 用预计算的被将状态（不能用 boardInfo.checks：那是“谁在将军”，不是“谁被将”）
@@ -651,8 +664,12 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
             );
         }
     }
+
+    const ttMove = searchHeuristics?.ttMove || null;
+    const killers = searchHeuristics?.killers || null;
     
     // 为每个着法计算优先级分数并保存原始索引
+    // 排序层级：TT-move > 应将/吃子等静态优先级 > killer > history
     moves.forEach((move, index) => {
         const { from, to } = move;
         const piece = board[from.r][from.c];
@@ -663,16 +680,17 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
         
         let priority = 4;
         let score = 0;
-        
-        // 被将：合法着法均已解除将军，按应将手段排序
-        if (currentIsInCheck) {
+
+        if (ttMove && isSameMove(move, ttMove)) {
+            priority = -1;
+            score = 1000000;
+        } else if (currentIsInCheck) {
+            // 被将：合法着法均已解除将军，按应将手段排序
             const capturesChecker = targetPiece && checkerKeys && checkerKeys.has(`${to.r},${to.c}`);
             if (capturesChecker) {
-                // 吃掉正在将军的棋子，最高优先
                 priority = 0;
                 score = 10000 + targetPieceValue;
             } else {
-                // 原地走子后判断是否反将，避免深拷贝整个棋盘
                 const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
                 const captured = board[to.r][to.c];
                 board[to.r][to.c] = piece;
@@ -681,86 +699,64 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
                 board[from.r][from.c] = piece;
                 board[to.r][to.c] = captured;
                 if (givesCheck) {
-                    // 解将同时反将
                     priority = 1;
                     score = 5000 + targetPieceValue;
                 } else if (targetPiece) {
-                    // 其它吃子（含部分垫将吃子）
                     priority = 2;
                     score = targetPieceValue;
                 } else if (piece.type === 'general') {
-                    // 走将逃逸
                     priority = 3;
                     score = pieceValue;
                 } else {
-                    // 垫将等其余应将着法
                     priority = 4;
                     score = 0;
                 }
             }
-        } else {
-            // 检查逃跑着法（我方被捉的棋子移动）
-            if (boardInfo && boardInfo.threatenedPieces && boardInfo.threatenedPieces.length > 0) {
-                const isThreatenedPiece = boardInfo.threatenedPieces.some(p => p.r === from.r && p.c === from.c);
-                if (isThreatenedPiece) {
-                    // 逃跑着法，优先级第二高
-                    priority = 1;
-                    // 逃跑分数：我方棋子的材料值
-                    score = pieceValue;
-                }
-                else if (targetPiece) {
-                    // 检查是否捉吃着法（我方可吃的棋子）
-                    const isCanCapture = boardInfo.canCapture && boardInfo.canCapture.some(p => p.r === to.r && p.c === to.c);
-                    if (isCanCapture) {
-                        // 捉吃着法，优先级第三高
-                        priority = 2;
-                        score = targetPieceValue;
-                    }
-                    else {
-                        // 普通吃子着法
-                        priority = 3;
-                        score = targetPieceValue;
-                    }
-                }
-                else {
-                    // 非吃子着法
-                    priority = 4;
-                    score = 0;
-                }
-            }
-            // 检查捉吃着法（我方可吃的棋子）
-            else if (boardInfo && boardInfo.canCapture && boardInfo.canCapture.length > 0) {
-                const isCanCapture = boardInfo.canCapture.some(p => p.r === to.r && p.c === to.c);
-                if (isCanCapture) {
-                    // 捉吃着法，优先级第三高
-                    priority = 2;
-                    score = targetPieceValue;
-                }
-                else if (targetPiece) {
-                    // 普通吃子着法
-                    priority = 3;
-                    score = targetPieceValue;
-                }
-                else {
-                    // 非吃子着法
-                    priority = 4;
-                    score = 0;
-                }
-            }
-            // 没有boardInfo时的fallback逻辑
-            else if (targetPiece) {
-                // 普通吃子着法
-                priority = 3;
+        } else if (boardInfo && boardInfo.threatenedPieces && boardInfo.threatenedPieces.length > 0) {
+            const isThreatenedPiece = boardInfo.threatenedPieces.some(p => p.r === from.r && p.c === from.c);
+            if (isThreatenedPiece) {
+                priority = 1;
+                score = pieceValue;
+            } else if (targetPiece) {
+                const isCanCapture = boardInfo.canCapture && boardInfo.canCapture.some(p => p.r === to.r && p.c === to.c);
+                priority = isCanCapture ? 2 : 3;
                 score = targetPieceValue;
-            }
-            else {
-                // 非吃子着法
+            } else {
                 priority = 4;
                 score = 0;
             }
+        } else if (boardInfo && boardInfo.canCapture && boardInfo.canCapture.length > 0) {
+            const isCanCapture = boardInfo.canCapture.some(p => p.r === to.r && p.c === to.c);
+            if (isCanCapture) {
+                priority = 2;
+                score = targetPieceValue;
+            } else if (targetPiece) {
+                priority = 3;
+                score = targetPieceValue;
+            } else {
+                priority = 4;
+                score = 0;
+            }
+        } else if (targetPiece) {
+            priority = 3;
+            score = targetPieceValue;
+        } else {
+            priority = 4;
+            score = 0;
+        }
+
+        // killer / history：不覆盖 TT 与高优先级吃子/应将
+        if (priority >= 0) {
+            if (!targetPiece && killers && isSameMove(move, killers[0])) {
+                priority = Math.min(priority, 2);
+                score += 8000;
+            } else if (!targetPiece && killers && isSameMove(move, killers[1])) {
+                priority = Math.min(priority, 2);
+                score += 7000;
+            }
+            score += getHistoryScore(move);
         }
         
-        // 保存优先级、分数和原始索引
         move.priority = priority;
         move.sortScore = score;
         move.originalIndex = index;
@@ -3237,9 +3233,9 @@ const countPieces = (board) => {
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
 
-// 置换表实现
+// 置换表实现（容量约 2^20，避免 Map 过大拖慢 GC）
 class TranspositionTable {
-    constructor(size = Math.pow(2, 24)) {
+    constructor(size = Math.pow(2, 20)) {
         this.table = new Map();
         this.size = size;
         this.hasher = zobristHasher;
@@ -3256,19 +3252,19 @@ class TranspositionTable {
         };
     }
     
-    store(hash, depth, value, flag, bestMove = null) {
+    store(key, depth, value, flag, bestMove = null, moveSequence = null) {
         if (this.table.size >= this.size) {
             // 简单的LRU策略：移除第一个元素
             const firstKey = this.table.keys().next().value;
             this.table.delete(firstKey);
             this.stats.lruEvictions++;
         }
-        this.table.set(hash, { depth, value, flag, bestMove });
+        this.table.set(key, { depth, value, flag, bestMove, moveSequence });
         this.stats.stores++;
     }
     
-    retrieve(hash) {
-        const entry = this.table.get(hash) || null;
+    retrieve(key) {
+        const entry = this.table.get(key) || null;
         if (entry) {
             this.stats.hits++;
             // 统计不同类型的命中
@@ -3350,11 +3346,13 @@ const resetPerfStats = () => {
 // 打印统计信息
 const logPerfStats = (currentPlayer) => {
     const elapsed = Date.now() - perfStats.startTime;
+    const ttStats = transpositionTable.getStats();
     console.log(`📊 性能统计 (${currentPlayer}) - ${elapsed}ms:`);
     console.log(`   evaluateBoard: red=${perfStats.evaluateBoardCount.red}, black=${perfStats.evaluateBoardCount.black}`);
     console.log(`   prepareSearchInfo: red=${perfStats.prepareSearchInfoCount.red}, black=${perfStats.prepareSearchInfoCount.black}`);
     console.log(`   calculateThreatValues: red=${perfStats.calculateThreatValuesCount.red}, black=${perfStats.calculateThreatValuesCount.black}`);
     console.log(`   alphaBeta调用次数: ${perfStats.alphaBetaCalls}`);
+    console.log(`   TT: hits=${ttStats.hits}, misses=${ttStats.misses}, hitRate=${ttStats.hitRate}%, stores=${ttStats.stores}, size=${ttStats.currentSize}`);
     
     // 打印按深度统计的节点数、走法数、剪枝数
     const depths = Object.keys(perfStats.nodesSearched).sort((a, b) => a - b);
@@ -3367,6 +3365,44 @@ const logPerfStats = (currentPlayer) => {
 };
 
 const transpositionTable = new TranspositionTable();
+
+// 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
+let killerMoves = [];
+let historyTable = null;
+
+const resetSearchHeuristics = (maxDepth) => {
+    killerMoves = Array(maxDepth + 2).fill(null).map(() => [null, null]);
+    historyTable = Array.from({ length: 10 }, () =>
+        Array.from({ length: 9 }, () =>
+            Array.from({ length: 10 }, () => Array(9).fill(0))
+        )
+    );
+};
+
+const isSameMove = (a, b) =>
+    a && b &&
+    a.from.r === b.from.r && a.from.c === b.from.c &&
+    a.to.r === b.to.r && a.to.c === b.to.c;
+
+const storeKillerMove = (depth, move) => {
+    if (depth < 0 || depth >= killerMoves.length || !move) return;
+    const slot = killerMoves[depth];
+    if (isSameMove(slot[0], move)) return;
+    slot[1] = slot[0];
+    slot[0] = { from: { r: move.from.r, c: move.from.c }, to: { r: move.to.r, c: move.to.c } };
+};
+
+const addHistoryScore = (move, depth) => {
+    if (!historyTable || !move) return;
+    const { from, to } = move;
+    historyTable[from.r][from.c][to.r][to.c] += depth * depth;
+};
+
+const getHistoryScore = (move) => {
+    if (!historyTable || !move) return 0;
+    const { from, to } = move;
+    return historyTable[from.r][from.c][to.r][to.c] || 0;
+};
 
 // Worker message handling
 if (typeof self !== 'undefined') {
@@ -3640,219 +3676,176 @@ if (typeof self !== 'undefined') {
     };
 }
 
-// 修复：alphaBeta函数需要一个额外的参数来标识搜索发起方，确保评估始终从发起方角度计算
+// alphaBeta：评估始终从 searchInitiator 角度；启用 TT + killer/history；原地 make/unmake
 const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid') => {
-    // maximizing表示当前玩家是否正在最大化自己的分数
-    // currentPlayer表示当前行棋玩家的颜色
-    // searchInitiator表示搜索发起方，评估值始终从发起方角度计算
+    const originalAlpha = alpha;
+    const originalBeta = beta;
 
-    // 性能统计
     perfStats.alphaBetaCalls++;
     if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
     perfStats.nodesSearched[d]++;
 
-    let piecesInfo, boardInfo, evalResult;
-
-    // 叶节点：调用完整的evaluateBoard
+    // 叶节点：完整评估
     if (d === 0) {
-        evalResult = evaluateBoard(b, false, searchInitiator, searchDepth, searchInitiator, gameStage);
-        piecesInfo = evalResult.piecesInfo;
-        boardInfo = evalResult.boardInfo;
-
-        // 叶节点评估：始终从搜索发起方角度计算评估值
-        const evalPlayer = searchInitiator;
-        const opponent = evalPlayer === 'red' ? 'black' : 'red';
-        // 计算净胜分：发起方的总分减去对方的总分
-        const netScore = evalResult[evalPlayer].total - evalResult[opponent].total;
+        const evalResult = evaluateBoard(b, false, searchInitiator, searchDepth, searchInitiator, gameStage);
+        const opponent = searchInitiator === 'red' ? 'black' : 'red';
+        const netScore = evalResult[searchInitiator].total - evalResult[opponent].total;
         return { value: netScore, moveSequence: [] };
     }
 
-    // 非叶节点：使用轻量级的prepareSearchInfo
+    // 置换表探测（key 含行棋方，避免同形不同走方冲突）
+    const ttKey = `${zobristHasher.hash(b)}:${currentPlayer}`;
+    const ttEntry = transpositionTable.retrieve(ttKey);
+    let ttMove = null;
+    if (ttEntry) {
+        ttMove = ttEntry.bestMove || null;
+        if (ttEntry.depth >= d) {
+            if (ttEntry.flag === 'exact') {
+                return {
+                    value: ttEntry.value,
+                    moveSequence: ttEntry.moveSequence || (ttMove ? [ttMove] : [])
+                };
+            }
+            if (ttEntry.flag === 'lowerbound' && ttEntry.value >= beta) {
+                return { value: ttEntry.value, moveSequence: [] };
+            }
+            if (ttEntry.flag === 'upperbound' && ttEntry.value <= alpha) {
+                return { value: ttEntry.value, moveSequence: [] };
+            }
+        }
+    }
+
     const searchInfo = prepareSearchInfo(b, currentPlayer, gameStage);
-    piecesInfo = searchInfo.piecesInfo;
-    boardInfo = searchInfo.boardInfo;
-    
-    // 检查游戏状态，使用boardInfo中的预计算结果
-    if (boardInfo.gameState && boardInfo.gameState.status !== 'playing') {
-        const gameState = boardInfo.gameState;
-        // 游戏结束，从搜索发起方角度评估
+    const abPiecesInfo = searchInfo.piecesInfo;
+    const abBoardInfo = searchInfo.boardInfo;
+
+    if (abBoardInfo.gameState && abBoardInfo.gameState.status !== 'playing') {
+        const gameState = abBoardInfo.gameState;
         if (gameState.status === 'checkmate' || gameState.status === 'stalemate') {
-            // 如果搜索发起方是获胜者，返回正分；否则返回负分
             const isInitiatorWinner = gameState.winner === searchInitiator;
             const baseScore = isInitiatorWinner ? 100000 : -100000;
-            const stepsFromRoot = searchDepth - d; // 从根节点到当前节点的步数
+            const stepsFromRoot = searchDepth - d;
             const adjustedScore = baseScore + (isInitiatorWinner ? d : stepsFromRoot);
             return { value: adjustedScore, moveSequence: [] };
         }
         return { value: 0, moveSequence: [] };
     }
-    /*
-    // 尝试从置换表中获取缓存的结果
-    const hash = zobristHasher.hash(b);
-    const ttEntry = transpositionTable.retrieve(hash);
-    if (ttEntry && ttEntry.depth >= d) {
-        if (ttEntry.flag === 'exact') {
-            return ttEntry.value;
-        } else if (ttEntry.flag === 'lowerbound' && ttEntry.value >= beta) {
-            return beta;
-        } else if (ttEntry.flag === 'upperbound' && ttEntry.value <= alpha) {
-            return alpha;
-        }
-    }
-    */
-   
 
-
-
-    if (d === 0) {
-        // 叶节点评估：始终从搜索发起方角度计算评估值
-        const evalPlayer = searchInitiator;
-        const opponent = evalPlayer === 'red' ? 'black' : 'red';
-        // 计算净胜分：发起方的总分减去对方的总分
-        const netScore = evalResult[evalPlayer].total - evalResult[opponent].total;
-        return { value: netScore, moveSequence: [] };
-    }
-
-    // 非叶节点，使用已获取的piecesInfo和boardInfo
-    const abPiecesInfo = piecesInfo;
-    const abBoardInfo = boardInfo;
-
-    // 优化：只生成当前玩家的棋子的走法，避免不必要的遍历
-    let moves = [];
-    // 当前玩家颜色与currentPlayer保持一致
     const currentPlayerColor = currentPlayer;
-    
-    // 预先获取所有当前玩家的棋子位置，避免遍历整个棋盘
     const playerPieces = [];
     for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        if (b[r][c]?.color === currentPlayerColor) {
-          playerPieces.push({ r, c, piece: b[r][c] });
+        for (let c = 0; c < COLS; c++) {
+            if (b[r][c]?.color === currentPlayerColor) {
+                playerPieces.push({ r, c, piece: b[r][c] });
+            }
         }
-      }
     }
-    
-    // 只遍历当前玩家的棋子生成走法；被将时保留全部合法应将着法，否则过滤送吃
+
+    let moves = [];
     const abInCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
                       (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
     for (const { r, c, piece } of playerPieces) {
-      const validDestinations = getValidMoves(b, { r, c });
-      validDestinations.forEach(to => {
-         if (abInCheck || isPositionAcceptable(b, { r, c }, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
-           moves.push({ from: {r,c}, to, score: 0 });
-         }
-      });
+        const validDestinations = getValidMoves(b, { r, c });
+        validDestinations.forEach(to => {
+            if (abInCheck || isPositionAcceptable(b, { r, c }, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
+                moves.push({ from: { r, c }, to, score: 0 });
+            }
+        });
     }
-    
-    // 处理空moves数组，避免返回Infinity
+
     if (moves.length === 0) {
-        // 使用boardInfo中的预计算gameState
         const gameState = abBoardInfo.gameState;
         if (gameState && (gameState.status === 'checkmate' || gameState.status === 'stalemate')) {
-            // 如果搜索发起方是获胜者，返回正分；否则返回负分
             const isInitiatorWinner = gameState.winner === searchInitiator;
             const baseScore = isInitiatorWinner ? 100000 : -100000;
-            const stepsFromRoot = searchDepth - d; // 从根节点到当前节点的步数
+            const stepsFromRoot = searchDepth - d;
             const adjustedScore = baseScore + (isInitiatorWinner ? d : stepsFromRoot);
             return { value: adjustedScore, moveSequence: [] };
         }
         return { value: 0, moveSequence: [] };
     }
 
-    // 统计生成的走法数
     if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
     perfStats.movesGenerated[d] += moves.length;
 
-    // 计算威胁信息用于排序（只有排序需要这些信息）
     calculateThreatValues(b, abPiecesInfo, currentPlayer, d, searchInitiator, gameStage, abBoardInfo);
-    
-    // 对着法进行排序，传递gameStage和boardInfo避免重复计算
-    moves = sortMoves(moves, b, currentPlayerColor, abPiecesInfo, gameStage, abBoardInfo);
-    
+
+    const killersAtDepth = (killerMoves[d] || [null, null]);
+    moves = sortMoves(moves, b, currentPlayerColor, abPiecesInfo, gameStage, abBoardInfo, {
+        ttMove,
+        killers: killersAtDepth
+    });
+
+    const storeTT = (value, bestMove, moveSequence) => {
+        let flag;
+        if (value <= originalAlpha) flag = 'upperbound';
+        else if (value >= originalBeta) flag = 'lowerbound';
+        else flag = 'exact';
+        transpositionTable.store(ttKey, d, value, flag, bestMove, moveSequence);
+    };
+
     if (maximizing) {
-      let maxEval = -Infinity;
-      let bestMove = null;
-      let bestMoveSequence = [];
-      for (const move of moves) {
-        const nextBoard = b.map(row => [...row]);
-        nextBoard[move.to.r][move.to.c] = nextBoard[move.from.r][move.from.c];
-        nextBoard[move.from.r][move.from.c] = null;
-        // 下一个行棋的玩家是当前玩家的对手
-        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        // 递归调用时保持searchInitiator不变，确保评估始终从发起方角度计算
-        const nextMaximizing = nextPlayer === searchInitiator;
-        const result = alphaBeta(nextBoard, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
-        if (result.value > maxEval) {
-          maxEval = result.value;
-          bestMove = move;
-          bestMoveSequence = [move, ...result.moveSequence];
+        let maxEval = -Infinity;
+        let bestMove = null;
+        let bestMoveSequence = [];
+        for (const move of moves) {
+            const isCapture = !!b[move.to.r][move.to.c];
+            const captured = makeMove(b, move.from, move.to);
+            const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+            const nextMaximizing = nextPlayer === searchInitiator;
+            const result = alphaBeta(b, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
+            unmakeMove(b, move.from, move.to, captured);
+            if (result.value > maxEval) {
+                maxEval = result.value;
+                bestMove = move;
+                bestMoveSequence = [move, ...result.moveSequence];
+            }
+            alpha = Math.max(alpha, result.value);
+            if (beta <= alpha) {
+                if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
+                perfStats.cutoffs[d]++;
+                if (!isCapture) {
+                    storeKillerMove(d, move);
+                    addHistoryScore(move, d);
+                }
+                break;
+            }
         }
-        alpha = Math.max(alpha, result.value);
-        if (beta <= alpha) {
-            // 统计剪枝
-            if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
-            perfStats.cutoffs[d]++;
-            break;
-        }
-      }
-      /*
-      // 存储到置换表
-      const hash = zobristHasher.hash(b);
-      let flag;
-      if (maxEval <= alpha) {
-        flag = 'upperbound';
-      } else if (maxEval >= beta) {
-        flag = 'lowerbound';
-      } else {
-        flag = 'exact';
-      }
-      transpositionTable.store(hash, d, maxEval, flag, bestMove);
-      */
-      return { value: maxEval, moveSequence: bestMoveSequence };
-    } else {
-      let minEval = Infinity;
-      let bestMove = null;
-      let bestMoveSequence = [];
-      for (const move of moves) {
-        const nextBoard = b.map(row => [...row]);
-        nextBoard[move.to.r][move.to.c] = nextBoard[move.from.r][move.from.c];
-        nextBoard[move.from.r][move.from.c] = null;
-        // 下一个行棋的玩家是当前玩家的对手
+        storeTT(maxEval, bestMove, bestMoveSequence);
+        return { value: maxEval, moveSequence: bestMoveSequence };
+    }
+
+    let minEval = Infinity;
+    let bestMove = null;
+    let bestMoveSequence = [];
+    for (const move of moves) {
+        const isCapture = !!b[move.to.r][move.to.c];
+        const captured = makeMove(b, move.from, move.to);
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        // 递归调用时保持searchInitiator不变，确保评估始终从发起方角度计算
         const nextMaximizing = nextPlayer === searchInitiator;
-        const result = alphaBeta(nextBoard, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
+        const result = alphaBeta(b, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
+        unmakeMove(b, move.from, move.to, captured);
         if (result.value < minEval) {
-          minEval = result.value;
-          bestMove = move;
-          bestMoveSequence = [move, ...result.moveSequence];
+            minEval = result.value;
+            bestMove = move;
+            bestMoveSequence = [move, ...result.moveSequence];
         }
         beta = Math.min(beta, result.value);
         if (beta <= alpha) {
-            // 统计剪枝
             if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
             perfStats.cutoffs[d]++;
+            if (!isCapture) {
+                storeKillerMove(d, move);
+                addHistoryScore(move, d);
+            }
             break;
         }
-      }
-      /*
-      // 存储到置换表
-      const hash = zobristHasher.hash(b);
-      let flag;
-      if (minEval <= alpha) {
-        flag = 'upperbound';
-      } else if (minEval >= beta) {
-        flag = 'lowerbound';
-      } else {
-        flag = 'exact';
-      }
-      transpositionTable.store(hash, d, minEval, flag, bestMove);
-      */
-      return { value: minEval, moveSequence: bestMoveSequence };
     }
+    storeTT(minEval, bestMove, bestMoveSequence);
+    return { value: minEval, moveSequence: bestMoveSequence };
 };
 
-const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTimeLimit = false) => {
+const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTimeLimit = false) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -3878,11 +3871,12 @@ const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTime
     }
   }
 
-  // 根节点搜索（原 iterativeDeepening 逻辑，直接接到 alphaBeta）
+  // 根节点搜索：PVS + 精确分全窗回搜；TT / killer / history
   resetPerfStats();
   const startTime = Date.now();
   transpositionTable.resetStats();
   transpositionTable.clear();
+  resetSearchHeuristics(depth);
 
   const phase = getGamePhase(board);
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
@@ -3911,24 +3905,53 @@ const getBestMove = (board, turn, depth = 4, randomness = 0, ply = 0, enableTime
     }
   }
 
-  rootMoves = sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo);
+  rootMoves = sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo, {
+    ttMove: null,
+    killers: killerMoves[depth] || [null, null]
+  });
 
   if (enableTimeLimit && Date.now() - startTime > timeLimit) {
     console.log(`Search stopped before depth ${depth} due to time limit`);
   }
   console.log(`Starting depth ${depth} search | turn: ${turn}, maxDepth: ${depth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`);
 
-  // 对每个根节点走法进行 alpha-beta 搜索
-  for (const item of rootMoves) {
-    const nextBoard = board.map(row => [...row]);
-    nextBoard[item.to.r][item.to.c] = nextBoard[item.from.r][item.from.c];
-    nextBoard[item.from.r][item.from.c] = null;
+  // 根节点 PVS：第 1 着全窗；后续零窗探测 + 按结果回搜精确分（供 Analysis）
+  // 使用工作副本 + make/unmake，避免污染调用方棋盘
+  const workBoard = board.map(row => [...row]);
+  const NULL_WINDOW_EPS = 1e-6;
+  let rootAlpha = -Infinity;
+  const nextTurn = turn === 'red' ? 'black' : 'red';
 
-    const nextTurn = turn === 'red' ? 'black' : 'red';
-    // turn 已走完，轮到对手；maximizing=false（最小化对手）
-    const alphaBetaResult = alphaBeta(nextBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+  for (let i = 0; i < rootMoves.length; i++) {
+    const item = rootMoves[i];
+    const captured = makeMove(workBoard, item.from, item.to);
+
+    let alphaBetaResult;
+    if (i === 0 || rootAlpha === -Infinity) {
+      alphaBetaResult = alphaBeta(workBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+    } else {
+      // 零窗探测：是否优于当前最优（子节点为 minimizing）
+      const probe = alphaBeta(
+        workBoard, depth - 1,
+        rootAlpha, rootAlpha + NULL_WINDOW_EPS,
+        false, nextTurn, depth, turn, gameStage
+      );
+      if (probe.value > rootAlpha) {
+        // fail-high：紧窗口回搜拿精确分
+        alphaBetaResult = alphaBeta(workBoard, depth - 1, rootAlpha, Infinity, false, nextTurn, depth, turn, gameStage);
+      } else {
+        // fail-low：全窗回搜精确分（TT 已热，通常很快）
+        alphaBetaResult = alphaBeta(workBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+      }
+    }
+
+    unmakeMove(workBoard, item.from, item.to, captured);
+
     item.score = alphaBetaResult.value;
     item.moveSequence = [{ from: item.from, to: item.to }, ...alphaBetaResult.moveSequence];
+    if (item.score > rootAlpha) {
+      rootAlpha = item.score;
+    }
   }
 
   // 按净胜分排序；同分时胜局取短、负局取长
