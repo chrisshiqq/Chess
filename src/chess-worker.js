@@ -193,11 +193,13 @@ const getPositionValue = (piece, r, c) => {
 };
 
 // 主评估函数 - 详细评估棋盘局势
-const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid') => {
+// options.forSearchLeaf: 搜索叶节点评估，跳过终局 getValidMoves（无着已在父节点处理）
+const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', options = null) => {
     // 统计
     if (currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
+    const forSearchLeaf = !!(options && options.forSearchLeaf);
     
     // 第一步：获取当前游戏阶段
     //const phase = getGamePhase(board);
@@ -264,7 +266,7 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
     // 第二步：基于收集的棋子信息计算其他值，传递gameStage避免重复计算
     // 创建boardInfo并传递给calculateDerivedValues
     const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
-    calculateDerivedValues(board, piecesInfo, currentPlayer, depth, searchInitiator, gameStage, boardInfo);
+    calculateDerivedValues(board, piecesInfo, currentPlayer, depth, searchInitiator, gameStage, boardInfo, forSearchLeaf);
     
     // 第三步：计算总分（只计算剩余分数，基础分数已在棋盘遍历时计算）
     let redThreat = 0, redTactic = 0, redSafety = 0, redMobility = 0;
@@ -446,7 +448,7 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
 // 计算衍生值：威胁值、安全值、战术值、机动值
 // 修改：添加searchInitiator参数，传递给calculateThreatValues
 // 添加gameStage参数，避免在循环中重复调用getGamePhase
-const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', boardInfo = null) => {
+const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', boardInfo = null, forSearchLeaf = false) => {
     // 重置所有衍生值，除了机动值（已在收集棋子信息时计算）
     for (const info of piecesInfo) {
         info.threatValue = 0;
@@ -474,7 +476,8 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     calculateSafetyValues(piecesInfo, boardInfo);
     
     // 5. 计算游戏状态并保存到boardInfo
-    if (currentPlayer) {
+    // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
+    if (currentPlayer && !forSearchLeaf) {
         // 检查当前玩家是否有合法走法
         let hasMoves = false;
         for (const info of piecesInfo) {
@@ -507,8 +510,92 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     }
 };
 
+// 从已有 moves 补齐己方保护关系（moves 不含己方落点；炮仍走 getPieceTargets）
+const linkAllyGuards = (board, info, posByKey) => {
+    const piece = info.piece;
+    const { r, c } = info;
+    const isRed = piece.color === 'red';
+
+    const tryGuard = (tr, tc) => {
+        if (!isValidPos(tr, tc)) return;
+        const target = board[tr][tc];
+        if (!target || target.color !== piece.color || target.type === 'general') return;
+        const targetInfo = posByKey.get(tr * 9 + tc);
+        if (targetInfo && targetInfo !== info) {
+            info.guard.push(targetInfo);
+            targetInfo.guardedBy.push(info);
+        }
+    };
+
+    switch (piece.type) {
+        case 'general':
+            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                const nr = r + dr, nc = c + dc;
+                if (nc >= 3 && nc <= 5) {
+                    if (isRed && nr >= 0 && nr <= 2) tryGuard(nr, nc);
+                    else if (!isRed && nr >= 7 && nr <= 9) tryGuard(nr, nc);
+                }
+            });
+            break;
+        case 'advisor':
+            [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => {
+                const nr = r + dr, nc = c + dc;
+                if (nc >= 3 && nc <= 5) {
+                    if (isRed && nr >= 0 && nr <= 2) tryGuard(nr, nc);
+                    else if (!isRed && nr >= 7 && nr <= 9) tryGuard(nr, nc);
+                }
+            });
+            break;
+        case 'elephant':
+            [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dr, dc]) => {
+                const nr = r + dr, nc = c + dc;
+                const eyeR = r + dr / 2, eyeC = c + dc / 2;
+                if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
+                    if (isRed && nr <= 4) tryGuard(nr, nc);
+                    else if (!isRed && nr >= 5) tryGuard(nr, nc);
+                }
+            });
+            break;
+        case 'horse':
+            [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(([dr, dc]) => {
+                const nr = r + dr, nc = c + dc;
+                const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
+                const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+                if (isValidPos(legR, legC) && board[legR][legC] === null) {
+                    tryGuard(nr, nc);
+                }
+            });
+            break;
+        case 'chariot':
+            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                let nr = r + dr, nc = c + dc;
+                while (isValidPos(nr, nc)) {
+                    if (board[nr][nc] !== null) {
+                        tryGuard(nr, nc);
+                        break;
+                    }
+                    nr += dr; nc += dc;
+                }
+            });
+            break;
+        case 'soldier': {
+            const forward = isRed ? 1 : -1;
+            const crossedRiver = isRed ? r >= 5 : r <= 4;
+            tryGuard(r + forward, c);
+            if (crossedRiver) {
+                tryGuard(r, c - 1);
+                tryGuard(r, c + 1);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+};
+
 // 计算棋子关系（威胁者、被威胁者、保护者、被保护者）
 // 同时计算boardInfo：为棋盘每个位置登记控制者
+// 优先复用 info.moves，避免 getPieceTargets + getPieceControl 二次走子生成
 const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     // 初始化棋子关系数组
     for (const info of piecesInfo) {
@@ -523,37 +610,53 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     if (!boardInfo) {
         boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
     }
+
+    const posByKey = new Map();
+    for (const info of piecesInfo) {
+        posByKey.set(info.r * 9 + info.c, info);
+    }
     
     // 处理每个棋子的威胁和保护关系
     for (const info of piecesInfo) {
-        // 获取棋子的威胁目标和保护目标
-        const { threat, guard } = getPieceTargets(board, { r: info.r, c: info.c }, info.piece);
-        
-        // 处理威胁目标，同时记录双向威胁关系
-        for (const threatPos of threat) {
-            const targetInfo = piecesInfo.find(p => p.r === threatPos.r && p.c === threatPos.c);
-            if (targetInfo) {
-                // 记录威胁关系：info威胁targetInfo
-                info.threat.push(targetInfo);
-                // 同时记录反向关系：targetInfo被info威胁
-                targetInfo.threatenedBy.push(info);
+        const piece = info.piece;
+        const moves = info.moves;
+
+        if (piece.type === 'cannon' || !moves) {
+            // 炮的控制点语义特殊；无 moves 时回退原路径
+            const { threat, guard } = getPieceTargets(board, { r: info.r, c: info.c }, piece);
+            for (const threatPos of threat) {
+                const targetInfo = posByKey.get(threatPos.r * 9 + threatPos.c);
+                if (targetInfo) {
+                    info.threat.push(targetInfo);
+                    targetInfo.threatenedBy.push(info);
+                }
             }
-        }
-        
-        // 处理保护目标，同时记录双向保护关系
-        for (const guardPos of guard) {
-            const targetInfo = piecesInfo.find(p => p.r === guardPos.r && p.c === guardPos.c);
-            if (targetInfo && targetInfo !== info) {
-                // 记录保护关系：info保护targetInfo
-                info.guard.push(targetInfo);
-                // 同时记录反向关系：targetInfo被info保护
-                targetInfo.guardedBy.push(info);
+            for (const guardPos of guard) {
+                const targetInfo = posByKey.get(guardPos.r * 9 + guardPos.c);
+                if (targetInfo && targetInfo !== info) {
+                    info.guard.push(targetInfo);
+                    targetInfo.guardedBy.push(info);
+                }
             }
+            info.control = getPieceControl(board, { r: info.r, c: info.c }, piece);
+        } else {
+            // 非炮：威胁/控制直接从已有 moves 分类；保护单独补齐己方落点
+            for (const m of moves) {
+                const target = board[m.r][m.c];
+                if (!target) {
+                    info.control.push(m);
+                } else if (target.color !== piece.color) {
+                    const targetInfo = posByKey.get(m.r * 9 + m.c);
+                    if (targetInfo) {
+                        info.threat.push(targetInfo);
+                        targetInfo.threatenedBy.push(info);
+                    }
+                }
+            }
+            linkAllyGuards(board, info, posByKey);
         }
-        
-        // 计算并记录棋子的控制点
-        const control = getPieceControl(board, { r: info.r, c: info.c }, info.piece);
-        info.control = control;
+
+        const control = info.control;
         
         // 更新boardInfo：将当前棋子的完整信息添加到其控制点的控制者列表中
         control.forEach(pos => {
@@ -3660,9 +3763,9 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
     perfStats.nodesSearched[d]++;
 
-    // 叶节点：完整评估
+    // 叶节点：静态评估（跳过终局 getValidMoves）
     if (d === 0) {
-        const evalResult = evaluateBoard(b, false, searchInitiator, searchDepth, searchInitiator, gameStage);
+        const evalResult = evaluateBoard(b, false, searchInitiator, searchDepth, searchInitiator, gameStage, { forSearchLeaf: true });
         const opponent = searchInitiator === 'red' ? 'black' : 'red';
         const netScore = evalResult[searchInitiator].total - evalResult[opponent].total;
         return { value: netScore, moveSequence: [] };
