@@ -192,51 +192,46 @@ const getPositionValue = (piece, r, c) => {
     return table[rowIdx][c] || 0;
 };
 
-// 主评估函数 - 详细评估棋盘局势
-// options.forSearchLeaf: 搜索叶节点评估，跳过终局 getValidMoves（无着已在父节点处理）
+// 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
+// options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理），仍算完整形势
 const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', options = null) => {
     // 统计
     if (currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
-    
-    // 第一步：获取当前游戏阶段
-    //const phase = getGamePhase(board);
-    // 将游戏阶段转换为材料值计算所需的格式
-    //const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-    // 将游戏阶段转换为输出格式
-    //const outputPhase = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
+
     const outputPhase = gameStage;
 
-    // 第二步：遍历一次棋盘，收集所有棋子信息并计算基础分数
+    // 遍历棋盘：非炮当场生成着法；炮延迟到 calculatePieceRelations 一次射线填完 moves+关系
     let piecesInfo = [];
     let redMaterial = 0, redPosition = 0;
     let blackMaterial = 0, blackPosition = 0;
+    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const piece = board[r][c];
             if (!piece) continue;
             
-            // 收集棋子基本信息
             const materialValue = getMaterialValue(piece, gameStage);
             const positionValue = getPositionValue(piece, r, c);
             const allyGuards = [];
-            const moves = getPieceMoves(board, { r, c }, piece, allyGuards);
-            
-            // 立即处理moves，计算机动性（将processPieceMoves逻辑内联此处）
-            const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+            let moves = [];
             let mobilityValue = 0;
-            for (const move of moves) {
-                const target = board[move.r][move.c];
-                if (!target) {
-                    // 目标位置为空，计算机动性
-                    mobilityValue += baseMoveValue;
+
+            if (piece.type === 'cannon') {
+                // 炮：着法与关系在 fillCannonRelations 一次射线中完成
+                moves = [];
+            } else {
+                moves = getPieceMoves(board, { r, c }, piece, allyGuards);
+                for (const move of moves) {
+                    if (!board[move.r][move.c]) {
+                        mobilityValue += baseMoveValue;
+                    }
                 }
             }
             
-            // 立即累加基础分数，避免后续再次遍历
             if (piece.color === 'red') {
                 redMaterial += materialValue;
                 redPosition += positionValue;
@@ -253,20 +248,16 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
                 allyGuards,
                 materialValue,
                 positionValue,
-                // 初始化并设置计算好的机动值
                 threatValue: 0,
                 safetyValue: 0,
                 tacticValue: 0,
-                mobilityValue: mobilityValue,
-                // 添加威胁者和保护者数组
-                threat: [],    // 威胁当前棋子的敌方棋子列表
-                protect: []  // 保护当前棋子的己方棋子列表
+                mobilityValue,
+                threat: [],
+                protect: []
             });
         }
     }
     
-    // 第二步：基于收集的棋子信息计算其他值，传递gameStage避免重复计算
-    // 创建boardInfo并传递给calculateDerivedValues
     const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
     calculateDerivedValues(board, piecesInfo, currentPlayer, depth, searchInitiator, gameStage, boardInfo, forSearchLeaf);
     
@@ -426,76 +417,53 @@ const filterLegalMoves = (board, from, piece, pseudoMoves) => {
     return validMoves;
 };
 
-// 搜索信息准备：关系 + 威胁（一次）+ 当前方合法着法（一次，供着法生成与终局判定共用）
+// 搜索用着法准备（轻量）：只生成当前方合法着，不建关系图/威胁/机动性
+// 点棋关系仍走完整 evaluateBoard，不受影响
 const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = null, depth = 0) => {
     perfStats.prepareSearchInfoCount[currentPlayer]++;
-    
-    let piecesInfo = [];
+
+    const inCheck = isCheckRaw(board, currentPlayer);
+    const piecesInfo = [];
+    const legalMoveList = [];
+
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const piece = board[r][c];
-            if (!piece) continue;
-            
-            const materialValue = getMaterialValue(piece, gameStage);
-            const positionValue = getPositionValue(piece, r, c);
-            const allyGuards = [];
-            const moves = getPieceMoves(board, { r, c }, piece, allyGuards);
-            
-            const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
-            let mobilityValue = 0;
-            for (const move of moves) {
-                if (!board[move.r][move.c]) {
-                    mobilityValue += baseMoveValue;
-                }
-            }
-            
+            if (!piece || piece.color !== currentPlayer) continue;
+
+            const moves = getPieceMoves(board, { r, c }, piece);
+            const legalMoves = filterLegalMoves(board, { r, c }, piece, moves);
             piecesInfo.push({
                 piece,
-                r, c, moves, allyGuards,
-                legalMoves: null, // 仅当前行棋方填充
-                materialValue,
-                positionValue,
-                threatValue: 0,
-                safetyValue: 0,
-                tacticValue: 0,
-                mobilityValue,
-                threat: [],
-                protect: []
+                r,
+                c,
+                moves,
+                legalMoves
             });
+            for (let i = 0; i < legalMoves.length; i++) {
+                const to = legalMoves[i];
+                legalMoveList.push({ from: { r, c }, to, score: 0 });
+            }
         }
     }
-    
-    const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
-    calculatePieceRelations(board, piecesInfo, boardInfo);
 
-    // 威胁/捉子信息只算一次，供 sortMoves 使用（不再在 alphaBeta 里重算）
-    calculateThreatValues(
-        board, piecesInfo, currentPlayer, depth,
-        searchInitiator || currentPlayer, gameStage, boardInfo
-    );
-    
-    // 当前方合法着法只生成一次：兼作终局判定与着法列表
-    let hasMoves = false;
-    for (const info of piecesInfo) {
-        if (info.piece.color !== currentPlayer) continue;
-        info.legalMoves = filterLegalMoves(
-            board, { r: info.r, c: info.c }, info.piece, info.moves
-        );
-        if (info.legalMoves.length > 0) hasMoves = true;
-    }
-    
-    let gameState = { status: 'playing' };
-    if (!hasMoves) {
-        const inCheck = currentPlayer === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
+    // 轻量 boardInfo：仅被将标志，供排序/分支使用（无 90 格控制表）
+    const boardInfo = {
+        redIsInCheck: currentPlayer === 'red' ? inCheck : false,
+        blackIsInCheck: currentPlayer === 'black' ? inCheck : false,
+        gameState: null
+    };
+
+    if (legalMoveList.length === 0) {
         const opponent = currentPlayer === 'red' ? 'black' : 'red';
-        gameState = inCheck
+        boardInfo.gameState = inCheck
             ? { status: 'checkmate', winner: opponent }
             : { status: 'stalemate', winner: opponent };
+    } else {
+        boardInfo.gameState = { status: 'playing' };
     }
-    
-    boardInfo.gameState = gameState;
-    
-    return { piecesInfo, boardInfo };
+
+    return { piecesInfo, boardInfo, legalMoveList };
 };
 
 // 计算衍生值：威胁值、安全值、战术值、机动值
@@ -563,10 +531,15 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     }
 };
 
-// 炮：一次四向射线同时填充 threat / guard / control（对齐 getPieceTargets + getPieceControl）
+// 炮：一次四向射线同时填充 moves + threat / guard / control（避免 getPieceMoves 再扫一遍）
 const fillCannonRelations = (board, info, posByKey) => {
     const piece = info.piece;
     const { r, c } = info;
+    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+    info.moves = [];
+    info.control = [];
+    let mobilityValue = 0;
+
     for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
         let nr = r + dr, nc = c + dc;
         let screenFoundCount = 0;
@@ -580,13 +553,20 @@ const fillCannonRelations = (board, info, posByKey) => {
                         if (p.color !== piece.color) {
                             info.threat.push(targetInfo);
                             targetInfo.threatenedBy.push(info);
+                            info.moves.push({ r: nr, c: nc });
                         } else if (p.type !== 'general') {
                             info.guard.push(targetInfo);
                             targetInfo.guardedBy.push(info);
                         }
+                    } else if (p.color !== piece.color) {
+                        // 目标不在 piecesInfo 时仍保留可走格
+                        info.moves.push({ r: nr, c: nc });
                     }
                     break;
                 }
+            } else if (screenFoundCount === 0) {
+                info.moves.push({ r: nr, c: nc });
+                mobilityValue += baseMoveValue;
             } else if (screenFoundCount === 1) {
                 info.control.push({ r: nr, c: nc });
             }
@@ -594,6 +574,7 @@ const fillCannonRelations = (board, info, posByKey) => {
             nc += dc;
         }
     }
+    info.mobilityValue = mobilityValue;
 };
 
 // 计算棋子关系（威胁者、被威胁者、保护者、被保护者）
@@ -669,23 +650,17 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
 
         const control = info.control;
         
-        // 更新boardInfo：将当前棋子的完整信息添加到其控制点的控制者列表中
-        control.forEach(pos => {
-            // 存储完整的控制者信息：位置、颜色和棋子类型
-            boardInfo[pos.r][pos.c].push({
-                r: info.r,
-                c: info.c,
-                color: info.piece.color,
-                type: info.piece.type
-            });
-        });
+        // 控制者列表直接引用 piecesInfo 条目，避免每格 new {r,c,color,type}
+        for (let i = 0; i < control.length; i++) {
+            const pos = control[i];
+            boardInfo[pos.r][pos.c].push(info);
+        }
     }
     
     // 预计算将军状态
     let redIsInCheck = false;
     let blackIsInCheck = false;
     
-    // 查找将/帅位置
     let redGeneralInfo = null;
     let blackGeneralInfo = null;
     for (const info of piecesInfo) {
@@ -698,9 +673,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         }
     }
     
-    // 检查红将是否被将军
     if (redGeneralInfo) {
-        // 检查敌方棋子是否直接威胁红将
         for (const threatener of redGeneralInfo.threatenedBy) {
             if (threatener.piece.color === 'black') {
                 redIsInCheck = true;
@@ -709,9 +682,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         }
     }
     
-    // 检查黑将是否被将军
     if (blackGeneralInfo) {
-        // 检查敌方棋子是否直接威胁黑将
         for (const threatener of blackGeneralInfo.threatenedBy) {
             if (threatener.piece.color === 'red') {
                 blackIsInCheck = true;
@@ -720,40 +691,24 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         }
     }
     
-    // 检查飞将情况
-    if (redGeneralInfo && blackGeneralInfo) {
-        // 将/帅是否在同一列
-        if (redGeneralInfo.c === blackGeneralInfo.c) {
-            // 检查中间是否有其他棋子
-            let hasPieceBetween = false;
-            const startR = Math.min(redGeneralInfo.r, blackGeneralInfo.r) + 1;
-            const endR = Math.max(redGeneralInfo.r, blackGeneralInfo.r) - 1;
-            for (let r = startR; r <= endR; r++) {
-                if (board[r][redGeneralInfo.c]) {
-                    hasPieceBetween = true;
-                    break;
-                }
+    if (redGeneralInfo && blackGeneralInfo && redGeneralInfo.c === blackGeneralInfo.c) {
+        let hasPieceBetween = false;
+        const startR = Math.min(redGeneralInfo.r, blackGeneralInfo.r) + 1;
+        const endR = Math.max(redGeneralInfo.r, blackGeneralInfo.r) - 1;
+        for (let r = startR; r <= endR; r++) {
+            if (board[r][redGeneralInfo.c]) {
+                hasPieceBetween = true;
+                break;
             }
-            
-            if (!hasPieceBetween) {
-                // 飞将情况，红方和黑方都被将军
-                redIsInCheck = true;
-                blackIsInCheck = true;
-            }
+        }
+        if (!hasPieceBetween) {
+            redIsInCheck = true;
+            blackIsInCheck = true;
         }
     }
     
-    // 将将军状态存储到boardInfo中
     boardInfo.redIsInCheck = redIsInCheck;
     boardInfo.blackIsInCheck = blackIsInCheck;
-    
-    // 将将军状态也存储到每个棋子信息中，供后续AI搜索使用
-    piecesInfo.forEach(info => {
-        info.boardInfo = boardInfo;
-        // 存储将军状态到piecesInfo中，方便访问
-        info.redIsInCheck = redIsInCheck;
-        info.blackIsInCheck = blackIsInCheck;
-    });
 };
 
 // 着法排序函数：根据优先级排序着法
@@ -806,29 +761,21 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
             priority = -1;
             score = 1000000;
         } else if (currentIsInCheck) {
-            // 被将：合法着法均已解除将军，按应将手段排序
+            // 被将：合法着法均已解除将军；优先吃将子，其次吃子/动将（不探测反将）
             const capturesChecker = targetPiece && checkerKeys && checkerKeys.has(`${to.r},${to.c}`);
             if (capturesChecker) {
                 priority = 0;
                 score = 10000 + targetPieceValue;
+            } else if (targetPiece) {
+                // MVV-LVA：贵子优先吃、便宜子优先去吃
+                priority = 2;
+                score = targetPieceValue * 16 - pieceValue;
+            } else if (piece.type === 'general') {
+                priority = 3;
+                score = pieceValue;
             } else {
-                const enemyColor = currentPlayer === 'red' ? 'black' : 'red';
-                const captured = makeMove(board, from, to);
-                const givesCheck = isCheck(board, enemyColor);
-                unmakeMove(board, from, to, captured);
-                if (givesCheck) {
-                    priority = 1;
-                    score = 5000 + targetPieceValue;
-                } else if (targetPiece) {
-                    priority = 2;
-                    score = targetPieceValue;
-                } else if (piece.type === 'general') {
-                    priority = 3;
-                    score = pieceValue;
-                } else {
-                    priority = 4;
-                    score = 0;
-                }
+                priority = 4;
+                score = 0;
             }
         } else if (boardInfo && boardInfo.threatenedPieces && boardInfo.threatenedPieces.length > 0) {
             const isThreatenedPiece = boardInfo.threatenedPieces.some(p => p.r === from.r && p.c === from.c);
@@ -856,8 +803,9 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
                 score = 0;
             }
         } else if (targetPiece) {
+            // 无威胁表时（搜索轻量路径）：MVV-LVA 吃子排序
             priority = 3;
-            score = targetPieceValue;
+            score = targetPieceValue * 16 - pieceValue;
         } else {
             priority = 4;
             score = 0;
@@ -958,12 +906,16 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
     let hasAllyController = false;
     let hasEnemyController = false;
 
+    // 控制者可能是 piecesInfo 引用 {piece,r,c} 或旧结构 {color,type,r,c}
+    const controllerColor = (controller) =>
+        controller.piece ? controller.piece.color : controller.color;
+
     for (const controller of controllers) {
         // 排除正在移动的棋子本身（走后它不再从原位控制目标）
         if (movingPiece && controller.r === from.r && controller.c === from.c) {
             continue;
         }
-        if (controller.color === currentPlayer) {
+        if (controllerColor(controller) === currentPlayer) {
             hasAllyController = true;
         } else {
             hasEnemyController = true;
@@ -982,7 +934,7 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
         // 若有己方继续保护，粗略认为可能再吃回最低价值的敌方保护者
         if (hasAllyController) {
             const enemyGuardValues = controllers
-                .filter(c => c.color !== currentPlayer && !(c.r === from.r && c.c === from.c))
+                .filter(c => controllerColor(c) !== currentPlayer && !(c.r === from.r && c.c === from.c))
                 .map(c => {
                     const p = board[c.r][c.c];
                     return p ? getMaterialValue(p, gameStage) : 0;
@@ -1070,10 +1022,11 @@ const calculateSafetyValues = (piecesInfo, boardInfo) => {
             const { r, c } = controlPos;
             const positionControllers = boardInfo[r][c];
             
-            // 检查是否有敌方棋子控制该位置
-            const hasEnemyControl = positionControllers.some(controller => 
-                controller.color === enemyColor
-            );
+            // 检查是否有敌方棋子控制该位置（兼容 piecesInfo 引用与旧 {color} 结构）
+            const hasEnemyControl = positionControllers.some(controller => {
+                const color = controller.piece ? controller.piece.color : controller.color;
+                return color === enemyColor;
+            });
             
             // 如果位置有敌方棋子控制，扣50的安全值
             if (hasEnemyControl) {
@@ -1083,6 +1036,10 @@ const calculateSafetyValues = (piecesInfo, boardInfo) => {
     }
 };
 
+
+// SEE 排序复用缓冲，降低叶评估 GC
+const seeAttackerScratch = [];
+const seeGuardScratch = [];
 
 // 计算威胁值（基于完整的威胁关系）
 // 修改：威胁值应该从搜索发起方的角度计算，而不是从当前行棋方角度
@@ -1142,13 +1099,17 @@ const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchIn
             let sseScore = 0;
             
             if (hasGuard) {
-                // 复用已有 materialValue，避免 map + 重复 getMaterialValue
-                const attackers = threatenedPiece.threatenedBy.slice().sort(
-                    (a, b) => a.materialValue - b.materialValue
-                );
-                const guards = threatenedPiece.guardedBy.slice().sort(
-                    (a, b) => a.materialValue - b.materialValue
-                );
+                // 复用 scratch，避免每次 slice+sort 分配
+                const attackers = seeAttackerScratch;
+                const guards = seeGuardScratch;
+                attackers.length = 0;
+                guards.length = 0;
+                const rawAttackers = threatenedPiece.threatenedBy;
+                const rawGuards = threatenedPiece.guardedBy;
+                for (let i = 0; i < rawAttackers.length; i++) attackers.push(rawAttackers[i]);
+                for (let i = 0; i < rawGuards.length; i++) guards.push(rawGuards[i]);
+                attackers.sort((a, b) => a.materialValue - b.materialValue);
+                guards.sort((a, b) => a.materialValue - b.materialValue);
                 
                 let exchangeScore = 0;
                 let attackerIndex = 0;
@@ -1530,6 +1491,22 @@ class ZobristHasher {
                 }
             }
         }
+
+        // 叶评估缓存键：boardHash ^ initiatorKey ^ stageKey
+        this.evalInitiatorKeys = {
+            red: Math.floor(seededRandom() * MAX_SAFE),
+            black: Math.floor(seededRandom() * MAX_SAFE)
+        };
+        this.evalStageKeys = {
+            early: Math.floor(seededRandom() * MAX_SAFE),
+            mid: Math.floor(seededRandom() * MAX_SAFE),
+            late: Math.floor(seededRandom() * MAX_SAFE)
+        };
+    }
+
+    evalCacheKey(board, searchInitiator, gameStage) {
+        const stageKey = this.evalStageKeys[gameStage] || this.evalStageKeys.mid;
+        return this.hash(board) ^ this.evalInitiatorKeys[searchInitiator] ^ stageKey;
     }
 
     /**
@@ -3409,6 +3386,17 @@ const logPerfStats = (currentPlayer) => {
 
 const transpositionTable = new TranspositionTable();
 
+// 叶评估缓存（完整形势分）；每次 getBestMove 清空
+const EVAL_CACHE_MAX = Math.pow(2, 18);
+const evalCache = new Map();
+const clearEvalCache = () => {
+    evalCache.clear();
+};
+
+// 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
+const SEARCH_ENABLE_NMP = false;
+const SEARCH_ENABLE_LMR = false;
+
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
 let historyTable = null;
@@ -3514,8 +3502,9 @@ if (typeof self !== 'undefined') {
             const piecesInfo = boardEvaluation.piecesInfo;
             const boardInfo = boardEvaluation.boardInfo;
             
-            // Get the current position's controllers from boardInfo
-            const controllers = boardInfo[prPos.r][prPos.c] || [];
+            // boardInfo 格内可能是 piecesInfo 引用，统一映射为 {r,c} 供 UI 使用
+            const rawControllers = boardInfo[prPos.r][prPos.c] || [];
+            const controllers = rawControllers.map((ctrl) => ({ r: ctrl.r, c: ctrl.c }));
             
             let relations = {
                 threat: [], 
@@ -3523,7 +3512,7 @@ if (typeof self !== 'undefined') {
                 guard: [], 
                 guardedBy: [], 
                 control: [],
-                controllers: controllers // 添加控制者信息，现在是位置数组 [{r,c}] 
+                controllers
             };
             
             // 如果点击的是棋子，返回该棋子的关系信息
@@ -3537,7 +3526,7 @@ if (typeof self !== 'undefined') {
                     const threatenedBy = currentPieceInfo.threatenedBy.map(threatenedByPiece => ({ r: threatenedByPiece.r, c: threatenedByPiece.c }));
                     const guard = currentPieceInfo.guard.map(guardPiece => ({ r: guardPiece.r, c: guardPiece.c }));
                     const guardedBy = currentPieceInfo.guardedBy.map(guardedByPiece => ({ r: guardedByPiece.r, c: guardedByPiece.c }));
-                    const control = currentPieceInfo.control.map(controlPos => ({ r: controlPos.r, c: controlPos.c }));
+                    const control = (currentPieceInfo.control || []).map(controlPos => ({ r: controlPos.r, c: controlPos.c }));
                     
                     relations = {
                         threat, 
@@ -3721,8 +3710,149 @@ if (typeof self !== 'undefined') {
     };
 }
 
-// alphaBeta：评估始终从 searchInitiator 角度；启用 TT + killer/history；原地 make/unmake
-const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid') => {
+// 空着剪枝：有进攻子力时才允许（避免将/士/象残局逼着误剪）
+const canDoNullMove = (board, color) => {
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const p = board[r][c];
+            if (!p || p.color !== color) continue;
+            if (p.type === 'chariot' || p.type === 'horse' || p.type === 'cannon' || p.type === 'soldier') {
+                return true;
+            }
+        }
+    }
+    return false;
+};
+
+// 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
+const staticSearchEval = (board, searchInitiator, gameStage) => {
+    const cacheKey = zobristHasher.evalCacheKey(board, searchInitiator, gameStage);
+    if (evalCache.has(cacheKey)) {
+        return evalCache.get(cacheKey);
+    }
+    const evalResult = evaluateBoard(board, false, searchInitiator, 0, searchInitiator, gameStage, { forSearchLeaf: true });
+    const opponent = searchInitiator === 'red' ? 'black' : 'red';
+    const net = evalResult[searchInitiator].total - evalResult[opponent].total;
+    if (evalCache.size >= EVAL_CACHE_MAX) {
+        // 简单淘汰最早写入的一批，避免 Map 无限涨
+        let drop = 0;
+        for (const k of evalCache.keys()) {
+            evalCache.delete(k);
+            if (++drop >= 4096) break;
+        }
+    }
+    evalCache.set(cacheKey, net);
+    return net;
+};
+
+// 生成当前方合法吃子着（供静默搜索）
+const generateLegalCaptures = (board, currentPlayer) => {
+    const captures = [];
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const piece = board[r][c];
+            if (!piece || piece.color !== currentPlayer) continue;
+            const pseudo = getPieceMoves(board, { r, c }, piece);
+            const legal = filterLegalMoves(board, { r, c }, piece, pseudo);
+            for (let i = 0; i < legal.length; i++) {
+                const to = legal[i];
+                if (board[to.r][to.c]) {
+                    captures.push({ from: { r, c }, to });
+                }
+            }
+        }
+    }
+    return captures;
+};
+
+// 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
+const quiescence = (
+    b, alpha, beta, maximizing, currentPlayer,
+    searchInitiator, gameStage, qsDepth
+) => {
+    const standPat = staticSearchEval(b, searchInitiator, gameStage);
+
+    if (qsDepth <= 0) {
+        return { value: standPat, moveSequence: [] };
+    }
+
+    if (maximizing) {
+        if (standPat >= beta) {
+            return { value: standPat, moveSequence: [] };
+        }
+        if (standPat > alpha) {
+            alpha = standPat;
+        }
+    } else {
+        if (standPat <= alpha) {
+            return { value: standPat, moveSequence: [] };
+        }
+        if (standPat < beta) {
+            beta = standPat;
+        }
+    }
+
+    let captures = generateLegalCaptures(b, currentPlayer);
+    if (captures.length === 0) {
+        return { value: standPat, moveSequence: [] };
+    }
+
+    // MVV-LVA：先试吃大子
+    captures.sort((a, bMove) => {
+        const scoreA =
+            getMaterialValue(b[a.to.r][a.to.c], gameStage) * 16 -
+            getMaterialValue(b[a.from.r][a.from.c], gameStage);
+        const scoreB =
+            getMaterialValue(b[bMove.to.r][bMove.to.c], gameStage) * 16 -
+            getMaterialValue(b[bMove.from.r][bMove.from.c], gameStage);
+        return scoreB - scoreA;
+    });
+
+    let bestEval = standPat;
+    let bestMoveSequence = [];
+
+    for (let i = 0; i < captures.length; i++) {
+        const move = captures[i];
+        const captured = makeMove(b, move.from, move.to);
+        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+        const nextMaximizing = nextPlayer === searchInitiator;
+        const result = quiescence(
+            b, alpha, beta, nextMaximizing, nextPlayer,
+            searchInitiator, gameStage, qsDepth - 1
+        );
+        unmakeMove(b, move.from, move.to, captured);
+
+        if (maximizing) {
+            if (result.value > bestEval) {
+                bestEval = result.value;
+                bestMoveSequence = [move, ...(result.moveSequence || [])];
+            }
+            if (result.value > alpha) {
+                alpha = result.value;
+            }
+        } else {
+            if (result.value < bestEval) {
+                bestEval = result.value;
+                bestMoveSequence = [move, ...(result.moveSequence || [])];
+            }
+            if (result.value < beta) {
+                beta = result.value;
+            }
+        }
+        if (beta <= alpha) {
+            break;
+        }
+    }
+
+    return { value: bestEval, moveSequence: bestMoveSequence };
+};
+
+// alphaBeta：评估始终从 searchInitiator 角度；TT + killer/history + 空着剪枝 + LMR + QS
+const alphaBeta = (
+    b, d, alpha, beta, maximizing, currentPlayer,
+    searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid',
+    allowNull = true
+) => {
     const originalAlpha = alpha;
     const originalBeta = beta;
 
@@ -3730,12 +3860,12 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
     perfStats.nodesSearched[d]++;
 
-    // 叶节点：静态评估（跳过终局 getValidMoves）
+    // 叶节点：完整形势评估 + 吃子静默搜索（QS≤3）
     if (d === 0) {
-        const evalResult = evaluateBoard(b, false, searchInitiator, searchDepth, searchInitiator, gameStage, { forSearchLeaf: true });
-        const opponent = searchInitiator === 'red' ? 'black' : 'red';
-        const netScore = evalResult[searchInitiator].total - evalResult[opponent].total;
-        return { value: netScore, moveSequence: [] };
+        return quiescence(
+            b, alpha, beta, maximizing, currentPlayer,
+            searchInitiator, gameStage, 3
+        );
     }
 
     // 置换表探测（key 含行棋方，避免同形不同走方冲突）
@@ -3763,47 +3893,12 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
     const searchInfo = prepareSearchInfo(b, currentPlayer, gameStage, searchInitiator, d);
     const abPiecesInfo = searchInfo.piecesInfo;
     const abBoardInfo = searchInfo.boardInfo;
-
-    if (abBoardInfo.gameState && abBoardInfo.gameState.status !== 'playing') {
-        const gameState = abBoardInfo.gameState;
-        if (gameState.status === 'checkmate' || gameState.status === 'stalemate') {
-            const isInitiatorWinner = gameState.winner === searchInitiator;
-            const baseScore = isInitiatorWinner ? 100000 : -100000;
-            const stepsFromRoot = searchDepth - d;
-            const adjustedScore = baseScore + (isInitiatorWinner ? d : stepsFromRoot);
-            return { value: adjustedScore, moveSequence: [] };
-        }
-        return { value: 0, moveSequence: [] };
-    }
-
     const currentPlayerColor = currentPlayer;
-    const abInCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
-                      (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
+    const inCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
+                    (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
 
-    // 复用 prepareSearchInfo 已算好的 legalMoves，不再二次 getValidMoves
-    let moves = [];
-    for (const info of abPiecesInfo) {
-        if (info.piece.color !== currentPlayerColor || !info.legalMoves) continue;
-        const piece = info.piece;
-        const from = { r: info.r, c: info.c };
-        for (const to of info.legalMoves) {
-            if (abInCheck || isPositionAcceptable(b, from, to, currentPlayerColor, abBoardInfo, abPiecesInfo, piece, gameStage)) {
-                moves.push({ from: { r: info.r, c: info.c }, to, score: 0 });
-            }
-        }
-    }
-
-    // 送吃过滤后若无着，回退为全部合法着（避免把仍可走的局面当成终局）
-    if (moves.length === 0) {
-        for (const info of abPiecesInfo) {
-            if (info.piece.color !== currentPlayerColor || !info.legalMoves) continue;
-            for (const to of info.legalMoves) {
-                moves.push({ from: { r: info.r, c: info.c }, to, score: 0 });
-            }
-        }
-    }
-
-    if (moves.length === 0) {
+    // 终局：合法着为空 + isCheckRaw（prepareSearchInfo 已写入 gameState）
+    if (!searchInfo.legalMoveList || searchInfo.legalMoveList.length === 0) {
         const gameState = abBoardInfo.gameState;
         if (gameState && (gameState.status === 'checkmate' || gameState.status === 'stalemate')) {
             const isInitiatorWinner = gameState.winner === searchInitiator;
@@ -3811,13 +3906,45 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
             const stepsFromRoot = searchDepth - d;
             return { value: baseScore + (isInitiatorWinner ? d : stepsFromRoot), moveSequence: [] };
         }
-        return { value: 0, moveSequence: [] };
+        const mateInCheck = isCheckRaw(b, currentPlayerColor);
+        const isInitiatorWinner = currentPlayerColor !== searchInitiator;
+        const baseScore = isInitiatorWinner ? 100000 : -100000;
+        return {
+            value: baseScore + (isInitiatorWinner ? d : (searchDepth - d)),
+            moveSequence: [],
+            terminal: mateInCheck ? 'checkmate' : 'stalemate'
+        };
     }
+
+    // 空着剪枝：仅 maximizing；完整评估下保守启用
+    if (
+        SEARCH_ENABLE_NMP &&
+        allowNull &&
+        maximizing &&
+        d >= 3 &&
+        !inCheck &&
+        canDoNullMove(b, currentPlayerColor)
+    ) {
+        const nullR = d >= 6 ? 3 : 2;
+        const nullDepth = d - 1 - nullR;
+        if (nullDepth >= 0) {
+            const nullPlayer = currentPlayerColor === 'red' ? 'black' : 'red';
+            const nullMaximizing = nullPlayer === searchInitiator;
+            const nullResult = alphaBeta(
+                b, nullDepth, beta - 1e-6, beta, nullMaximizing, nullPlayer,
+                searchDepth, searchInitiator, gameStage, false
+            );
+            if (nullResult.value >= beta) {
+                return { value: nullResult.value, moveSequence: [] };
+            }
+        }
+    }
+
+    let moves = searchInfo.legalMoveList;
 
     if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
     perfStats.movesGenerated[d] += moves.length;
 
-    // calculateThreatValues 已在 prepareSearchInfo 中完成
     const killersAtDepth = (killerMoves[d] || [null, null]);
     moves = sortMoves(moves, b, currentPlayerColor, abPiecesInfo, gameStage, abBoardInfo, {
         ttMove,
@@ -3832,53 +3959,77 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
         transpositionTable.store(ttKey, d, value, flag, bestMove, moveSequence);
     };
 
-    if (maximizing) {
-        let maxEval = -Infinity;
-        let bestMove = null;
-        let bestMoveSequence = [];
-        for (const move of moves) {
-            const isCapture = !!b[move.to.r][move.to.c];
-            const captured = makeMove(b, move.from, move.to);
-            const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-            const nextMaximizing = nextPlayer === searchInitiator;
-            const result = alphaBeta(b, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
-            unmakeMove(b, move.from, move.to, captured);
-            if (result.value > maxEval) {
-                maxEval = result.value;
+    let bestEval = maximizing ? -Infinity : Infinity;
+    let bestMove = null;
+    let bestMoveSequence = [];
+
+    for (let moveIndex = 0; moveIndex < moves.length; moveIndex++) {
+        const move = moves[moveIndex];
+        const isCapture = !!b[move.to.r][move.to.c];
+        const isTTMove = ttMove && isSameMove(move, ttMove);
+        const isKiller =
+            isSameMove(move, killersAtDepth[0]) ||
+            isSameMove(move, killersAtDepth[1]);
+
+        // LMR：靠后的安静着法降深 1（完整评估下保守）
+        let reduction = 0;
+        if (
+            SEARCH_ENABLE_LMR &&
+            d >= 4 &&
+            moveIndex >= 4 &&
+            !inCheck &&
+            !isCapture &&
+            !isTTMove &&
+            !isKiller
+        ) {
+            reduction = 1;
+        }
+
+        const captured = makeMove(b, move.from, move.to);
+        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+        const nextMaximizing = nextPlayer === searchInitiator;
+
+        let result;
+        if (reduction > 0) {
+            const reducedDepth = Math.max(0, d - 1 - reduction);
+            result = alphaBeta(
+                b, reducedDepth, alpha, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, true
+            );
+            const needResearch = maximizing
+                ? result.value > alpha
+                : result.value < beta;
+            if (needResearch) {
+                result = alphaBeta(
+                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, true
+                );
+            }
+        } else {
+            result = alphaBeta(
+                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, true
+            );
+        }
+
+        unmakeMove(b, move.from, move.to, captured);
+
+        if (maximizing) {
+            if (result.value > bestEval) {
+                bestEval = result.value;
                 bestMove = move;
                 bestMoveSequence = [move, ...result.moveSequence];
             }
             alpha = Math.max(alpha, result.value);
-            if (beta <= alpha) {
-                if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
-                perfStats.cutoffs[d]++;
-                if (!isCapture) {
-                    storeKillerMove(d, move);
-                    addHistoryScore(move, d);
-                }
-                break;
+        } else {
+            if (result.value < bestEval) {
+                bestEval = result.value;
+                bestMove = move;
+                bestMoveSequence = [move, ...result.moveSequence];
             }
+            beta = Math.min(beta, result.value);
         }
-        storeTT(maxEval, bestMove, bestMoveSequence);
-        return { value: maxEval, moveSequence: bestMoveSequence };
-    }
 
-    let minEval = Infinity;
-    let bestMove = null;
-    let bestMoveSequence = [];
-    for (const move of moves) {
-        const isCapture = !!b[move.to.r][move.to.c];
-        const captured = makeMove(b, move.from, move.to);
-        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        const nextMaximizing = nextPlayer === searchInitiator;
-        const result = alphaBeta(b, d - 1, alpha, beta, nextMaximizing, nextPlayer, searchDepth, searchInitiator, gameStage);
-        unmakeMove(b, move.from, move.to, captured);
-        if (result.value < minEval) {
-            minEval = result.value;
-            bestMove = move;
-            bestMoveSequence = [move, ...result.moveSequence];
-        }
-        beta = Math.min(beta, result.value);
         if (beta <= alpha) {
             if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
             perfStats.cutoffs[d]++;
@@ -3889,8 +4040,9 @@ const alphaBeta = (b, d, alpha, beta, maximizing, currentPlayer, searchDepth = 0
             break;
         }
     }
-    storeTT(minEval, bestMove, bestMoveSequence);
-    return { value: minEval, moveSequence: bestMoveSequence };
+
+    storeTT(bestEval, bestMove, bestMoveSequence);
+    return { value: bestEval, moveSequence: bestMoveSequence };
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
@@ -3920,12 +4072,14 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
     }
   }
 
-  // 根节点搜索：PVS + 精确分全窗回搜；TT / killer / history
+  // 根节点：迭代加深 + PVS；TT/killer/history 跨深度保留（仅开局清空一次）
   resetPerfStats();
   const startTime = Date.now();
   transpositionTable.resetStats();
   transpositionTable.clear();
-  resetSearchHeuristics(depth);
+  clearEvalCache();
+  const maxDepth = Math.max(1, depth | 0);
+  resetSearchHeuristics(maxDepth);
   syncGeneralPosCache(board);
 
   const phase = getGamePhase(board);
@@ -3935,7 +4089,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
   const rootPiecesInfo = rootEvalResult.piecesInfo;
   const rootBoardInfo = rootEvalResult.boardInfo;
 
-  // 收集根节点走法；未被将时过滤送吃，被将时保留全部合法应将着法
+  // 收集根节点走法（只做一次）；未被将时过滤送吃
   let rootMoves = [];
   const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
                       (turn === 'black' && rootBoardInfo.blackIsInCheck);
@@ -3948,88 +4102,156 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
         validDestinations.forEach(to => {
           const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
           if (isAcceptable) {
-            rootMoves.push({ from: { r, c }, to, score: 0 });
+            rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
           }
         });
       }
     }
   }
 
-  rootMoves = sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo, {
-    ttMove: null,
-    killers: killerMoves[depth] || [null, null]
-  });
-
-  if (enableTimeLimit && Date.now() - startTime > timeLimit) {
-    console.log(`Search stopped before depth ${depth} due to time limit`);
+  if (rootMoves.length === 0) {
+    return {
+      bestMove: null,
+      secondBestMove: null,
+      moveSequence: [],
+      secondMoveSequence: [],
+      bestMoveScore: 0,
+      secondBestMoveScore: 0,
+      allMovesWithScores: []
+    };
   }
-  console.log(`Starting depth ${depth} search | turn: ${turn}, maxDepth: ${depth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`);
 
-  // 根节点 PVS：第 1 着全窗；后续零窗探测
-  // exactRootScores：Analysis 时 fail-low 也全窗回搜拿精确分；对弈时跳过（不影响最优着）
-  // 使用工作副本 + make/unmake，避免污染调用方棋盘
-  const workBoard = board.map(row => [...row]);
+  const sortRootMovesByScore = (moves) => {
+    moves.sort((a, b) => {
+      const scoreDiff = b.score - a.score;
+      if (Math.abs(scoreDiff) < 1e-6) {
+        if (a.score > 0) {
+          return (a.moveSequence?.length || 0) - (b.moveSequence?.length || 0);
+        }
+        if (a.score < 0) {
+          return (b.moveSequence?.length || 0) - (a.moveSequence?.length || 0);
+        }
+        return 0;
+      }
+      return scoreDiff;
+    });
+  };
+
+  const promoteRootMove = (moves, preferred) => {
+    if (!preferred) return;
+    const idx = moves.findIndex((m) => isSameMove(m, preferred));
+    if (idx > 0) {
+      const [hit] = moves.splice(idx, 1);
+      moves.unshift(hit);
+    }
+  };
+
+  const workBoard = board.map((row) => [...row]);
   const NULL_WINDOW_EPS = 1e-6;
-  let rootAlpha = -Infinity;
   const nextTurn = turn === 'red' ? 'black' : 'red';
+  const rootTTKey = `${zobristHasher.hash(board)}:${turn}`;
 
-  for (let i = 0; i < rootMoves.length; i++) {
-    const item = rootMoves[i];
-    const captured = makeMove(workBoard, item.from, item.to);
+  console.log(
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+  );
 
-    let alphaBetaResult;
-    if (i === 0 || rootAlpha === -Infinity) {
-      alphaBetaResult = alphaBeta(workBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
-    } else {
-      // 零窗探测：是否优于当前最优（子节点为 minimizing）
-      const probe = alphaBeta(
-        workBoard, depth - 1,
-        rootAlpha, rootAlpha + NULL_WINDOW_EPS,
-        false, nextTurn, depth, turn, gameStage
-      );
-      if (probe.value > rootAlpha) {
-        // fail-high：紧窗口回搜拿精确分（可能成为新最优）
-        alphaBetaResult = alphaBeta(workBoard, depth - 1, rootAlpha, Infinity, false, nextTurn, depth, turn, gameStage);
-      } else if (exactRootScores) {
-        // Analysis：fail-low 仍全窗回搜，保证所有根着法精确分
-        alphaBetaResult = alphaBeta(workBoard, depth - 1, -Infinity, Infinity, false, nextTurn, depth, turn, gameStage);
+  let completedDepth = 0;
+
+  for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
+    if (enableTimeLimit && completedDepth > 0 && Date.now() - startTime > timeLimit) {
+      console.log(`ID stopped before depth ${currentDepth} due to time limit (last completed=${completedDepth})`);
+      break;
+    }
+
+    // 浅层最佳着 + TT 着排到最前，供本层 PVS 第一着全窗使用
+    const ttEntry = transpositionTable.retrieve(rootTTKey);
+    const ttMove = ttEntry && ttEntry.bestMove ? ttEntry.bestMove : null;
+    const prevBest = rootMoves[0];
+    sortMoves(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo, {
+      ttMove,
+      killers: killerMoves[Math.max(0, currentDepth - 1)] || [null, null]
+    });
+    // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
+    promoteRootMove(rootMoves, ttMove);
+    promoteRootMove(rootMoves, prevBest);
+
+    const useExactRoot = exactRootScores && currentDepth === maxDepth;
+    let rootAlpha = -Infinity;
+
+    for (let i = 0; i < rootMoves.length; i++) {
+      const item = rootMoves[i];
+      const captured = makeMove(workBoard, item.from, item.to);
+
+      let alphaBetaResult;
+      let scoreIsExact = true;
+      if (i === 0 || rootAlpha === -Infinity) {
+        alphaBetaResult = alphaBeta(
+          workBoard, currentDepth - 1, -Infinity, Infinity,
+          false, nextTurn, currentDepth, turn, gameStage
+        );
       } else {
-        // 对弈：无需精确分，探测上界即可
-        alphaBetaResult = probe;
+        const probe = alphaBeta(
+          workBoard, currentDepth - 1,
+          rootAlpha, rootAlpha + NULL_WINDOW_EPS,
+          false, nextTurn, currentDepth, turn, gameStage
+        );
+        if (probe.value > rootAlpha) {
+          alphaBetaResult = alphaBeta(
+            workBoard, currentDepth - 1, rootAlpha, Infinity,
+            false, nextTurn, currentDepth, turn, gameStage
+          );
+        } else if (useExactRoot) {
+          alphaBetaResult = alphaBeta(
+            workBoard, currentDepth - 1, -Infinity, Infinity,
+            false, nextTurn, currentDepth, turn, gameStage
+          );
+        } else {
+          // fail-low：探测分只是上界，不能当精确分写入（否则 ID 下层排序被污染，易反复走炮）
+          alphaBetaResult = probe;
+          scoreIsExact = false;
+        }
+      }
+
+      unmakeMove(workBoard, item.from, item.to, captured);
+
+      if (scoreIsExact) {
+        item.score = alphaBetaResult.value;
+        item.moveSequence = [{ from: item.from, to: item.to }, ...(alphaBetaResult.moveSequence || [])];
+        if (item.score > rootAlpha) {
+          rootAlpha = item.score;
+        }
+      } else if (item.score > rootAlpha) {
+        // 保留上一层分数；若仍高于当前 α（异常），略降以免挤掉真最优
+        item.score = rootAlpha - 1e-3;
       }
     }
 
-    unmakeMove(workBoard, item.from, item.to, captured);
+    sortRootMovesByScore(rootMoves);
+    completedDepth = currentDepth;
 
-    item.score = alphaBetaResult.value;
-    item.moveSequence = [{ from: item.from, to: item.to }, ...alphaBetaResult.moveSequence];
-    if (item.score > rootAlpha) {
-      rootAlpha = item.score;
-    }
+    // 把本层最佳着写入 TT，供更深一层根排序
+    transpositionTable.store(
+      rootTTKey,
+      currentDepth,
+      rootMoves[0].score,
+      'exact',
+      rootMoves[0],
+      rootMoves[0].moveSequence || []
+    );
+
+    console.log(
+      `ID depth ${currentDepth}/${maxDepth} done | best=${JSON.stringify(rootMoves[0].from)}->${JSON.stringify(rootMoves[0].to)} score=${rootMoves[0].score} elapsed=${Date.now() - startTime}ms`
+    );
   }
 
-  // 按净胜分排序；同分时胜局取短、负局取长
-  rootMoves.sort((a, b) => {
-    const scoreDiff = b.score - a.score;
-    if (Math.abs(scoreDiff) < 1e-6) {
-      if (a.score > 0) {
-        return (a.moveSequence?.length || 0) - (b.moveSequence?.length || 0);
-      } else if (a.score < 0) {
-        return (b.moveSequence?.length || 0) - (a.moveSequence?.length || 0);
-      }
-      return 0;
-    }
-    return scoreDiff;
-  });
-
-  const bestMove = rootMoves.length > 0 ? rootMoves[0] : null;
+  const bestMove = rootMoves[0] || null;
   const secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
-  const bestMoveSequence = rootMoves.length > 0 ? (rootMoves[0].moveSequence || []) : [];
-  const secondMoveSequence = rootMoves.length > 1 ? (rootMoves[1].moveSequence || []) : [];
-  const bestMoveScore = rootMoves.length > 0 ? rootMoves[0].score : 0;
-  const secondBestMoveScore = rootMoves.length > 1 ? rootMoves[1].score : 0;
+  const bestMoveSequence = bestMove ? (bestMove.moveSequence || []) : [];
+  const secondMoveSequence = secondBestMove ? (secondBestMove.moveSequence || []) : [];
+  const bestMoveScore = bestMove ? bestMove.score : 0;
+  const secondBestMoveScore = secondBestMove ? secondBestMove.score : 0;
 
-  const allMovesWithScores = rootMoves.map(moveInfo => ({
+  const allMovesWithScores = rootMoves.map((moveInfo) => ({
     move: {
       from: moveInfo.from,
       to: moveInfo.to
@@ -4038,7 +4260,16 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
     moveSequence: moveInfo.moveSequence || []
   }));
 
-  return { bestMove, secondBestMove, moveSequence: bestMoveSequence, secondMoveSequence, bestMoveScore, secondBestMoveScore, allMovesWithScores };
+  return {
+    bestMove,
+    secondBestMove,
+    moveSequence: bestMoveSequence,
+    secondMoveSequence,
+    bestMoveScore,
+    secondBestMoveScore,
+    allMovesWithScores,
+    completedDepth
+  };
 };
 
 // --- WORKER LISTENER (统一消息处理) ---
