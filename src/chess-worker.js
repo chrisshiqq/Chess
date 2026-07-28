@@ -203,11 +203,10 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
 
     const outputPhase = gameStage;
 
-    // 遍历棋盘：非炮当场生成着法；炮延迟到 calculatePieceRelations 一次射线填完 moves+关系
+    // 遍历棋盘：只收集子力/PST；着法+关系统一在 calculatePieceRelations 一次几何生成（对齐炮）
     let piecesInfo = [];
     let redMaterial = 0, redPosition = 0;
     let blackMaterial = 0, blackPosition = 0;
-    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -216,21 +215,6 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
             
             const materialValue = getMaterialValue(piece, gameStage);
             const positionValue = getPositionValue(piece, r, c);
-            const allyGuards = [];
-            let moves = [];
-            let mobilityValue = 0;
-
-            if (piece.type === 'cannon') {
-                // 炮：着法与关系在 fillCannonRelations 一次射线中完成
-                moves = [];
-            } else {
-                moves = getPieceMoves(board, { r, c }, piece, allyGuards);
-                for (const move of moves) {
-                    if (!board[move.r][move.c]) {
-                        mobilityValue += baseMoveValue;
-                    }
-                }
-            }
             
             if (piece.color === 'red') {
                 redMaterial += materialValue;
@@ -244,14 +228,14 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
                 piece,
                 r,
                 c,
-                moves,
-                allyGuards,
+                moves: [],
+                allyGuards: [],
                 materialValue,
                 positionValue,
                 threatValue: 0,
                 safetyValue: 0,
                 tacticValue: 0,
-                mobilityValue,
+                mobilityValue: 0,
                 threat: [],
                 protect: []
             });
@@ -531,6 +515,128 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     }
 };
 
+// 非炮：一次几何扫描同时填充 moves + control / threat / guard / mobility（对齐 fillCannonRelations）
+// 语义与 getPieceMoves + calculatePieceRelations 旧拆分路径一致；getPieceMoves 仍供着法生成使用
+const fillNonCannonRelations = (board, info, posByKey) => {
+    const piece = info.piece;
+    const { r, c } = info;
+    const isRed = piece.color === 'red';
+    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+    info.moves = [];
+    info.control = [];
+    info.allyGuards = [];
+    let mobilityValue = 0;
+
+    const linkThreat = (tr, tc) => {
+        const targetInfo = posByKey.get(tr * 9 + tc);
+        if (targetInfo) {
+            info.threat.push(targetInfo);
+            targetInfo.threatenedBy.push(info);
+        }
+    };
+
+    const linkGuard = (tr, tc) => {
+        const targetInfo = posByKey.get(tr * 9 + tc);
+        if (targetInfo && targetInfo !== info) {
+            info.guard.push(targetInfo);
+            targetInfo.guardedBy.push(info);
+            info.allyGuards.push({ r: tr, c: tc });
+        }
+    };
+
+    const addSquare = (tr, tc) => {
+        if (!isValidPos(tr, tc)) return;
+        const target = board[tr][tc];
+        if (!target) {
+            info.moves.push({ r: tr, c: tc });
+            info.control.push({ r: tr, c: tc });
+            mobilityValue += baseMoveValue;
+        } else if (target.color !== piece.color) {
+            info.moves.push({ r: tr, c: tc });
+            linkThreat(tr, tc);
+        } else if (target.type !== 'general') {
+            linkGuard(tr, tc);
+        }
+    };
+
+    switch (piece.type) {
+        case 'general':
+            for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+                const nr = r + dr, nc = c + dc;
+                if (nc >= 3 && nc <= 5) {
+                    if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
+                    else if (!isRed && nr >= 7 && nr <= 9) addSquare(nr, nc);
+                }
+            }
+            break;
+        case 'advisor':
+            for (const [dr, dc] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                const nr = r + dr, nc = c + dc;
+                if (nc >= 3 && nc <= 5) {
+                    if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
+                    else if (!isRed && nr >= 7 && nr <= 9) addSquare(nr, nc);
+                }
+            }
+            break;
+        case 'elephant':
+            for (const [dr, dc] of [[2, 2], [2, -2], [-2, 2], [-2, -2]]) {
+                const nr = r + dr, nc = c + dc;
+                const eyeR = r + dr / 2, eyeC = c + dc / 2;
+                if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
+                    if (isRed && nr <= 4) addSquare(nr, nc);
+                    else if (!isRed && nr >= 5) addSquare(nr, nc);
+                }
+            }
+            break;
+        case 'horse':
+            for (const [dr, dc] of [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]]) {
+                const nr = r + dr, nc = c + dc;
+                const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
+                const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+                if (isValidPos(legR, legC) && board[legR][legC] === null) {
+                    addSquare(nr, nc);
+                }
+            }
+            break;
+        case 'chariot':
+            for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+                let nr = r + dr, nc = c + dc;
+                while (isValidPos(nr, nc)) {
+                    const target = board[nr][nc];
+                    if (target === null) {
+                        info.moves.push({ r: nr, c: nc });
+                        info.control.push({ r: nr, c: nc });
+                        mobilityValue += baseMoveValue;
+                    } else {
+                        if (target.color !== piece.color) {
+                            info.moves.push({ r: nr, c: nc });
+                            linkThreat(nr, nc);
+                        } else if (target.type !== 'general') {
+                            linkGuard(nr, nc);
+                        }
+                        break;
+                    }
+                    nr += dr;
+                    nc += dc;
+                }
+            }
+            break;
+        case 'soldier': {
+            const forward = isRed ? 1 : -1;
+            const crossedRiver = isRed ? r >= 5 : r <= 4;
+            addSquare(r + forward, c);
+            if (crossedRiver) {
+                addSquare(r, c - 1);
+                addSquare(r, c + 1);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    info.mobilityValue = mobilityValue;
+};
+
 // 炮：一次四向射线同时填充 moves + threat / guard / control（避免 getPieceMoves 再扫一遍）
 const fillCannonRelations = (board, info, posByKey) => {
     const piece = info.piece;
@@ -600,52 +706,12 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         posByKey.set(info.r * 9 + info.c, info);
     }
     
-    // 处理每个棋子的威胁和保护关系
+    // 处理每个棋子：一次几何同时填 moves + 关系（炮/非炮统一模式）
     for (const info of piecesInfo) {
-        const piece = info.piece;
-        const moves = info.moves;
-
-        if (piece.type === 'cannon') {
+        if (info.piece.type === 'cannon') {
             fillCannonRelations(board, info, posByKey);
-        } else if (!moves) {
-            const { threat, guard } = getPieceTargets(board, { r: info.r, c: info.c }, piece);
-            for (const threatPos of threat) {
-                const targetInfo = posByKey.get(threatPos.r * 9 + threatPos.c);
-                if (targetInfo) {
-                    info.threat.push(targetInfo);
-                    targetInfo.threatenedBy.push(info);
-                }
-            }
-            for (const guardPos of guard) {
-                const targetInfo = posByKey.get(guardPos.r * 9 + guardPos.c);
-                if (targetInfo && targetInfo !== info) {
-                    info.guard.push(targetInfo);
-                    targetInfo.guardedBy.push(info);
-                }
-            }
-            info.control = getPieceControl(board, { r: info.r, c: info.c }, piece);
         } else {
-            // 非炮：威胁/控制从 moves；保护从生成 moves 时收集的 allyGuards
-            for (const m of moves) {
-                const target = board[m.r][m.c];
-                if (!target) {
-                    info.control.push(m);
-                } else if (target.color !== piece.color) {
-                    const targetInfo = posByKey.get(m.r * 9 + m.c);
-                    if (targetInfo) {
-                        info.threat.push(targetInfo);
-                        targetInfo.threatenedBy.push(info);
-                    }
-                }
-            }
-            const allies = info.allyGuards || [];
-            for (const g of allies) {
-                const targetInfo = posByKey.get(g.r * 9 + g.c);
-                if (targetInfo && targetInfo !== info) {
-                    info.guard.push(targetInfo);
-                    targetInfo.guardedBy.push(info);
-                }
-            }
+            fillNonCannonRelations(board, info, posByKey);
         }
 
         const control = info.control;
