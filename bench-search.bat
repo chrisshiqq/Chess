@@ -1,0 +1,1 @@
+node scripts/bench-search.mjs 8 play 2>&1 | Tee-Object -FilePath scripts/bench-d8-latest.txt

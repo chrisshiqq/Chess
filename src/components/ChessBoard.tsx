@@ -1,5 +1,5 @@
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Board, Color, Move, Position, PieceType, Skin, PieceMaterial } from '../types';
 import { ChessPiece } from './ChessPiece';
 
@@ -147,6 +147,30 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     return () => {
       document.head.removeChild(style);
     };
+  }, []);
+
+  // 手机窄屏：按容器宽度等比缩小整盘（含行棋动画坐标系），避免边线棋子被裁成一半
+  const boardViewportRef = useRef<HTMLDivElement>(null);
+  const [boardScale, setBoardScale] = useState(1);
+
+  useEffect(() => {
+    const el = boardViewportRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+
+    const updateScale = () => {
+      const style = window.getComputedStyle(el);
+      const padX =
+        (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      // clientWidth 含 padding；棋盘可用宽度需扣除，否则描边仍可能顶满裁切
+      const available = el.clientWidth - padX;
+      if (available <= 0) return;
+      setBoardScale(Math.min(1, available / WIDTH));
+    };
+
+    updateScale();
+    const ro = new ResizeObserver(updateScale);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   const currentSkin = SKINS[skin] || SKINS['wood-board']; // 保护机制，使用默认皮肤
@@ -1176,15 +1200,39 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     return pieces;
   };
 
+  const frameBorderColor = isSetupMode ? '#0f766e' : currentSkin.border;
+
   return (
-    <div 
-        className="relative shadow-2xl rounded-lg overflow-hidden transition-all duration-300 border-8"
-        style={{ 
-            backgroundColor: currentSkin.containerBg, 
-            borderColor: isSetupMode ? '#0f766e' : currentSkin.border // Teal for setup, skin border otherwise
+    // 左右各留 6px，避免描边 box-shadow 在窄屏被 overflow-x 裁切
+    <div ref={boardViewportRef} className="w-full max-w-[512px] mx-auto px-[6px] box-border">
+      <div
+        className="relative mx-auto"
+        style={{
+          width: WIDTH * boardScale,
+          height: HEIGHT * boardScale,
         }}
-    >
-      <svg width={WIDTH} height={HEIGHT} className="block" style={{ background: bgColor }}>
+      >
+      <div
+        className="relative rounded-lg transition-colors duration-300"
+        style={{
+            width: WIDTH,
+            height: HEIGHT,
+            backgroundColor: currentSkin.containerBg,
+            // 用 box-shadow 描边，避免 border 增加布局宽度导致手机端更易裁切
+            boxShadow: `0 0 0 6px ${frameBorderColor}, 0 25px 50px -12px rgba(0,0,0,0.35)`,
+            transform: `scale(${boardScale})`,
+            transformOrigin: 'top left',
+            // 选中放大 / 阴影允许溢出描边，不再 overflow:hidden 裁棋子
+            overflow: 'visible',
+        }}
+      >
+      <svg
+        width={WIDTH}
+        height={HEIGHT}
+        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        className="block"
+        style={{ background: bgColor, overflow: 'visible' }}
+      >
         <defs>
             {/* 聚光灯效果 - 中间亮边角暗，加强对比度 */}
             <radialGradient id="spotlight" cx="50%" cy="50%" r="60%">
@@ -1722,6 +1770,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
           </svg>
         </div>
       )}
+    </div>
+      </div>
     </div>
   );
 };

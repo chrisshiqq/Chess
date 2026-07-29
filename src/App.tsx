@@ -3563,7 +3563,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     }
 
     return (
-        <div className="min-h-screen bg-stone-900 flex flex-col items-center justify-center p-4 font-sans text-stone-200 relative overflow-hidden select-none">
+        <div className="min-h-screen bg-stone-900 flex flex-col items-center justify-center p-2 sm:p-4 font-sans text-stone-200 relative overflow-x-hidden select-none">
             <audio ref={sfxRef} src={CLICK_SOUND_URI} />
             
             {/* 新增的各种音效 */}
@@ -3722,7 +3722,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     </div>
                 </div>
 
-                <div className="relative order-1 lg:order-2">
+                <div className="relative order-1 lg:order-2 w-full max-w-[500px] flex justify-center">
                     <ChessBoard 
                         board={displayBoard} 
                         onSelect={handlePieceSelect} 
