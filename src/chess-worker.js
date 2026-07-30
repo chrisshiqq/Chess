@@ -451,8 +451,6 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
 };
 
 // 计算衍生值：威胁值、安全值、战术值、机动值
-// 修改：添加searchInitiator参数，传递给calculateThreatValues
-// 添加gameStage参数，避免在循环中重复调用getGamePhase
 const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', boardInfo = null, forSearchLeaf = false) => {
     // 重置所有衍生值，除了机动值（已在收集棋子信息时计算）
     for (const info of piecesInfo) {
@@ -468,8 +466,8 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     }
     calculatePieceRelations(board, piecesInfo, boardInfo);
     
-    // 2. 计算威胁值（基于完整的威胁关系），传递gameStage和boardInfo
-    calculateThreatValues(board, piecesInfo, currentPlayer, depth, searchInitiator, gameStage, boardInfo);
+    // 2. 计算威胁值（按被威胁子聚合，SEE 每目标一次）
+    calculateThreatValues(piecesInfo, currentPlayer, boardInfo);
     
     // 3. 计算战术值的其他部分（帮助关系和阻挡关系）
     for (const info of piecesInfo) {
@@ -1068,6 +1066,114 @@ const buildPositionControlMap = (piecesInfo) => {
     return positionControlMap;
 };
 
+// SEE 排序复用缓冲，降低叶评估 GC
+const seeAttackerScratch = [];
+const seeGuardScratch = [];
+
+// 有根子简化 SEE（与旧实现逐行等价）；每个目标只应调用一次
+const calculateStaticExchangeScore = (threatenedPiece) => {
+    const attackers = seeAttackerScratch;
+    const guards = seeGuardScratch;
+    attackers.length = 0;
+    guards.length = 0;
+    const rawAttackers = threatenedPiece.threatenedBy;
+    const rawGuards = threatenedPiece.guardedBy;
+    for (let i = 0; i < rawAttackers.length; i++) attackers.push(rawAttackers[i]);
+    for (let i = 0; i < rawGuards.length; i++) guards.push(rawGuards[i]);
+    attackers.sort((a, b) => a.materialValue - b.materialValue);
+    guards.sort((a, b) => a.materialValue - b.materialValue);
+
+    let exchangeScore = 0;
+    let attackerIndex = 0;
+    let guardIndex = 0;
+    const targetValue = threatenedPiece.materialValue;
+
+    while (attackerIndex < attackers.length && guardIndex < guards.length) {
+        if (guardIndex === 0) {
+            exchangeScore += targetValue;
+        }
+        exchangeScore -= attackers[attackerIndex].materialValue;
+        if (attackerIndex + 1 < attackers.length) {
+            exchangeScore += guards[guardIndex].materialValue;
+        }
+        attackerIndex++;
+        guardIndex++;
+    }
+    return exchangeScore;
+};
+
+// 计算威胁值（基于完整的威胁关系）
+// 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
+// （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
+const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
+    // 统计
+    if (currentPlayer) {
+        perfStats.calculateThreatValuesCount[currentPlayer]++;
+    }
+
+    // 初始化威胁类型统计信息
+    if (boardInfo) {
+        boardInfo.checks = [];      // 将军信息
+        boardInfo.threatenedPieces = [];  // 被捉的棋子
+        boardInfo.canCapture = [];  // 可吃的棋子
+    }
+
+    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    const canCaptureSeen = new Set();
+
+    for (let ti = 0; ti < piecesInfo.length; ti++) {
+        const threatenedPiece = piecesInfo[ti];
+        const attackers = threatenedPiece.threatenedBy;
+        if (!attackers || attackers.length === 0) continue;
+
+        // threatenedBy[0] = piecesInfo 顺序下最先挂上威胁的攻击方（与旧首次计分一致）
+        const firstAttacker = attackers[0];
+
+        // 将军：只给小额先手分，绝不按将/帅材料值做 SEE
+        if (threatenedPiece.piece.type === PIECE_TYPES.GENERAL) {
+            if (boardInfo) {
+                for (let ai = 0; ai < attackers.length; ai++) {
+                    boardInfo.checks.push({
+                        attacker: attackers[ai],
+                        target: threatenedPiece,
+                        isCheck: true
+                    });
+                }
+            }
+            firstAttacker.threatValue += checkBonus;
+            continue;
+        }
+
+        const hasGuard = threatenedPiece.guardedBy && threatenedPiece.guardedBy.length > 0;
+
+        // 只把对攻击方有利的威胁计入 threatValue（单向计入，不做 safety 对称扣分）
+        if (!hasGuard) {
+            firstAttacker.threatValue += threatenedPiece.materialValue;
+            if (boardInfo) {
+                // 攻击方同色：要么全是 currentPlayer（记 canCapture），要么全不是（记 threatenedPieces）
+                if (firstAttacker.piece.color === currentPlayer) {
+                    for (let ai = 0; ai < attackers.length; ai++) {
+                        const info = attackers[ai];
+                        if (!canCaptureSeen.has(info)) {
+                            canCaptureSeen.add(info);
+                            boardInfo.canCapture.push(info);
+                        }
+                    }
+                } else {
+                    boardInfo.threatenedPieces.push(threatenedPiece);
+                }
+            }
+        } else {
+            // SEE 每目标一次；有根且交换仍赚则折半计入
+            const sseScore = calculateStaticExchangeScore(threatenedPiece);
+            if (sseScore > 0) {
+                firstAttacker.threatValue += sseScore * 0.5;
+            }
+            // sseScore <= 0：亏换/平换，不记威胁分
+        }
+    }
+};
+
 // 计算安全值 - 重构版：基于boardInfo的控制关系
 const calculateSafetyValues = (piecesInfo, boardInfo) => {
     // 1. 找到将和帅
@@ -1098,132 +1204,6 @@ const calculateSafetyValues = (piecesInfo, boardInfo) => {
             if (hasEnemyControl) {
                 general.safetyValue -= 50;
             }
-        }
-    }
-};
-
-
-// SEE 排序复用缓冲，降低叶评估 GC
-const seeAttackerScratch = [];
-const seeGuardScratch = [];
-
-// 计算威胁值（基于完整的威胁关系）
-// 修改：威胁值应该从搜索发起方的角度计算，而不是从当前行棋方角度
-// 添加gameStage参数，避免在循环中重复调用getGamePhase
-// 添加boardInfo参数，用于存储威胁类型信息
-const calculateThreatValues = (board, piecesInfo, currentPlayer, depth, searchInitiator = null, gameStage = 'mid', boardInfo = null) => {
-    // 统计
-    if (currentPlayer) {
-        perfStats.calculateThreatValuesCount[currentPlayer]++;
-    }
-    
-    // 初始化威胁类型统计信息
-    if (boardInfo) {
-        boardInfo.checks = [];      // 将军信息
-        boardInfo.threatenedPieces = [];  // 被捉的棋子
-        boardInfo.canCapture = [];  // 可吃的棋子
-    }
-
-    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
-    // 同一无根子被多方威胁时只计一次材料威胁，避免重复加分
-    const scoredHangingKeys = new Set();
-    const checkedGenerals = new Set();
-    const canCaptureSeen = new Set();
-    const threatenedSeen = new Set();
-    
-    // 遍历所有棋子，计算威胁关系
-    for (const info of piecesInfo) {
-        const { piece } = info;
-        
-        // 检查当前棋子是否威胁其他棋子
-        for (const threatenedPiece of info.threat) {
-            const isAttackerCurrentPlayer = piece.color === currentPlayer;
-            
-            // 将军：只给小额先手分，绝不按将/帅材料值做 SEE（否则会为将不惜送死）
-            const isCheck = threatenedPiece.piece.type === PIECE_TYPES.GENERAL;
-            if (isCheck) {
-                if (boardInfo) {
-                    boardInfo.checks.push({
-                        attacker: info,
-                        target: threatenedPiece,
-                        isCheck: true
-                    });
-                }
-                // 同一将/帅被多方将军时，先手分只加一次
-                const generalKey = `${threatenedPiece.r},${threatenedPiece.c}`;
-                if (!checkedGenerals.has(generalKey)) {
-                    checkedGenerals.add(generalKey);
-                    info.threatValue += checkBonus;
-                }
-                continue;
-            }
-
-            const targetValue = threatenedPiece.materialValue;
-            const hasGuard = threatenedPiece.guardedBy && threatenedPiece.guardedBy.length > 0;
-            
-            // SEE：仅用于判断交换是否对攻击方有利；威胁分只加在攻击方，避免净分双计
-            let sseScore = 0;
-            
-            if (hasGuard) {
-                // 复用 scratch，避免每次 slice+sort 分配
-                const attackers = seeAttackerScratch;
-                const guards = seeGuardScratch;
-                attackers.length = 0;
-                guards.length = 0;
-                const rawAttackers = threatenedPiece.threatenedBy;
-                const rawGuards = threatenedPiece.guardedBy;
-                for (let i = 0; i < rawAttackers.length; i++) attackers.push(rawAttackers[i]);
-                for (let i = 0; i < rawGuards.length; i++) guards.push(rawGuards[i]);
-                attackers.sort((a, b) => a.materialValue - b.materialValue);
-                guards.sort((a, b) => a.materialValue - b.materialValue);
-                
-                let exchangeScore = 0;
-                let attackerIndex = 0;
-                let guardIndex = 0;
-                
-                while (attackerIndex < attackers.length && guardIndex < guards.length) {
-                    if (guardIndex === 0) {
-                        exchangeScore += targetValue;
-                    }
-                    exchangeScore -= attackers[attackerIndex].materialValue;
-                    if (attackerIndex + 1 < attackers.length) {
-                        exchangeScore += guards[guardIndex].materialValue;
-                    }
-                    attackerIndex++;
-                    guardIndex++;
-                }
-                sseScore = exchangeScore;
-            } else {
-                sseScore = targetValue;
-            }
-
-            // 只把对攻击方有利的威胁计入 threatValue（单向计入，不做 safety 对称扣分）
-            if (!hasGuard) {
-                const hangKey = `${threatenedPiece.r},${threatenedPiece.c}`;
-                if (!scoredHangingKeys.has(hangKey)) {
-                    scoredHangingKeys.add(hangKey);
-                    info.threatValue += targetValue;
-                }
-                if (boardInfo) {
-                    if (isAttackerCurrentPlayer) {
-                        if (!canCaptureSeen.has(info)) {
-                            canCaptureSeen.add(info);
-                            boardInfo.canCapture.push(info);
-                        }
-                    } else if (!threatenedSeen.has(threatenedPiece)) {
-                        threatenedSeen.add(threatenedPiece);
-                        boardInfo.threatenedPieces.push(threatenedPiece);
-                    }
-                }
-            } else if (sseScore > 0) {
-                // 有根子但交换仍赚：折半计入；同一目标只由价值最低的攻击者计分一次
-                const hangKey = `g:${threatenedPiece.r},${threatenedPiece.c}`;
-                if (!scoredHangingKeys.has(hangKey)) {
-                    scoredHangingKeys.add(hangKey);
-                    info.threatValue += sseScore * 0.5;
-                }
-            }
-            // sseScore <= 0：亏换/平换，不记威胁分
         }
     }
 };
