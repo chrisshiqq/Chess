@@ -31,6 +31,9 @@ import {
     AdjustmentsIcon
 } from './components/Icons';
 import { ClockDisplay, FlyingPiece, formatTime } from './AppUI';
+import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
+import { PeerSession, generateRoomCode } from './net/PeerSession';
+import type { AppScreen, ConnectionStatus, NetMessage, OnlineSessionInfo } from './net/types';
 
 /*
 import { 
@@ -288,6 +291,19 @@ const INITIAL_SUPPLY: Record<Color, Record<PieceType, number>> = {
 
 
 const App: React.FC = () => {
+    const [appScreen, setAppScreen] = useState<AppScreen>('lobby');
+    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
+    const [lobbyStatusMessage, setLobbyStatusMessage] = useState<string | null>(null);
+    const [onlineInfo, setOnlineInfo] = useState<OnlineSessionInfo | null>(null);
+    const peerSessionRef = useRef<PeerSession | null>(null);
+    const applyingRemoteRef = useRef(false);
+    const onlineInfoRef = useRef<OnlineSessionInfo | null>(null);
+    const executeMoveRef = useRef<(move: Move, moveTurn?: Color) => Promise<boolean>>(async () => false);
+    const onNetMessageRef = useRef<(msg: NetMessage) => void>(() => {});
+    const handleRestartRef = useRef<() => void>(() => {});
+    const boardSnapshotRef = useRef<Board>(createInitialBoard());
+    const moveHistorySnapshotRef = useRef<Move[]>([]);
+
     const [board, setBoard] = useState<Board>(createInitialBoard());
     const [turn, setTurn] = useState<Color>('red');
     const [playerColor, setPlayerColor] = useState<Color>('red');
@@ -514,6 +530,9 @@ const App: React.FC = () => {
     // Refs for timer to prevent interval resets on turn change
     const turnRef = useRef(turn);
     useEffect(() => { turnRef.current = turn; }, [turn]);
+    useEffect(() => { boardSnapshotRef.current = board; }, [board]);
+    useEffect(() => { moveHistorySnapshotRef.current = moveHistory; }, [moveHistory]);
+    useEffect(() => { onlineInfoRef.current = onlineInfo; }, [onlineInfo]);
 
     // Worker Ref
     const workerRef = useRef<Worker | null>(null);
@@ -1536,7 +1555,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         }
     }, [turn, playerColor, gameOver, isReplaying, isSetupMode, hasStarted, difficulty, gameId, redIsAuto, blackIsAuto]);
 
-    const executeMove = async (move: Move, moveTurn?: Color) => {
+    const executeMove = async (move: Move, moveTurn?: Color): Promise<boolean> => {
         //console.log('executeMove called with move:', move, 'moveTurn:', moveTurn);
         if (!hasStarted) {
             console.log('executeMove: game not started, setting hasStarted to true');
@@ -1555,7 +1574,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         // 检查是否是当前回合的棋子，只有当前回合的棋子才能移动
         if (!movingPiece || movingPiece.color !== currentTurn) {
             console.log('executeMove: not current turn\'s piece, returning');
-            return; // 不是当前回合的棋子，不执行移动
+            return false; // 不是当前回合的棋子，不执行移动
         }
         
         // 移动前评估当前局面
@@ -1620,7 +1639,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
                 const violationWinner = turn === 'red' ? 'black' : 'red';
                 // 调用游戏结束处理函数
                 handleGameOver('checkmate', violationWinner, `${violationType}违规！${turn === 'red' ? '红方' : '黑方'}判负`);
-                return; // 不执行这步棋，也不更新历史记录
+                return false; // 不执行这步棋，也不更新历史记录
             }
         }
         
@@ -1802,7 +1821,9 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         if (isRetryMode) {
             setHasMovedInRetryMode(true);
         }
+        return true;
     };
+    executeMoveRef.current = executeMove;
 
     const handlePieceSelect = async (pos: Position) => {
         //console.log('handlePieceSelect called with pos:', pos);
@@ -1862,10 +1883,12 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
             //console.log('handlePieceSelect: currentTurn:', currentTurn, 'piece.color:', piece.color);
             // 检查是否为当前颜色的回合，不管是人工还是Auto
             const isMyTurn = currentTurn === piece.color;
+            // 联机时仅己方棋子可走
+            const canControlPiece = !onlineInfo || piece.color === onlineInfo.myColor;
             //console.log('handlePieceSelect: isMyTurn:', isMyTurn);
             
             // 只有当前回合的棋子才显示有效移动
-            if (isMyTurn) {
+            if (isMyTurn && canControlPiece) {
                 //console.log('handlePieceSelect: getting valid moves for piece at pos:', pos);
                 try {
                     const moves = await workerGetValidMoves(currentBoard, pos);
@@ -1932,6 +1955,13 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
             console.log('handleMove: no selectedPos, returning');
             return;
         }
+
+        // 联机：只能走己方棋子、且轮到己方
+        if (onlineInfo) {
+            if (turn !== onlineInfo.myColor) return;
+            const piece = board[selectedPos.r][selectedPos.c];
+            if (!piece || piece.color !== onlineInfo.myColor) return;
+        }
         
         // 检查移动是否在有效移动列表中
         const isValidMove = validMoves.some(move => 
@@ -1943,13 +1973,244 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
             //console.log('handleMove: valid move, executing');
             // 手动走棋时强制设置isThinking为false，确保移动能够执行
             setIsThinking(false);
-            await executeMove({ from: selectedPos, to }, turn);
+            const from = selectedPos;
+            const ply = moveHistory.length;
+            const moveTurn = turn;
+            const applied = await executeMove({ from, to }, moveTurn);
+            if (applied && onlineInfo && !applyingRemoteRef.current) {
+                peerSessionRef.current?.send({ type: 'move', from, to, ply });
+            }
         } else {
             console.log('handleMove: invalid move, not executing');
         }
     };
 
+    const clearRoomQuery = () => {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('room')) {
+            url.searchParams.delete('room');
+            window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+        }
+    };
 
+    const setRoomQuery = (code: string) => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('room', code);
+        window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    };
+
+    const destroyPeerSession = () => {
+        peerSessionRef.current?.destroy();
+        peerSessionRef.current = null;
+    };
+
+    const applyRemoteMove = async (from: Position, to: Position, ply: number) => {
+        const info = onlineInfoRef.current;
+        if (!info) return;
+        if (ply !== moveHistorySnapshotRef.current.length) {
+            console.warn('联机着法 ply 不匹配，已忽略', { ply, expected: moveHistorySnapshotRef.current.length });
+            return;
+        }
+        const currentTurn = turnRef.current;
+        if (currentTurn === info.myColor) {
+            console.warn('联机着法：当前是己方回合，忽略对方消息');
+            return;
+        }
+        const currentBoard = boardSnapshotRef.current;
+        const piece = currentBoard[from.r]?.[from.c];
+        if (!piece || piece.color !== currentTurn) return;
+
+        let legal: Position[] = [];
+        try {
+            legal = await workerGetValidMoves(currentBoard, from);
+        } catch {
+            return;
+        }
+        if (!legal.some((m) => m.r === to.r && m.c === to.c)) {
+            console.warn('联机着法非法，已忽略', { from, to });
+            return;
+        }
+
+        applyingRemoteRef.current = true;
+        try {
+            await executeMoveRef.current({ from, to }, currentTurn);
+        } finally {
+            applyingRemoteRef.current = false;
+        }
+    };
+
+    const handleNetMessage = (msg: NetMessage) => {
+        if (msg.type === 'hello') {
+            setOnlineInfo((prev) => {
+                const next = prev ? { ...prev, peerNick: msg.nick } : prev;
+                onlineInfoRef.current = next;
+                return next;
+            });
+            peerSessionRef.current?.send({ type: 'ready' });
+            setConnectionStatus('connected');
+            setLobbyStatusMessage(null);
+            setAppScreen('game');
+            setHasStarted(true);
+            return;
+        }
+        if (msg.type === 'ready') {
+            setConnectionStatus('connected');
+            setLobbyStatusMessage(null);
+            setAppScreen('game');
+            setHasStarted(true);
+            return;
+        }
+        if (msg.type === 'move') {
+            void applyRemoteMove(msg.from, msg.to, msg.ply);
+            return;
+        }
+        if (msg.type === 'resign') {
+            const info = onlineInfoRef.current;
+            if (!info) return;
+            handleGameOver('checkmate', info.myColor, '对方认输');
+        }
+    };
+    onNetMessageRef.current = handleNetMessage;
+
+    const leaveToLobby = (message?: string) => {
+        destroyPeerSession();
+        setOnlineInfo(null);
+        onlineInfoRef.current = null;
+        setConnectionStatus('idle');
+        setLobbyStatusMessage(message ?? null);
+        setAppScreen('lobby');
+        clearRoomQuery();
+        applyingRemoteRef.current = false;
+    };
+
+    const prepareFreshGame = (mode: 'ai' | 'local' | 'online') => {
+        handleRestartRef.current();
+        if (mode === 'ai') {
+            setRedIsAuto(false);
+            setBlackIsAuto(true);
+            setPlayerColor('red');
+        } else if (mode === 'local') {
+            setRedIsAuto(false);
+            setBlackIsAuto(false);
+            setPlayerColor('red');
+        } else {
+            setRedIsAuto(false);
+            setBlackIsAuto(false);
+        }
+        setActiveTab('game');
+        setIsReplaying(false);
+        setIsSetupMode(false);
+    };
+
+    const handleStartLocal = (mode: LocalPlayMode) => {
+        destroyPeerSession();
+        setOnlineInfo(null);
+        onlineInfoRef.current = null;
+        setConnectionStatus('idle');
+        setLobbyStatusMessage(null);
+        clearRoomQuery();
+        prepareFreshGame(mode);
+        setAppScreen('game');
+    };
+
+    const startOnlineSession = async (role: 'host' | 'guest', nick: string, roomCode: string) => {
+        destroyPeerSession();
+        prepareFreshGame('online');
+        const myColor: Color = role === 'host' ? 'red' : 'black';
+        const info: OnlineSessionInfo = {
+            roomCode,
+            role,
+            myColor,
+            myNick: nick,
+            peerNick: null,
+        };
+        setOnlineInfo(info);
+        onlineInfoRef.current = info;
+        setPlayerColor(myColor);
+        setAppScreen('waiting');
+        setConnectionStatus('connecting');
+        setLobbyStatusMessage(null);
+        setRoomQuery(roomCode);
+
+        let joinTimer: ReturnType<typeof setTimeout> | null = null;
+        const session = new PeerSession(roomCode, role, {
+            onOpen: () => {
+                setConnectionStatus(role === 'host' ? 'waiting' : 'connecting');
+            },
+            onConnected: () => {
+                if (joinTimer) clearTimeout(joinTimer);
+                setConnectionStatus('connected');
+                session.send({ type: 'hello', nick, color: myColor });
+            },
+            onDisconnected: (reason) => {
+                if (joinTimer) clearTimeout(joinTimer);
+                leaveToLobby(reason || '连接已断开');
+            },
+            onError: (message) => {
+                if (joinTimer) clearTimeout(joinTimer);
+                leaveToLobby(message);
+            },
+            onMessage: (msg) => onNetMessageRef.current(msg),
+        });
+        peerSessionRef.current = session;
+
+        try {
+            await session.start();
+            if (role === 'host') {
+                setConnectionStatus('waiting');
+            } else {
+                joinTimer = setTimeout(() => {
+                    if (!session.isConnected) {
+                        leaveToLobby('加入超时，请确认房间码后重试');
+                    }
+                }, 20000);
+            }
+        } catch (err) {
+            if (joinTimer) clearTimeout(joinTimer);
+            const message = err instanceof Error ? err.message : '无法建立联机';
+            leaveToLobby(message);
+        }
+    };
+
+    const handleCreateRoom = (nick: string) => {
+        void startOnlineSession('host', nick, generateRoomCode());
+    };
+
+    const handleJoinRoom = (nick: string, roomCode: string) => {
+        const code = roomCode.trim().toLowerCase();
+        if (code.length < 4) {
+            setLobbyStatusMessage('请输入有效房间码');
+            return;
+        }
+        void startOnlineSession('guest', nick, code);
+    };
+
+    const handleCopyRoomLink = async () => {
+        const code = onlineInfo?.roomCode;
+        if (!code) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set('room', code);
+        try {
+            await navigator.clipboard.writeText(url.toString());
+        } catch {
+            // fallback
+            window.prompt('复制邀请链接', url.toString());
+        }
+    };
+
+    const handleOnlineResign = () => {
+        if (!onlineInfo) return;
+        peerSessionRef.current?.send({ type: 'resign' });
+        const winner: Color = onlineInfo.myColor === 'red' ? 'black' : 'red';
+        handleGameOver('checkmate', winner, '你已认输');
+    };
+
+    useEffect(() => {
+        return () => {
+            destroyPeerSession();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleRestart = () => {
         // 清除游戏结束定时器
@@ -2017,6 +2278,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         setSkin(skins[Math.floor(Math.random() * skins.length)]);
         setMaterial(materials[Math.floor(Math.random() * materials.length)]);
     };
+    handleRestartRef.current = handleRestart;
 
     const handleSwitchSide = () => {
         setPlayerColor(prev => prev === 'red' ? 'black' : 'red');
@@ -3562,6 +3824,23 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         bottomPanelPieces = capturedInfo[playerColor];
     }
 
+    if (appScreen === 'lobby' || appScreen === 'waiting') {
+        return (
+            <LobbyScreen
+                screen={appScreen}
+                connectionStatus={connectionStatus}
+                roomCode={onlineInfo?.roomCode ?? null}
+                statusMessage={lobbyStatusMessage}
+                peerNick={onlineInfo?.peerNick ?? null}
+                onStartLocal={handleStartLocal}
+                onCreateRoom={handleCreateRoom}
+                onJoinRoom={handleJoinRoom}
+                onCancelWaiting={() => leaveToLobby()}
+                onCopyRoomLink={() => { void handleCopyRoomLink(); }}
+            />
+        );
+    }
+
     return (
         <div className="min-h-screen bg-stone-900 flex flex-col items-center justify-center p-2 sm:p-4 font-sans text-stone-200 relative overflow-x-hidden select-none">
             <audio ref={sfxRef} src={CLICK_SOUND_URI} />
@@ -3575,6 +3854,30 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
             {/* 游戏模式选择按钮 - 位于棋盘正上方 */}
             <div className="w-full mb-3 max-w-[500px] mx-auto">
+                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-stone-400 px-1">
+                    <span>
+                        {onlineInfo ? (
+                            <>
+                                联机 · 房间{' '}
+                                <span className="font-mono text-amber-400 tracking-wider">
+                                    {onlineInfo.roomCode.toUpperCase()}
+                                </span>
+                                {onlineInfo.peerNick ? ` · vs ${onlineInfo.peerNick}` : ''}
+                                {' · '}
+                                {onlineInfo.myColor === 'red' ? '执红' : '执黑'}
+                            </>
+                        ) : (
+                            '本地对局'
+                        )}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => leaveToLobby()}
+                        className="text-rose-300 hover:text-rose-200 font-semibold"
+                    >
+                        返回大厅
+                    </button>
+                </div>
                 <div className="flex gap-1">
                     <button 
                         onClick={() => {
@@ -3820,7 +4123,18 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 </p>
                                 <div className="flex gap-4 justify-center">
                                     <button onClick={startReplay} className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white rounded-full font-bold text-lg shadow-lg">Replay</button>
-                                    <button onClick={handleRestart} className="px-6 py-3 bg-gradient-to-r from-amber-600 to-orange-700 hover:from-amber-500 text-white rounded-full font-bold text-lg shadow-lg">Play Again</button>
+                                    <button
+                                        onClick={() => {
+                                            if (onlineInfo) {
+                                                leaveToLobby();
+                                                return;
+                                            }
+                                            handleRestart();
+                                        }}
+                                        className="px-6 py-3 bg-gradient-to-r from-amber-600 to-orange-700 hover:from-amber-500 text-white rounded-full font-bold text-lg shadow-lg"
+                                    >
+                                        {onlineInfo ? '返回大厅' : 'Play Again'}
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -4207,7 +4521,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* 第1排：Restart, Resign */}
                                 <button 
                                     onClick={handleRestart} 
-                                    disabled={isThinking} 
+                                    disabled={isThinking || !!onlineInfo} 
                                     style={getButtonStyle()}
                                     className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
@@ -4216,6 +4530,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 </button>
                                 <button 
                                     onClick={() => {
+                                        if (onlineInfo) {
+                                            handleOnlineResign();
+                                            return;
+                                        }
                                         // 实现Resign逻辑：根据净胜分判断输赢
                                         const redScore = moveEvaluation.post.red.total;
                                         const blackScore = moveEvaluation.post.black.total;
@@ -4235,7 +4553,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* 第2排：Undo, Switch */}
                                 <button 
                                     onClick={handleUndo} 
-                                    disabled={boardHistory.length < 1 || (!!gameOver && !pendingGameOver) || isThinking} 
+                                    disabled={!!onlineInfo || boardHistory.length < 1 || (!!gameOver && !pendingGameOver) || isThinking} 
                                     style={getButtonStyle()}
                                     className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
@@ -4244,7 +4562,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 </button>
                                 <button 
                                     onClick={handleSwitchSide} 
-                                    disabled={!!gameOver || isThinking} 
+                                    disabled={!!onlineInfo || !!gameOver || isThinking} 
                                     style={getButtonStyle()}
                                     className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
@@ -4255,8 +4573,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* 第3排：Red Manual/Auto, Black Manual/Auto */}
                                 <button 
                                     onClick={() => setRedIsAuto(prev => !prev)} 
-                                    disabled={!!gameOver || isThinking} 
-                                    style={getButtonStyle(!!gameOver || isThinking)}
+                                    disabled={!!onlineInfo || !!gameOver || isThinking} 
+                                    style={getButtonStyle(!!onlineInfo || !!gameOver || isThinking)}
                                     className={`px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
                                         redIsAuto ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
                                     }`}
@@ -4266,8 +4584,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 </button>
                                 <button 
                                     onClick={() => setBlackIsAuto(prev => !prev)}
-                                    disabled={!!gameOver || isThinking}
-                                    style={getButtonStyle(!!gameOver || isThinking)}
+                                    disabled={!!onlineInfo || !!gameOver || isThinking}
+                                    style={getButtonStyle(!!onlineInfo || !!gameOver || isThinking)}
                                     className={`px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
                                         blackIsAuto ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
                                     }`}
