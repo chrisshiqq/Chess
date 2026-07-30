@@ -2159,11 +2159,14 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
             if (role === 'host') {
                 setConnectionStatus('waiting');
             } else {
+                // TURN 候选收集较慢；跨网失败时给出明确提示
                 joinTimer = setTimeout(() => {
                     if (!session.isConnected) {
-                        leaveToLobby('加入超时，请确认房间码后重试');
+                        leaveToLobby(
+                            '加入超时。请确认房间码；若双方不在同一 Wi‑Fi（尤其手机流量），网络可能阻止了 P2P，请改连同一局域网后重试。',
+                        );
                     }
-                }, 20000);
+                }, 35000);
             }
         } catch (err) {
             if (joinTimer) clearTimeout(joinTimer);

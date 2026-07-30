@@ -156,7 +156,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
         <div className="h-px bg-stone-700 mb-6" />
 
-        <p className="text-xs text-stone-500 mb-3 ml-1">联机对战（P2P）</p>
+        <p className="text-xs text-stone-500 mb-1 ml-1">联机对战（WebRTC P2P）</p>
+        <p className="text-[11px] text-stone-500 mb-3 ml-1 leading-relaxed">
+          手机与电脑互联时，请尽量连同一 Wi‑Fi。跨运营商/手机流量常需中继，连接可能更慢或失败。
+        </p>
         <button
           type="button"
           onClick={() => onCreateRoom(trimmedNick)}

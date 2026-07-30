@@ -1,4 +1,5 @@
 import Peer, { type DataConnection } from 'peerjs';
+import { getIceServers } from './iceServers';
 import type { NetMessage } from './types';
 
 const PEER_PREFIX = 'cxchess-';
@@ -26,10 +27,14 @@ export type PeerSessionHandlers = {
   onMessage?: (msg: NetMessage) => void;
 };
 
+const CROSS_NET_HINT =
+  '跨网直连失败。请双方尽量连同一 Wi‑Fi 后重试；若仍失败，网络可能限制了 P2P。';
+
 export class PeerSession {
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
   private destroyed = false;
+  private connectedNotified = false;
   private handlers: PeerSessionHandlers;
 
   readonly roomCode: string;
@@ -75,13 +80,38 @@ export class PeerSession {
     this.peer = null;
   }
 
+  private async createPeer(id?: string): Promise<Peer> {
+    const iceServers = await getIceServers();
+    const options = {
+      debug: 1 as const,
+      config: {
+        iceServers,
+        sdpSemantics: 'unified-plan',
+        iceTransportPolicy: 'all' as RTCIceTransportPolicy,
+      },
+    };
+    return id ? new Peer(id, options) : new Peer(options);
+  }
+
+  private notifyConnected(): void {
+    if (this.destroyed || this.connectedNotified) return;
+    this.connectedNotified = true;
+    this.handlers.onConnected?.();
+  }
+
   private bindConnection(conn: DataConnection): void {
     this.conn = conn;
 
-    conn.on('open', () => {
+    const onOpen = () => {
       if (this.destroyed) return;
-      this.handlers.onConnected?.();
-    });
+      this.notifyConnected();
+    };
+
+    conn.on('open', onOpen);
+    // 部分环境 connection 事件触发时通道已 open，会错过 open 事件
+    if (conn.open) {
+      onOpen();
+    }
 
     conn.on('data', (data: unknown) => {
       if (this.destroyed) return;
@@ -99,79 +129,126 @@ export class PeerSession {
       if (this.destroyed) return;
       this.handlers.onError?.(err.message || '连接错误');
     });
+
+    this.watchIce(conn);
+  }
+
+  private watchIce(conn: DataConnection): void {
+    const pc = conn.peerConnection;
+    if (!pc) return;
+
+    pc.addEventListener('iceconnectionstatechange', () => {
+      if (this.destroyed) return;
+      const state = pc.iceConnectionState;
+      if (state === 'failed') {
+        this.handlers.onError?.(CROSS_NET_HINT);
+      }
+    });
+
+    pc.addEventListener('connectionstatechange', () => {
+      if (this.destroyed) return;
+      if (pc.connectionState === 'failed') {
+        this.handlers.onError?.(CROSS_NET_HINT);
+      }
+    });
   }
 
   private startHost(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const peerId = roomCodeToPeerId(this.roomCode);
-      const peer = new Peer(peerId);
-      this.peer = peer;
+    return new Promise(async (resolve, reject) => {
+      try {
+        const peerId = roomCodeToPeerId(this.roomCode);
+        const peer = await this.createPeer(peerId);
+        this.peer = peer;
 
-      peer.on('open', () => {
-        if (this.destroyed) return;
-        this.handlers.onOpen?.();
-        resolve();
-      });
+        peer.on('open', () => {
+          if (this.destroyed) return;
+          this.handlers.onOpen?.();
+          resolve();
+        });
 
-      peer.on('connection', (conn) => {
-        if (this.destroyed) return;
-        // 只接受第一个连接
-        if (this.conn) {
-          conn.close();
-          return;
-        }
-        this.bindConnection(conn);
-      });
+        peer.on('connection', (conn) => {
+          if (this.destroyed) return;
+          if (this.conn?.open) {
+            conn.close();
+            return;
+          }
+          if (this.conn) {
+            try {
+              this.conn.close();
+            } catch {
+              /* ignore */
+            }
+          }
+          this.connectedNotified = false;
+          this.bindConnection(conn);
+        });
 
-      peer.on('error', (err: Error & { type?: string }) => {
-        if (this.destroyed) return;
-        const message =
-          err.type === 'unavailable-id'
-            ? '房间码已被占用，请重开一局'
-            : err.message || '信令错误';
-        this.handlers.onError?.(message);
+        peer.on('error', (err: Error & { type?: string }) => {
+          if (this.destroyed) return;
+          const message =
+            err.type === 'unavailable-id'
+              ? '房间码已被占用，请重开一局'
+              : err.type === 'network'
+                ? '无法连接信令服务器，请检查网络后重试'
+                : err.message || '信令错误';
+          this.handlers.onError?.(message);
+          reject(err);
+        });
+
+        peer.on('disconnected', () => {
+          if (this.destroyed) return;
+          try {
+            peer.reconnect();
+          } catch {
+            this.handlers.onDisconnected?.('信令断开');
+          }
+        });
+      } catch (err) {
         reject(err);
-      });
-
-      peer.on('disconnected', () => {
-        if (this.destroyed) return;
-        // 尝试重连信令服务器
-        try {
-          peer.reconnect();
-        } catch {
-          this.handlers.onDisconnected?.('信令断开');
-        }
-      });
+      }
     });
   }
 
   private startGuest(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const peer = new Peer();
-      this.peer = peer;
+    return new Promise(async (resolve, reject) => {
+      try {
+        const peer = await this.createPeer();
+        this.peer = peer;
 
-      peer.on('open', () => {
-        if (this.destroyed) return;
-        this.handlers.onOpen?.();
-        const conn = peer.connect(roomCodeToPeerId(this.roomCode), { reliable: true });
-        this.bindConnection(conn);
-        resolve();
-      });
+        peer.on('open', () => {
+          if (this.destroyed) return;
+          this.handlers.onOpen?.();
+          const conn = peer.connect(roomCodeToPeerId(this.roomCode), {
+            reliable: true,
+            serialization: 'json',
+          });
+          this.bindConnection(conn);
+          resolve();
+        });
 
-      peer.on('error', (err: Error) => {
-        if (this.destroyed) return;
-        this.handlers.onError?.(err.message || '无法加入房间');
+        peer.on('error', (err: Error & { type?: string }) => {
+          if (this.destroyed) return;
+          const message =
+            err.type === 'peer-unavailable'
+              ? '房间不存在或房主未就绪，请确认房间码'
+              : err.type === 'network'
+                ? '无法连接信令服务器，请检查网络后重试'
+                : err.message || '无法加入房间';
+          this.handlers.onError?.(message);
+          reject(err);
+        });
+
+        peer.on('disconnected', () => {
+          if (this.destroyed) return;
+          try {
+            peer.reconnect();
+          } catch {
+            this.handlers.onDisconnected?.('信令断开');
+          }
+        });
+      } catch (err) {
         reject(err);
-      });
-
-      peer.on('disconnected', () => {
-        if (this.destroyed) return;
-        try {
-          peer.reconnect();
-        } catch {
-          this.handlers.onDisconnected?.('信令断开');
-        }
-      });
+      }
     });
   }
 }
