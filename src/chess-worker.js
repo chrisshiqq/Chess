@@ -389,19 +389,28 @@ const unmakeMove = (board, from, to, captured) => {
     }
 };
 
-// 从伪合法着法中过滤出不送将/不飞将的合法着法（复用已有 moves，避免再 getPieceMoves）
+// 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
+const leavesOwnKingUnsafe = (board, color) => {
+    perfStats.legalityChecks++;
+    return isFlyingGeneral(board) || isCheckRaw(board, color);
+};
+
+// 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
+// 搜索热路径使用延迟合法性（试走时检测），避免对剪枝未触及的着法做全量过滤
 const filterLegalMoves = (board, from, piece, pseudoMoves) => {
     const validMoves = [];
     for (const to of pseudoMoves) {
         const captured = makeMove(board, from, to);
-        const illegal = isFlyingGeneral(board) || isCheck(board, piece.color);
+        const illegal = leavesOwnKingUnsafe(board, piece.color);
         unmakeMove(board, from, to, captured);
         if (!illegal) validMoves.push(to);
     }
     return validMoves;
 };
 
-// 搜索用着法准备（轻量）：只生成当前方合法着，不建关系图/威胁/机动性
+// 搜索用着法准备（轻量）：不建关系图/威胁/机动性
+// SEARCH_DEFER_LEGALITY=true：只生成伪合法，合法性在试走时检测
+// SEARCH_DEFER_LEGALITY=false：预过滤合法着（旧路径，便于 A/B）
 // 点棋关系仍走完整 evaluateBoard，不受影响
 const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = null, depth = 0) => {
     perfStats.prepareSearchInfoCount[currentPlayer]++;
@@ -409,6 +418,7 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
     const inCheck = isCheckRaw(board, currentPlayer);
     const piecesInfo = [];
     const legalMoveList = [];
+    const defer = SEARCH_DEFER_LEGALITY;
 
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -416,22 +426,23 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
             if (!piece || piece.color !== currentPlayer) continue;
 
             const moves = getPieceMoves(board, { r, c }, piece);
-            const legalMoves = filterLegalMoves(board, { r, c }, piece, moves);
+            const useMoves = defer ? moves : filterLegalMoves(board, { r, c }, piece, moves);
             piecesInfo.push({
                 piece,
                 r,
                 c,
                 moves,
-                legalMoves
+                legalMoves: useMoves
             });
-            for (let i = 0; i < legalMoves.length; i++) {
-                const to = legalMoves[i];
+            for (let i = 0; i < useMoves.length; i++) {
+                const to = useMoves[i];
                 legalMoveList.push({ from: { r, c }, to, score: 0 });
             }
+            perfStats.pseudoMovesGenerated += moves.length;
         }
     }
 
-    // 轻量 boardInfo：仅被将标志，供排序/分支使用（无 90 格控制表）
+    // 轻量 boardInfo：仅被将标志
     const boardInfo = {
         redIsInCheck: currentPlayer === 'red' ? inCheck : false,
         blackIsInCheck: currentPlayer === 'black' ? inCheck : false,
@@ -447,7 +458,7 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
         boardInfo.gameState = { status: 'playing' };
     }
 
-    return { piecesInfo, boardInfo, legalMoveList };
+    return { piecesInfo, boardInfo, legalMoveList, inCheck, deferredLegality: defer };
 };
 
 // 计算衍生值：威胁值、安全值、战术值、机动值
@@ -3394,6 +3405,11 @@ let perfStats = {
     nodesSearched: {}, // 按深度统计搜索的节点数
     movesGenerated: {}, // 按深度统计生成的走法数
     cutoffs: {}, // 按深度统计剪枝次数
+    // 合法性路径：伪合法生成量、试走合法性检测、非法跳过、实际进入搜索的合法着
+    pseudoMovesGenerated: 0,
+    legalityChecks: 0,
+    illegalMovesSkipped: 0,
+    legalMovesSearched: 0,
     startTime: Date.now()
 };
 
@@ -3406,26 +3422,58 @@ const resetPerfStats = () => {
     perfStats.nodesSearched = {};
     perfStats.movesGenerated = {};
     perfStats.cutoffs = {};
+    perfStats.pseudoMovesGenerated = 0;
+    perfStats.legalityChecks = 0;
+    perfStats.illegalMovesSkipped = 0;
+    perfStats.legalMovesSearched = 0;
     perfStats.startTime = Date.now();
+};
+
+const snapshotPerfStats = () => {
+    const elapsed = Date.now() - perfStats.startTime;
+    const ttStats = transpositionTable.getStats();
+    const depths = Object.keys(perfStats.nodesSearched).sort((a, b) => Number(a) - Number(b));
+    const byDepth = {};
+    for (const d of depths) {
+        byDepth[d] = {
+            nodes: perfStats.nodesSearched[d] || 0,
+            moves: perfStats.movesGenerated[d] || 0,
+            cutoffs: perfStats.cutoffs[d] || 0
+        };
+    }
+    return {
+        elapsedMs: elapsed,
+        deferLegality: SEARCH_DEFER_LEGALITY,
+        evaluateBoard: { ...perfStats.evaluateBoardCount },
+        prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
+        calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
+        alphaBetaCalls: perfStats.alphaBetaCalls,
+        pseudoMovesGenerated: perfStats.pseudoMovesGenerated,
+        legalityChecks: perfStats.legalityChecks,
+        illegalMovesSkipped: perfStats.illegalMovesSkipped,
+        legalMovesSearched: perfStats.legalMovesSearched,
+        tt: ttStats,
+        byDepth
+    };
 };
 
 // 打印统计信息
 const logPerfStats = (currentPlayer) => {
-    const elapsed = Date.now() - perfStats.startTime;
-    const ttStats = transpositionTable.getStats();
-    console.log(`📊 性能统计 (${currentPlayer}) - ${elapsed}ms:`);
-    console.log(`   evaluateBoard: red=${perfStats.evaluateBoardCount.red}, black=${perfStats.evaluateBoardCount.black}`);
-    console.log(`   prepareSearchInfo: red=${perfStats.prepareSearchInfoCount.red}, black=${perfStats.prepareSearchInfoCount.black}`);
-    console.log(`   calculateThreatValues: red=${perfStats.calculateThreatValuesCount.red}, black=${perfStats.calculateThreatValuesCount.black}`);
-    console.log(`   alphaBeta调用次数: ${perfStats.alphaBetaCalls}`);
-    console.log(`   TT: hits=${ttStats.hits}, misses=${ttStats.misses}, hitRate=${ttStats.hitRate}%, stores=${ttStats.stores}, size=${ttStats.currentSize}`);
+    const snap = snapshotPerfStats();
+    console.log(`📊 性能统计 (${currentPlayer}) - ${snap.elapsedMs}ms:`);
+    console.log(`   evaluateBoard: red=${snap.evaluateBoard.red}, black=${snap.evaluateBoard.black}`);
+    console.log(`   prepareSearchInfo: red=${snap.prepareSearchInfo.red}, black=${snap.prepareSearchInfo.black}`);
+    console.log(`   calculateThreatValues: red=${snap.calculateThreatValues.red}, black=${snap.calculateThreatValues.black}`);
+    console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
+    console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
+    console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
-    // 打印按深度统计的节点数、走法数、剪枝数
-    const depths = Object.keys(perfStats.nodesSearched).sort((a, b) => a - b);
+    const depths = Object.keys(snap.byDepth);
     if (depths.length > 0) {
         console.log('   按深度统计:');
         for (const d of depths) {
-            console.log(`     深度${d}: 节点=${perfStats.nodesSearched[d]}, 走法=${perfStats.movesGenerated[d] || 0}, 剪枝=${perfStats.cutoffs[d] || 0}`);
+            const row = snap.byDepth[d];
+            console.log(`     深度${d}: 节点=${row.nodes}, 走法=${row.moves}, 剪枝=${row.cutoffs}`);
         }
     }
 };
@@ -3442,6 +3490,9 @@ const clearEvalCache = () => {
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_ENABLE_NMP = false;
 const SEARCH_ENABLE_LMR = false;
+
+// 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
+let SEARCH_DEFER_LEGALITY = true;
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -3488,7 +3539,10 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality } = payload;
+            if (typeof searchDeferLegality === 'boolean') {
+                SEARCH_DEFER_LEGALITY = searchDeferLegality;
+            }
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
@@ -3521,7 +3575,9 @@ if (typeof self !== 'undefined') {
                     secondMoveSequence: bestSearchMove.secondMoveSequence,
                     bestMoveScore: bestSearchMove.bestMoveScore,
                     secondBestMoveScore: bestSearchMove.secondBestMoveScore,
-                    allMovesWithScores: bestSearchMove.allMovesWithScores || []
+                    allMovesWithScores: bestSearchMove.allMovesWithScores || [],
+                    completedDepth: bestSearchMove.completedDepth,
+                    perf: snapshotPerfStats()
                 } 
             });
             break;
@@ -3791,17 +3847,19 @@ const staticSearchEval = (board, searchInitiator, gameStage) => {
     return net;
 };
 
-// 生成当前方合法吃子着（供静默搜索）
-const generateLegalCaptures = (board, currentPlayer) => {
+// 生成当前方吃子着（供静默搜索）
+const generateCapturesForSearch = (board, currentPlayer) => {
     const captures = [];
+    const defer = SEARCH_DEFER_LEGALITY;
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const piece = board[r][c];
             if (!piece || piece.color !== currentPlayer) continue;
             const pseudo = getPieceMoves(board, { r, c }, piece);
-            const legal = filterLegalMoves(board, { r, c }, piece, pseudo);
-            for (let i = 0; i < legal.length; i++) {
-                const to = legal[i];
+            perfStats.pseudoMovesGenerated += pseudo.length;
+            const useMoves = defer ? pseudo : filterLegalMoves(board, { r, c }, piece, pseudo);
+            for (let i = 0; i < useMoves.length; i++) {
+                const to = useMoves[i];
                 if (board[to.r][to.c]) {
                     captures.push({ from: { r, c }, to });
                 }
@@ -3838,7 +3896,7 @@ const quiescence = (
         }
     }
 
-    let captures = generateLegalCaptures(b, currentPlayer);
+    let captures = generateCapturesForSearch(b, currentPlayer);
     if (captures.length === 0) {
         return { value: standPat, moveSequence: [] };
     }
@@ -3856,10 +3914,17 @@ const quiescence = (
 
     let bestEval = standPat;
     let bestMoveSequence = [];
+    const defer = SEARCH_DEFER_LEGALITY;
 
     for (let i = 0; i < captures.length; i++) {
         const move = captures[i];
         const captured = makeMove(b, move.from, move.to);
+        if (defer && leavesOwnKingUnsafe(b, currentPlayer)) {
+            unmakeMove(b, move.from, move.to, captured);
+            perfStats.illegalMovesSkipped++;
+            continue;
+        }
+        perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
         const result = quiescence(
@@ -3940,10 +4005,21 @@ const alphaBeta = (
     const abPiecesInfo = searchInfo.piecesInfo;
     const abBoardInfo = searchInfo.boardInfo;
     const currentPlayerColor = currentPlayer;
-    const inCheck = (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
+    const inCheck = searchInfo.inCheck ||
+                    (currentPlayerColor === 'red' && abBoardInfo.redIsInCheck) ||
                     (currentPlayerColor === 'black' && abBoardInfo.blackIsInCheck);
 
-    // 终局：合法着为空 + isCheckRaw（prepareSearchInfo 已写入 gameState）
+    const terminalScore = (mateInCheck) => {
+        const isInitiatorWinner = currentPlayerColor !== searchInitiator;
+        const baseScore = isInitiatorWinner ? 100000 : -100000;
+        return {
+            value: baseScore + (isInitiatorWinner ? d : (searchDepth - d)),
+            moveSequence: [],
+            terminal: mateInCheck ? 'checkmate' : 'stalemate'
+        };
+    };
+
+    // 无伪合法着：直接终局（极少见；通常至少有将的走动）
     if (!searchInfo.legalMoveList || searchInfo.legalMoveList.length === 0) {
         const gameState = abBoardInfo.gameState;
         if (gameState && (gameState.status === 'checkmate' || gameState.status === 'stalemate')) {
@@ -3952,14 +4028,7 @@ const alphaBeta = (
             const stepsFromRoot = searchDepth - d;
             return { value: baseScore + (isInitiatorWinner ? d : stepsFromRoot), moveSequence: [] };
         }
-        const mateInCheck = isCheckRaw(b, currentPlayerColor);
-        const isInitiatorWinner = currentPlayerColor !== searchInitiator;
-        const baseScore = isInitiatorWinner ? 100000 : -100000;
-        return {
-            value: baseScore + (isInitiatorWinner ? d : (searchDepth - d)),
-            moveSequence: [],
-            terminal: mateInCheck ? 'checkmate' : 'stalemate'
-        };
+        return terminalScore(inCheck);
     }
 
     // 空着剪枝：仅 maximizing；完整评估下保守启用
@@ -4008,6 +4077,7 @@ const alphaBeta = (
     let bestEval = maximizing ? -Infinity : Infinity;
     let bestMove = null;
     let bestMoveSequence = [];
+    let legalMovesFound = 0;
 
     for (let moveIndex = 0; moveIndex < moves.length; moveIndex++) {
         const move = moves[moveIndex];
@@ -4018,6 +4088,7 @@ const alphaBeta = (
             isSameMove(move, killersAtDepth[1]);
 
         // LMR：靠后的安静着法降深 1（完整评估下保守）
+        // moveIndex 含伪合法序；非法着跳过后略偏保守（少降深），不影响正确性
         let reduction = 0;
         if (
             SEARCH_ENABLE_LMR &&
@@ -4032,6 +4103,14 @@ const alphaBeta = (
         }
 
         const captured = makeMove(b, move.from, move.to);
+        if (SEARCH_DEFER_LEGALITY && leavesOwnKingUnsafe(b, currentPlayerColor)) {
+            unmakeMove(b, move.from, move.to, captured);
+            perfStats.illegalMovesSkipped++;
+            continue;
+        }
+        legalMovesFound++;
+        perfStats.legalMovesSearched++;
+
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
 
@@ -4085,6 +4164,11 @@ const alphaBeta = (
             }
             break;
         }
+    }
+
+    // 延迟合法性：伪合法非空但无一合法 → 将死/困毙
+    if (SEARCH_DEFER_LEGALITY && legalMovesFound === 0) {
+        return terminalScore(inCheck);
     }
 
     storeTT(bestEval, bestMove, bestMoveSequence);
