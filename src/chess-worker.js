@@ -207,6 +207,23 @@ const clearRelationMasks = () => {
     scratchControlMask.fill(0);
 };
 
+// 格位 → piecesInfo 引用（替代每叶 new Map）
+const scratchPieceAtSq = new Array(REL_SQUARES);
+const clearPieceAtSq = () => {
+    for (let i = 0; i < REL_SQUARES; i++) scratchPieceAtSq[i] = null;
+};
+
+// 复用 relCtx，避免每子 new 小对象
+const scratchRelCtx = {
+    useMasks: true,
+    pieceIndex: 0,
+    attackMask: null,
+    guardMask: null,
+    controlMask: null,
+    redAttack: null,
+    blackAttack: null
+};
+
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
 
 const forEachSetBit = (mask, fn) => {
@@ -607,13 +624,59 @@ const HORSE_DIRS = [
     { dr: -1, dc: -2, legDr: 0, legDc: -1 }
 ];
 
-// 非炮：一次几何扫描；relCtx.useMasks 时写格位 mask，否则写 threat/guard/control 列表
-// 语义与 getPieceMoves 一致；getPieceMoves 仍供着法生成使用
-const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
+// 模块级落点处理（非每子新建闭包）；返回机动增量
+// pieceAtSq: 90 格 → piecesInfo；relCtx.useMasks 时写 mask
+const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relCtx, isRed, pieceColor) => {
+    if (!isValidPos(tr, tc)) return 0;
+    const target = board[tr][tc];
+    if (!target) {
+        if (useMasks) {
+            const sq = tr * 9 + tc;
+            relCtx.controlMask[sq] |= bit;
+            if (isRed) setAttackBit(relCtx.redAttack, sq);
+            else setAttackBit(relCtx.blackAttack, sq);
+        } else {
+            info.moves.push({ r: tr, c: tc });
+            info.control.push({ r: tr, c: tc });
+        }
+        return EVALUATION_PARAMETERS.mobility.baseMoveValue;
+    }
+    if (target.color !== pieceColor) {
+        if (useMasks) {
+            if (pieceAtSq[tr * 9 + tc]) {
+                relCtx.attackMask[tr * 9 + tc] |= bit;
+            }
+        } else {
+            info.moves.push({ r: tr, c: tc });
+            const targetInfo = pieceAtSq[tr * 9 + tc];
+            if (targetInfo) {
+                info.threat.push(targetInfo);
+                targetInfo.threatenedBy.push(info);
+            }
+        }
+        return 0;
+    }
+    if (target.type !== 'general') {
+        const targetInfo = pieceAtSq[tr * 9 + tc];
+        if (targetInfo && targetInfo !== info) {
+            if (useMasks) {
+                relCtx.guardMask[tr * 9 + tc] |= bit;
+            } else {
+                info.guard.push(targetInfo);
+                targetInfo.guardedBy.push(info);
+                info.allyGuards.push({ r: tr, c: tc });
+            }
+        }
+    }
+    return 0;
+};
+
+// 非炮：一次几何扫描；语义与 getPieceMoves 一致
+const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const piece = info.piece;
     const { r, c } = info;
     const isRed = piece.color === 'red';
-    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+    const pieceColor = piece.color;
     const useMasks = !!(relCtx && relCtx.useMasks);
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     info.moves = [];
@@ -621,80 +684,28 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
     info.allyGuards = [];
     let mobilityValue = 0;
 
-    const linkThreat = (tr, tc) => {
-        if (useMasks) {
-            if (posByKey.has(tr * 9 + tc)) {
-                relCtx.attackMask[tr * 9 + tc] |= bit;
-            }
-            return;
-        }
-        const targetInfo = posByKey.get(tr * 9 + tc);
-        if (targetInfo) {
-            info.threat.push(targetInfo);
-            targetInfo.threatenedBy.push(info);
-        }
-    };
-
-    const linkGuard = (tr, tc) => {
-        if (useMasks) {
-            const targetInfo = posByKey.get(tr * 9 + tc);
-            if (targetInfo && targetInfo !== info) {
-                relCtx.guardMask[tr * 9 + tc] |= bit;
-            }
-            return;
-        }
-        const targetInfo = posByKey.get(tr * 9 + tc);
-        if (targetInfo && targetInfo !== info) {
-            info.guard.push(targetInfo);
-            targetInfo.guardedBy.push(info);
-            info.allyGuards.push({ r: tr, c: tc });
-        }
-    };
-
-    const markControl = (tr, tc) => {
-        if (useMasks) {
-            const sq = tr * 9 + tc;
-            relCtx.controlMask[sq] |= bit;
-            if (isRed) setAttackBit(relCtx.redAttack, sq);
-            else setAttackBit(relCtx.blackAttack, sq);
-            return;
-        }
-        info.control.push({ r: tr, c: tc });
-    };
-
-    const addSquare = (tr, tc) => {
-        if (!isValidPos(tr, tc)) return;
-        const target = board[tr][tc];
-        if (!target) {
-            if (!useMasks) info.moves.push({ r: tr, c: tc });
-            markControl(tr, tc);
-            mobilityValue += baseMoveValue;
-        } else if (target.color !== piece.color) {
-            if (!useMasks) info.moves.push({ r: tr, c: tc });
-            linkThreat(tr, tc);
-        } else if (target.type !== 'general') {
-            linkGuard(tr, tc);
-        }
-    };
-
     switch (piece.type) {
         case 'general':
             for (let i = 0; i < ORTH_DIRS.length; i++) {
-                const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
-                const nr = r + dr, nc = c + dc;
+                const nr = r + ORTH_DIRS[i][0], nc = c + ORTH_DIRS[i][1];
                 if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
-                    else if (!isRed && nr >= 7 && nr <= 9) addSquare(nr, nc);
+                    if (isRed && nr >= 0 && nr <= 2) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    } else if (!isRed && nr >= 7 && nr <= 9) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    }
                 }
             }
             break;
         case 'advisor':
             for (let i = 0; i < DIAG_DIRS.length; i++) {
-                const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
-                const nr = r + dr, nc = c + dc;
+                const nr = r + DIAG_DIRS[i][0], nc = c + DIAG_DIRS[i][1];
                 if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
-                    else if (!isRed && nr >= 7 && nr <= 9) addSquare(nr, nc);
+                    if (isRed && nr >= 0 && nr <= 2) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    } else if (!isRed && nr >= 7 && nr <= 9) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    }
                 }
             }
             break;
@@ -704,8 +715,11 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
                 const nr = r + d.dr, nc = c + d.dc;
                 const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
                 if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-                    if (isRed && nr <= 4) addSquare(nr, nc);
-                    else if (!isRed && nr >= 5) addSquare(nr, nc);
+                    if (isRed && nr <= 4) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    } else if (!isRed && nr >= 5) {
+                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
+                    }
                 }
             }
             break;
@@ -714,7 +728,7 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
                 const d = HORSE_DIRS[i];
                 const legR = r + d.legDr, legC = c + d.legDc;
                 if (isValidPos(legR, legC) && board[legR][legC] === null) {
-                    addSquare(r + d.dr, c + d.dc);
+                    mobilityValue += applyRelationSquare(board, info, pieceAtSq, r + d.dr, c + d.dc, useMasks, bit, relCtx, isRed, pieceColor);
                 }
             }
             break;
@@ -725,15 +739,41 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
                 while (isValidPos(nr, nc)) {
                     const target = board[nr][nc];
                     if (target === null) {
-                        if (!useMasks) info.moves.push({ r: nr, c: nc });
-                        markControl(nr, nc);
-                        mobilityValue += baseMoveValue;
+                        if (useMasks) {
+                            const sq = nr * 9 + nc;
+                            relCtx.controlMask[sq] |= bit;
+                            if (isRed) setAttackBit(relCtx.redAttack, sq);
+                            else setAttackBit(relCtx.blackAttack, sq);
+                        } else {
+                            info.moves.push({ r: nr, c: nc });
+                            info.control.push({ r: nr, c: nc });
+                        }
+                        mobilityValue += EVALUATION_PARAMETERS.mobility.baseMoveValue;
                     } else {
-                        if (target.color !== piece.color) {
-                            if (!useMasks) info.moves.push({ r: nr, c: nc });
-                            linkThreat(nr, nc);
+                        if (target.color !== pieceColor) {
+                            if (useMasks) {
+                                if (pieceAtSq[nr * 9 + nc]) {
+                                    relCtx.attackMask[nr * 9 + nc] |= bit;
+                                }
+                            } else {
+                                info.moves.push({ r: nr, c: nc });
+                                const targetInfo = pieceAtSq[nr * 9 + nc];
+                                if (targetInfo) {
+                                    info.threat.push(targetInfo);
+                                    targetInfo.threatenedBy.push(info);
+                                }
+                            }
                         } else if (target.type !== 'general') {
-                            linkGuard(nr, nc);
+                            const targetInfo = pieceAtSq[nr * 9 + nc];
+                            if (targetInfo && targetInfo !== info) {
+                                if (useMasks) {
+                                    relCtx.guardMask[nr * 9 + nc] |= bit;
+                                } else {
+                                    info.guard.push(targetInfo);
+                                    targetInfo.guardedBy.push(info);
+                                    info.allyGuards.push({ r: nr, c: nc });
+                                }
+                            }
                         }
                         break;
                     }
@@ -745,10 +785,10 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
         case 'soldier': {
             const forward = isRed ? 1 : -1;
             const crossedRiver = isRed ? r >= 5 : r <= 4;
-            addSquare(r + forward, c);
+            mobilityValue += applyRelationSquare(board, info, pieceAtSq, r + forward, c, useMasks, bit, relCtx, isRed, pieceColor);
             if (crossedRiver) {
-                addSquare(r, c - 1);
-                addSquare(r, c + 1);
+                mobilityValue += applyRelationSquare(board, info, pieceAtSq, r, c - 1, useMasks, bit, relCtx, isRed, pieceColor);
+                mobilityValue += applyRelationSquare(board, info, pieceAtSq, r, c + 1, useMasks, bit, relCtx, isRed, pieceColor);
             }
             break;
         }
@@ -759,10 +799,11 @@ const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
 };
 
 // 炮：一次四向射线；mask 模式写 attack/guard/control，列表模式保持旧语义
-const fillCannonRelations = (board, info, posByKey, relCtx = null) => {
+const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const piece = info.piece;
     const { r, c } = info;
     const isRed = piece.color === 'red';
+    const pieceColor = piece.color;
     const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     const useMasks = !!(relCtx && relCtx.useMasks);
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
@@ -779,9 +820,9 @@ const fillCannonRelations = (board, info, posByKey, relCtx = null) => {
             if (p !== null) {
                 screenFoundCount++;
                 if (screenFoundCount === 2) {
-                    const targetInfo = posByKey.get(nr * 9 + nc);
+                    const targetInfo = pieceAtSq[nr * 9 + nc];
                     if (targetInfo && targetInfo !== info) {
-                        if (p.color !== piece.color) {
+                        if (p.color !== pieceColor) {
                             if (useMasks) {
                                 relCtx.attackMask[nr * 9 + nc] |= bit;
                             } else {
@@ -797,7 +838,7 @@ const fillCannonRelations = (board, info, posByKey, relCtx = null) => {
                                 targetInfo.guardedBy.push(info);
                             }
                         }
-                    } else if (p.color !== piece.color) {
+                    } else if (p.color !== pieceColor) {
                         if (!useMasks) info.moves.push({ r: nr, c: nc });
                     }
                     break;
@@ -913,31 +954,32 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         boardInfo = makeEmptyControllerGrid();
     }
 
-    const posByKey = new Map();
+    clearPieceAtSq();
     for (let i = 0; i < piecesInfo.length; i++) {
         const info = piecesInfo[i];
         if (info.pieceIndex == null) info.pieceIndex = i;
-        posByKey.set(info.r * 9 + info.c, info);
+        scratchPieceAtSq[info.r * 9 + info.c] = info;
+    }
+
+    let relCtx = null;
+    if (useMasks) {
+        relCtx = scratchRelCtx;
+        relCtx.useMasks = true;
+        relCtx.attackMask = boardInfo.attackMask;
+        relCtx.guardMask = boardInfo.guardMask;
+        relCtx.controlMask = boardInfo.controlMask;
+        relCtx.redAttack = boardInfo.redAttack;
+        relCtx.blackAttack = boardInfo.blackAttack;
     }
 
     for (let i = 0; i < piecesInfo.length; i++) {
         const info = piecesInfo[i];
-        const relCtx = useMasks
-            ? {
-                useMasks: true,
-                pieceIndex: info.pieceIndex,
-                attackMask: boardInfo.attackMask,
-                guardMask: boardInfo.guardMask,
-                controlMask: boardInfo.controlMask,
-                redAttack: boardInfo.redAttack,
-                blackAttack: boardInfo.blackAttack
-            }
-            : null;
+        if (relCtx) relCtx.pieceIndex = info.pieceIndex;
 
         if (info.piece.type === 'cannon') {
-            fillCannonRelations(board, info, posByKey, relCtx);
+            fillCannonRelations(board, info, scratchPieceAtSq, relCtx);
         } else {
-            fillNonCannonRelations(board, info, posByKey, relCtx);
+            fillNonCannonRelations(board, info, scratchPieceAtSq, relCtx);
         }
 
         if (!useMasks) {
@@ -1321,19 +1363,25 @@ const calculateStaticExchangeScore = (threatenedPiece) => {
     return exchangeScore;
 };
 
-// mask 路径 SEE：材料数组排序，语义与上式一致
+// mask 路径 SEE：材料数组排序，语义与上式一致（bitscan 内联，无回调）
 const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, attackMask, guardMask) => {
     const atkMats = seeAttackerMatScratch;
     const grdMats = seeGuardMatScratch;
     atkMats.length = 0;
     grdMats.length = 0;
     const sq = threatenedPiece.r * 9 + threatenedPiece.c;
-    forEachSetBit(attackMask[sq], (i) => {
-        atkMats.push(piecesInfo[i].materialValue);
-    });
-    forEachSetBit(guardMask[sq], (i) => {
-        grdMats.push(piecesInfo[i].materialValue);
-    });
+    let am = attackMask[sq] >>> 0;
+    while (am !== 0) {
+        const bit = am & -am;
+        atkMats.push(piecesInfo[31 - Math.clz32(bit)].materialValue);
+        am ^= bit;
+    }
+    let gm = guardMask[sq] >>> 0;
+    while (gm !== 0) {
+        const bit = gm & -gm;
+        grdMats.push(piecesInfo[31 - Math.clz32(bit)].materialValue);
+        gm ^= bit;
+    }
     atkMats.sort((a, b) => a - b);
     grdMats.sort((a, b) => a - b);
 
@@ -1403,13 +1451,17 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
         if (threatenedPiece.piece.type === PIECE_TYPES.GENERAL) {
             if (boardInfo) {
                 if (useMasks) {
-                    forEachSetBit(attackMask[threatenedPiece.r * 9 + threatenedPiece.c], (ai) => {
+                    let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
+                    while (m !== 0) {
+                        const bit = m & -m;
+                        const ai = 31 - Math.clz32(bit);
                         boardInfo.checks.push({
                             attacker: piecesInfo[ai],
                             target: threatenedPiece,
                             isCheck: true
                         });
-                    });
+                        m ^= bit;
+                    }
                 } else {
                     for (let ai = 0; ai < attackerList.length; ai++) {
                         boardInfo.checks.push({
@@ -1430,13 +1482,16 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
             if (boardInfo) {
                 if (firstAttacker.piece.color === currentPlayer) {
                     if (useMasks) {
-                        forEachSetBit(attackMask[threatenedPiece.r * 9 + threatenedPiece.c], (ai) => {
-                            const info = piecesInfo[ai];
+                        let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
+                        while (m !== 0) {
+                            const bit = m & -m;
+                            const info = piecesInfo[31 - Math.clz32(bit)];
                             if (!canCaptureSeen.has(info)) {
                                 canCaptureSeen.add(info);
                                 boardInfo.canCapture.push(info);
                             }
-                        });
+                            m ^= bit;
+                        }
                     } else {
                         for (let ai = 0; ai < attackerList.length; ai++) {
                             const info = attackerList[ai];
@@ -1461,24 +1516,7 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
     }
 };
 
-// 将的空控邻格（与 fill 中 general 空着 control 一致）
-const forEachGeneralEmptyControl = (board, general, fn) => {
-    const { r, c } = general;
-    const isRed = general.piece.color === 'red';
-    for (let i = 0; i < ORTH_DIRS.length; i++) {
-        const nr = r + ORTH_DIRS[i][0];
-        const nc = c + ORTH_DIRS[i][1];
-        if (nc < 3 || nc > 5) continue;
-        if (isRed) {
-            if (nr < 0 || nr > 2) continue;
-        } else if (nr < 7 || nr > 9) {
-            continue;
-        }
-        if (board[nr][nc] === null) fn(nr, nc);
-    }
-};
-
-// 计算安全值：将空控邻格是否被敌控
+// 计算安全值：将空控邻格是否被敌控（无 visit 回调）
 const calculateSafetyValues = (piecesInfo, boardInfo, board = null) => {
     const generalInfo = [];
     for (let i = 0; i < piecesInfo.length; i++) {
@@ -1490,37 +1528,51 @@ const calculateSafetyValues = (piecesInfo, boardInfo, board = null) => {
     const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
     const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
 
-    for (const general of generalInfo) {
+    for (let gi = 0; gi < generalInfo.length; gi++) {
+        const general = generalInfo[gi];
         const generalColor = general.piece.color;
         const enemyColor = generalColor === 'red' ? 'black' : 'red';
         const enemyBits = useAttackBits
             ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
             : null;
+        const isRed = generalColor === 'red';
+        const { r, c } = general;
 
-        const visit = (r, c) => {
+        const penalizeIfEnemy = (nr, nc) => {
             let hasEnemyControl;
             if (useAttackBits) {
-                hasEnemyControl = hasAttackBit(enemyBits, r * 9 + c);
+                hasEnemyControl = hasAttackBit(enemyBits, nr * 9 + nc);
             } else {
-                const positionControllers = boardInfo[r][c];
-                hasEnemyControl = positionControllers.some(controller => {
+                const positionControllers = boardInfo[nr][nc];
+                hasEnemyControl = false;
+                for (let ci = 0; ci < positionControllers.length; ci++) {
+                    const controller = positionControllers[ci];
                     const color = controller.piece ? controller.piece.color : controller.color;
-                    return color === enemyColor;
-                });
+                    if (color === enemyColor) {
+                        hasEnemyControl = true;
+                        break;
+                    }
+                }
             }
-            if (hasEnemyControl) {
-                general.safetyValue -= 50;
-            }
+            if (hasEnemyControl) general.safetyValue -= 50;
         };
 
-        if (useMasks && board) {
-            forEachGeneralEmptyControl(board, general, visit);
+        if ((useMasks && board) || ((!general.control || general.control.length === 0) && board)) {
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const nr = r + ORTH_DIRS[i][0];
+                const nc = c + ORTH_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (isRed) {
+                    if (nr < 0 || nr > 2) continue;
+                } else if (nr < 7 || nr > 9) {
+                    continue;
+                }
+                if (board[nr][nc] === null) penalizeIfEnemy(nr, nc);
+            }
         } else if (general.control && general.control.length) {
             for (let i = 0; i < general.control.length; i++) {
-                visit(general.control[i].r, general.control[i].c);
+                penalizeIfEnemy(general.control[i].r, general.control[i].c);
             }
-        } else if (board) {
-            forEachGeneralEmptyControl(board, general, visit);
         }
     }
 };
