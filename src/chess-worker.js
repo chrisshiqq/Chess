@@ -201,10 +201,10 @@ const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：�
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
 const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
 
-const clearRelationMasks = () => {
+const clearRelationMasks = (clearControl = true) => {
     scratchAttackMask.fill(0);
     scratchGuardMask.fill(0);
-    scratchControlMask.fill(0);
+    if (clearControl) scratchControlMask.fill(0);
 };
 
 // 格位 → piecesInfo 引用（替代每叶 new Map）
@@ -216,6 +216,7 @@ const clearPieceAtSq = () => {
 // 复用 relCtx，避免每子 new 小对象
 const scratchRelCtx = {
     useMasks: true,
+    skipControlMask: false, // 搜索叶：不写空控 controlMask（仍写攻击位图+机动）
     pieceIndex: 0,
     attackMask: null,
     guardMask: null,
@@ -296,12 +297,13 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
     const useAttackBits = !useRelationMasks && forSearchLeaf && SEARCH_LEAF_ATTACK_BITS;
     let boardInfo;
     if (useRelationMasks) {
-        clearRelationMasks();
+        clearRelationMasks(!forSearchLeaf);
         clearAttackBits(scratchRedAttack);
         clearAttackBits(scratchBlackAttack);
         boardInfo = {
             useRelationMasks: true,
             useAttackBits: true,
+            skipControlMask: !!forSearchLeaf,
             attackMask: scratchAttackMask,
             guardMask: scratchGuardMask,
             controlMask: scratchControlMask,
@@ -624,15 +626,85 @@ const HORSE_DIRS = [
     { dr: -1, dc: -2, legDr: 0, legDc: -1 }
 ];
 
+// 短步子预表：与原 switch 方向顺序/宫河过滤一致；马象带 br,bc（腿/眼）
+const GENERAL_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const ADVISOR_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const ELEPHANT_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const HORSE_DEST = new Array(REL_SQUARES);
+const SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+
+(() => {
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const sq = r * 9 + c;
+            const gRed = [], gBlack = [], aRed = [], aBlack = [];
+            const eRed = [], eBlack = [], horse = [], sRed = [], sBlack = [];
+
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const nr = r + ORTH_DIRS[i][0], nc = c + ORTH_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (nr >= 0 && nr <= 2) gRed.push({ r: nr, c: nc });
+                if (nr >= 7 && nr <= 9) gBlack.push({ r: nr, c: nc });
+            }
+            for (let i = 0; i < DIAG_DIRS.length; i++) {
+                const nr = r + DIAG_DIRS[i][0], nc = c + DIAG_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (nr >= 0 && nr <= 2) aRed.push({ r: nr, c: nc });
+                if (nr >= 7 && nr <= 9) aBlack.push({ r: nr, c: nc });
+            }
+            for (let i = 0; i < ELEPHANT_DIRS.length; i++) {
+                const d = ELEPHANT_DIRS[i];
+                const nr = r + d.dr, nc = c + d.dc;
+                if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+                const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
+                if (nr <= 4) eRed.push({ r: nr, c: nc, br: eyeR, bc: eyeC });
+                if (nr >= 5) eBlack.push({ r: nr, c: nc, br: eyeR, bc: eyeC });
+            }
+            for (let i = 0; i < HORSE_DIRS.length; i++) {
+                const d = HORSE_DIRS[i];
+                const nr = r + d.dr, nc = c + d.dc;
+                const legR = r + d.legDr, legC = c + d.legDc;
+                if (legR < 0 || legR >= ROWS || legC < 0 || legC >= COLS) continue;
+                if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+                horse.push({ r: nr, c: nc, br: legR, bc: legC });
+            }
+            {
+                const fr = r + 1;
+                if (fr >= 0 && fr < ROWS) sRed.push({ r: fr, c });
+                if (r >= 5) {
+                    if (c - 1 >= 0) sRed.push({ r, c: c - 1 });
+                    if (c + 1 < COLS) sRed.push({ r, c: c + 1 });
+                }
+                const fbr = r - 1;
+                if (fbr >= 0 && fbr < ROWS) sBlack.push({ r: fbr, c });
+                if (r <= 4) {
+                    if (c - 1 >= 0) sBlack.push({ r, c: c - 1 });
+                    if (c + 1 < COLS) sBlack.push({ r, c: c + 1 });
+                }
+            }
+
+            GENERAL_DEST[0][sq] = gRed;
+            GENERAL_DEST[1][sq] = gBlack;
+            ADVISOR_DEST[0][sq] = aRed;
+            ADVISOR_DEST[1][sq] = aBlack;
+            ELEPHANT_DEST[0][sq] = eRed;
+            ELEPHANT_DEST[1][sq] = eBlack;
+            HORSE_DEST[sq] = horse;
+            SOLDIER_DEST[0][sq] = sRed;
+            SOLDIER_DEST[1][sq] = sBlack;
+        }
+    }
+})();
+
 // 模块级落点处理（非每子新建闭包）；返回机动增量
 // pieceAtSq: 90 格 → piecesInfo；relCtx.useMasks 时写 mask
 const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relCtx, isRed, pieceColor) => {
-    if (!isValidPos(tr, tc)) return 0;
+    if (tr < 0 || tr >= ROWS || tc < 0 || tc >= COLS) return 0;
     const target = board[tr][tc];
     if (!target) {
         if (useMasks) {
             const sq = tr * 9 + tc;
-            relCtx.controlMask[sq] |= bit;
+            if (!relCtx.skipControlMask) relCtx.controlMask[sq] |= bit;
             if (isRed) setAttackBit(relCtx.redAttack, sq);
             else setAttackBit(relCtx.blackAttack, sq);
         } else {
@@ -671,77 +743,79 @@ const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relC
     return 0;
 };
 
-// 非炮：一次几何扫描；语义与 getPieceMoves 一致
+// 非炮：一次几何扫描；短步子走预表，车仍射线；语义与 getPieceMoves 一致
 const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const piece = info.piece;
     const { r, c } = info;
     const isRed = piece.color === 'red';
     const pieceColor = piece.color;
     const useMasks = !!(relCtx && relCtx.useMasks);
+    const skipControl = useMasks && relCtx.skipControlMask;
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
-    info.moves = [];
-    info.control = [];
-    info.allyGuards = [];
+    const colorIdx = isRed ? 0 : 1;
+    const fromSq = r * 9 + c;
+    if (!useMasks) {
+        info.moves = [];
+        info.control = [];
+        info.allyGuards = [];
+    }
     let mobilityValue = 0;
 
     switch (piece.type) {
-        case 'general':
-            for (let i = 0; i < ORTH_DIRS.length; i++) {
-                const nr = r + ORTH_DIRS[i][0], nc = c + ORTH_DIRS[i][1];
-                if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    } else if (!isRed && nr >= 7 && nr <= 9) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    }
+        case 'general': {
+            const dests = GENERAL_DEST[colorIdx][fromSq];
+            for (let i = 0; i < dests.length; i++) {
+                const d = dests[i];
+                mobilityValue += applyRelationSquare(
+                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                );
+            }
+            break;
+        }
+        case 'advisor': {
+            const dests = ADVISOR_DEST[colorIdx][fromSq];
+            for (let i = 0; i < dests.length; i++) {
+                const d = dests[i];
+                mobilityValue += applyRelationSquare(
+                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                );
+            }
+            break;
+        }
+        case 'elephant': {
+            const dests = ELEPHANT_DEST[colorIdx][fromSq];
+            for (let i = 0; i < dests.length; i++) {
+                const d = dests[i];
+                if (board[d.br][d.bc] === null) {
+                    mobilityValue += applyRelationSquare(
+                        board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                    );
                 }
             }
             break;
-        case 'advisor':
-            for (let i = 0; i < DIAG_DIRS.length; i++) {
-                const nr = r + DIAG_DIRS[i][0], nc = c + DIAG_DIRS[i][1];
-                if (nc >= 3 && nc <= 5) {
-                    if (isRed && nr >= 0 && nr <= 2) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    } else if (!isRed && nr >= 7 && nr <= 9) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    }
+        }
+        case 'horse': {
+            const dests = HORSE_DEST[fromSq];
+            for (let i = 0; i < dests.length; i++) {
+                const d = dests[i];
+                if (board[d.br][d.bc] === null) {
+                    mobilityValue += applyRelationSquare(
+                        board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                    );
                 }
             }
             break;
-        case 'elephant':
-            for (let i = 0; i < ELEPHANT_DIRS.length; i++) {
-                const d = ELEPHANT_DIRS[i];
-                const nr = r + d.dr, nc = c + d.dc;
-                const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
-                if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-                    if (isRed && nr <= 4) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    } else if (!isRed && nr >= 5) {
-                        mobilityValue += applyRelationSquare(board, info, pieceAtSq, nr, nc, useMasks, bit, relCtx, isRed, pieceColor);
-                    }
-                }
-            }
-            break;
-        case 'horse':
-            for (let i = 0; i < HORSE_DIRS.length; i++) {
-                const d = HORSE_DIRS[i];
-                const legR = r + d.legDr, legC = c + d.legDc;
-                if (isValidPos(legR, legC) && board[legR][legC] === null) {
-                    mobilityValue += applyRelationSquare(board, info, pieceAtSq, r + d.dr, c + d.dc, useMasks, bit, relCtx, isRed, pieceColor);
-                }
-            }
-            break;
+        }
         case 'chariot':
             for (let i = 0; i < ORTH_DIRS.length; i++) {
                 const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
                 let nr = r + dr, nc = c + dc;
-                while (isValidPos(nr, nc)) {
+                while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
                     const target = board[nr][nc];
                     if (target === null) {
                         if (useMasks) {
                             const sq = nr * 9 + nc;
-                            relCtx.controlMask[sq] |= bit;
+                            if (!skipControl) relCtx.controlMask[sq] |= bit;
                             if (isRed) setAttackBit(relCtx.redAttack, sq);
                             else setAttackBit(relCtx.blackAttack, sq);
                         } else {
@@ -783,12 +857,12 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
             }
             break;
         case 'soldier': {
-            const forward = isRed ? 1 : -1;
-            const crossedRiver = isRed ? r >= 5 : r <= 4;
-            mobilityValue += applyRelationSquare(board, info, pieceAtSq, r + forward, c, useMasks, bit, relCtx, isRed, pieceColor);
-            if (crossedRiver) {
-                mobilityValue += applyRelationSquare(board, info, pieceAtSq, r, c - 1, useMasks, bit, relCtx, isRed, pieceColor);
-                mobilityValue += applyRelationSquare(board, info, pieceAtSq, r, c + 1, useMasks, bit, relCtx, isRed, pieceColor);
+            const dests = SOLDIER_DEST[colorIdx][fromSq];
+            for (let i = 0; i < dests.length; i++) {
+                const d = dests[i];
+                mobilityValue += applyRelationSquare(
+                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                );
             }
             break;
         }
@@ -806,16 +880,19 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const pieceColor = piece.color;
     const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     const useMasks = !!(relCtx && relCtx.useMasks);
+    const skipControl = useMasks && relCtx.skipControlMask;
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
-    info.moves = [];
-    info.control = [];
+    if (!useMasks) {
+        info.moves = [];
+        info.control = [];
+    }
     let mobilityValue = 0;
 
     for (let i = 0; i < ORTH_DIRS.length; i++) {
         const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
         let screenFoundCount = 0;
-        while (isValidPos(nr, nc) && screenFoundCount < 2) {
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && screenFoundCount < 2) {
             const p = board[nr][nc];
             if (p !== null) {
                 screenFoundCount++;
@@ -849,7 +926,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
             } else if (screenFoundCount === 1) {
                 if (useMasks) {
                     const sq = nr * 9 + nc;
-                    relCtx.controlMask[sq] |= bit;
+                    if (!skipControl) relCtx.controlMask[sq] |= bit;
                     if (isRed) setAttackBit(relCtx.redAttack, sq);
                     else setAttackBit(relCtx.blackAttack, sq);
                 } else {
@@ -965,6 +1042,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     if (useMasks) {
         relCtx = scratchRelCtx;
         relCtx.useMasks = true;
+        relCtx.skipControlMask = !!boardInfo.skipControlMask;
         relCtx.attackMask = boardInfo.attackMask;
         relCtx.guardMask = boardInfo.guardMask;
         relCtx.controlMask = boardInfo.controlMask;
@@ -2774,81 +2852,74 @@ const openingBook = new OpeningBook(12);
 
 const isValidPos = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
 
+// 模块级伪合法落点（避免 getPieceMoves 每调用新建闭包）
+const pushPseudoDest = (board, moves, alliesOut, pieceColor, tr, tc) => {
+  if (tr < 0 || tr >= ROWS || tc < 0 || tc >= COLS) return;
+  const target = board[tr][tc];
+  if (!target || target.color !== pieceColor) {
+    moves.push({ r: tr, c: tc });
+  } else if (alliesOut && target.type !== 'general') {
+    alliesOut.push({ r: tr, c: tc });
+  }
+};
+
 // alliesOut: 可选，收集可保护的己方落点（不含将帅），供关系计算复用，避免二次射线
 const getPieceMoves = (board, pos, piece, alliesOut = null) => {
   const moves = [];
   const { r, c } = pos;
   const isRed = piece.color === 'red';
-
-  const addAlly = (tr, tc, target) => {
-    if (alliesOut && target && target.color === piece.color && target.type !== 'general') {
-      alliesOut.push({ r: tr, c: tc });
-    }
-  };
-
-  const addIfValid = (tr, tc) => {
-    if (isValidPos(tr, tc)) {
-        const target = board[tr][tc];
-        if (!target || target.color !== piece.color) {
-            moves.push({ r: tr, c: tc });
-        } else {
-            addAlly(tr, tc, target);
-        }
-    }
-  };
+  const pieceColor = piece.color;
+  const colorIdx = isRed ? 0 : 1;
+  const fromSq = r * 9 + c;
 
   switch (piece.type) {
-    case 'general':
-      for (let i = 0; i < ORTH_DIRS.length; i++) {
-        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
-        const nr = r + dr, nc = c + dc;
-        if (nc >= 3 && nc <= 5) {
-          if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
-          else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
+    case 'general': {
+      const dests = GENERAL_DEST[colorIdx][fromSq];
+      for (let i = 0; i < dests.length; i++) {
+        const d = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+      }
+      break;
+    }
+    case 'advisor': {
+      const dests = ADVISOR_DEST[colorIdx][fromSq];
+      for (let i = 0; i < dests.length; i++) {
+        const d = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+      }
+      break;
+    }
+    case 'elephant': {
+      const dests = ELEPHANT_DEST[colorIdx][fromSq];
+      for (let i = 0; i < dests.length; i++) {
+        const d = dests[i];
+        if (board[d.br][d.bc] === null) {
+          pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
         }
       }
       break;
-    case 'advisor':
-      for (let i = 0; i < DIAG_DIRS.length; i++) {
-        const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
-        const nr = r + dr, nc = c + dc;
-        if (nc >= 3 && nc <= 5) {
-          if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
-          else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
+    }
+    case 'horse': {
+      const dests = HORSE_DEST[fromSq];
+      for (let i = 0; i < dests.length; i++) {
+        const d = dests[i];
+        if (board[d.br][d.bc] === null) {
+          pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
         }
       }
       break;
-    case 'elephant':
-      for (let i = 0; i < ELEPHANT_DIRS.length; i++) {
-        const d = ELEPHANT_DIRS[i];
-        const nr = r + d.dr, nc = c + d.dc;
-        const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
-        if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-          if (isRed && nr <= 4) addIfValid(nr, nc);
-          else if (!isRed && nr >= 5) addIfValid(nr, nc);
-        }
-      }
-      break;
-    case 'horse':
-      for (let i = 0; i < HORSE_DIRS.length; i++) {
-        const d = HORSE_DIRS[i];
-        const legR = r + d.legDr, legC = c + d.legDc;
-        if (isValidPos(legR, legC) && board[legR][legC] === null) {
-          addIfValid(r + d.dr, c + d.dc);
-        }
-      }
-      break;
+    }
     case 'chariot':
       for (let i = 0; i < ORTH_DIRS.length; i++) {
         const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
-        while (isValidPos(nr, nc)) {
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
           const target = board[nr][nc];
           if (target === null) {
             moves.push({ r: nr, c: nc });
           } else {
-            if (target.color !== piece.color) moves.push({ r: nr, c: nc });
-            else addAlly(nr, nc, target);
+            if (target.color !== pieceColor) moves.push({ r: nr, c: nc });
+            else if (alliesOut && target.type !== 'general') alliesOut.push({ r: nr, c: nc });
             break;
           }
           nr += dr; nc += dc;
@@ -2861,7 +2932,7 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
         const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
         let screenFound = false;
-        while (isValidPos(nr, nc)) {
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
           if (!screenFound) {
             if (board[nr][nc] === null) {
               moves.push({ r: nr, c: nc });
@@ -2870,7 +2941,7 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
             }
           } else {
             if (board[nr][nc] !== null) {
-              if (board[nr][nc].color !== piece.color) moves.push({ r: nr, c: nc });
+              if (board[nr][nc].color !== pieceColor) moves.push({ r: nr, c: nc });
               break;
             }
           }
@@ -2879,15 +2950,10 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
       }
       break;
     case 'soldier': {
-      // 红方兵初始位置在r=3，向前走是r增大（向下）；黑方兵初始位置在r=6，向前走是r减小（向上）
-      const forward = isRed ? 1 : -1;
-      // 红方兵过河条件是r >= 5，黑方兵过河条件是r <= 4
-      // 河界位于r=4和r=5之间，红方兵需要走到r=5才能过河，黑方兵需要走到r=4才能过河
-      const crossedRiver = isRed ? r >= 5 : r <= 4;
-      addIfValid(r + forward, c);
-      if (crossedRiver) {
-        addIfValid(r, c - 1);
-        addIfValid(r, c + 1);
+      const dests = SOLDIER_DEST[colorIdx][fromSq];
+      for (let i = 0; i < dests.length; i++) {
+        const d = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
       }
       break;
     }
