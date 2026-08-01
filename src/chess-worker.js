@@ -1561,9 +1561,30 @@ class ZobristHasher {
         };
     }
 
+    pieceIndex(pieceOrKey) {
+        if (pieceOrKey == null) return undefined;
+        if (typeof pieceOrKey === 'string') return this.pieceToIndex.get(pieceOrKey);
+        return this.pieceToIndex.get(`${pieceOrKey.color}-${pieceOrKey.type}`);
+    }
+
     evalCacheKey(board, searchInitiator, gameStage) {
         const stageKey = this.evalStageKeys[gameStage] || this.evalStageKeys.mid;
         return this.hash(board) ^ this.evalInitiatorKeys[searchInitiator] ^ stageKey;
+    }
+
+    evalCacheKeyFromHash(boardHash, searchInitiator, gameStage) {
+        const stageKey = this.evalStageKeys[gameStage] || this.evalStageKeys.mid;
+        return boardHash ^ this.evalInitiatorKeys[searchInitiator] ^ stageKey;
+    }
+
+    /**
+     * 数值 TT key：把行棋方编码进最低位，避免 `hash ^ sideKey` 在 JS ToInt32
+     * 下产生跨红黑碰撞（那会使 TT 误命中并改变搜索树/棋力）。
+     * 等价于旧字符串 key `${hash}:${side}` 的区分能力。
+     */
+    ttKeyFromHash(boardHash, side) {
+        const h = boardHash | 0; // ^= 链结果已是 Int32
+        return h * 2 + (side === 'red' ? 0 : 1);
     }
 
     /**
@@ -1575,8 +1596,7 @@ class ZobristHasher {
             for (let c = 0; c < 9; c++) {
                 const piece = board[r][c];
                 if (piece) {
-                    const key = `${piece.color}-${piece.type}`;
-                    const pieceIdx = this.pieceToIndex.get(key);
+                    const pieceIdx = this.pieceIndex(piece);
                     if (pieceIdx !== undefined) {
                         h ^= this.hashTable[r][c][pieceIdx];
                     }
@@ -1610,30 +1630,23 @@ class ZobristHasher {
     }
 
     /**
-     * Incrementally update hash after a move (much faster than rehashing)
+     * Incrementally update hash after a move (XOR 自逆：再调用一次可还原).
+     * movingPiece / capturedPiece 可为棋子对象或 'color-type' 字符串。
+     * 须在 makeMove 之前取得 movingPiece，captured 用 makeMove 返回值。
      */
-    updateHash(currentHash, move, movingPiece, capturedPiece ) {
+    updateHash(currentHash, move, movingPiece, capturedPiece) {
         let newHash = currentHash;
-
-        // Remove piece from source position
-        const movingIdx = this.pieceToIndex.get(movingPiece);
+        const movingIdx = this.pieceIndex(movingPiece);
         if (movingIdx !== undefined) {
             newHash ^= this.hashTable[move.from.r][move.from.c][movingIdx];
+            newHash ^= this.hashTable[move.to.r][move.to.c][movingIdx];
         }
-
-        // Remove captured piece if any
         if (capturedPiece) {
-            const capturedIdx = this.pieceToIndex.get(capturedPiece);
+            const capturedIdx = this.pieceIndex(capturedPiece);
             if (capturedIdx !== undefined) {
                 newHash ^= this.hashTable[move.to.r][move.to.c][capturedIdx];
             }
         }
-
-        // Add piece to destination
-        if (movingIdx !== undefined) {
-            newHash ^= this.hashTable[move.to.r][move.to.c][movingIdx];
-        }
-
         return newHash;
     }
 }
@@ -3410,6 +3423,10 @@ let perfStats = {
     legalityChecks: 0,
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
+    // Zobrist：全盘重算次数 / 增量更新次数 / 校验不一致（仅 verify 模式）
+    fullHashCount: 0,
+    incrementalHashUpdates: 0,
+    hashMismatches: 0,
     startTime: Date.now()
 };
 
@@ -3426,6 +3443,9 @@ const resetPerfStats = () => {
     perfStats.legalityChecks = 0;
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
+    perfStats.fullHashCount = 0;
+    perfStats.incrementalHashUpdates = 0;
+    perfStats.hashMismatches = 0;
     perfStats.startTime = Date.now();
 };
 
@@ -3444,6 +3464,7 @@ const snapshotPerfStats = () => {
     return {
         elapsedMs: elapsed,
         deferLegality: SEARCH_DEFER_LEGALITY,
+        incrementalZobrist: SEARCH_INCREMENTAL_ZOBRIST,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
@@ -3452,6 +3473,9 @@ const snapshotPerfStats = () => {
         legalityChecks: perfStats.legalityChecks,
         illegalMovesSkipped: perfStats.illegalMovesSkipped,
         legalMovesSearched: perfStats.legalMovesSearched,
+        fullHashCount: perfStats.fullHashCount,
+        incrementalHashUpdates: perfStats.incrementalHashUpdates,
+        hashMismatches: perfStats.hashMismatches,
         tt: ttStats,
         byDepth
     };
@@ -3466,6 +3490,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   calculateThreatValues: red=${snap.calculateThreatValues.red}, black=${snap.calculateThreatValues.black}`);
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
+    console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
     console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
@@ -3493,6 +3518,11 @@ const SEARCH_ENABLE_LMR = false;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 let SEARCH_DEFER_LEGALITY = true;
+
+// Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
+let SEARCH_INCREMENTAL_ZOBRIST = true;
+// 调试：增量后与全盘 hash 比对（仅校验脚本开启，正式搜索关闭）
+let SEARCH_ZOBRIST_VERIFY = false;
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -3539,10 +3569,14 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, zobristVerify: searchZobristVerify } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
+            if (typeof searchIncrementalZobrist === 'boolean') {
+                SEARCH_INCREMENTAL_ZOBRIST = searchIncrementalZobrist;
+            }
+            SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
@@ -3826,9 +3860,40 @@ const canDoNullMove = (board, color) => {
     return false;
 };
 
+// 搜索用 TT key：增量模式为 number，旧模式为 `${hash}:${side}` 字符串
+const makeSearchTTKey = (board, currentPlayer, boardHash) => {
+    if (SEARCH_INCREMENTAL_ZOBRIST) {
+        return zobristHasher.ttKeyFromHash(boardHash, currentPlayer);
+    }
+    perfStats.fullHashCount++;
+    return `${zobristHasher.hash(board)}:${currentPlayer}`;
+};
+
+// 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
+const childBoardHash = (boardHash, move, movingPiece, captured) => {
+    if (!SEARCH_INCREMENTAL_ZOBRIST) return boardHash;
+    perfStats.incrementalHashUpdates++;
+    return zobristHasher.updateHash(boardHash, move, movingPiece, captured);
+};
+
+const verifyBoardHash = (board, expectedHash) => {
+    if (!SEARCH_ZOBRIST_VERIFY) return;
+    perfStats.fullHashCount++;
+    const full = zobristHasher.hash(board);
+    if (full !== expectedHash) {
+        perfStats.hashMismatches++;
+    }
+};
+
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (board, searchInitiator, gameStage) => {
-    const cacheKey = zobristHasher.evalCacheKey(board, searchInitiator, gameStage);
+const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
+    let cacheKey;
+    if (SEARCH_INCREMENTAL_ZOBRIST) {
+        cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
+    } else {
+        perfStats.fullHashCount++;
+        cacheKey = zobristHasher.evalCacheKey(board, searchInitiator, gameStage);
+    }
     if (evalCache.has(cacheKey)) {
         return evalCache.get(cacheKey);
     }
@@ -3872,9 +3937,9 @@ const generateCapturesForSearch = (board, currentPlayer) => {
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, gameStage, qsDepth
+    searchInitiator, gameStage, qsDepth, boardHash = 0
 ) => {
-    const standPat = staticSearchEval(b, searchInitiator, gameStage);
+    const standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
 
     if (qsDepth <= 0) {
         return { value: standPat, moveSequence: [] };
@@ -3918,18 +3983,21 @@ const quiescence = (
 
     for (let i = 0; i < captures.length; i++) {
         const move = captures[i];
+        const movingPiece = b[move.from.r][move.from.c];
         const captured = makeMove(b, move.from, move.to);
         if (defer && leavesOwnKingUnsafe(b, currentPlayer)) {
             unmakeMove(b, move.from, move.to, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
+        const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
+        verifyBoardHash(b, nextHash);
         perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
         const result = quiescence(
             b, alpha, beta, nextMaximizing, nextPlayer,
-            searchInitiator, gameStage, qsDepth - 1
+            searchInitiator, gameStage, qsDepth - 1, nextHash
         );
         unmakeMove(b, move.from, move.to, captured);
 
@@ -3959,10 +4027,11 @@ const quiescence = (
 };
 
 // alphaBeta：评估始终从 searchInitiator 角度；TT + killer/history + 空着剪枝 + LMR + QS
+// boardHash：增量 Zobrist 局面哈希（不含行棋方）；旧模式下可传 0
 const alphaBeta = (
     b, d, alpha, beta, maximizing, currentPlayer,
     searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid',
-    allowNull = true
+    allowNull = true, boardHash = 0
 ) => {
     const originalAlpha = alpha;
     const originalBeta = beta;
@@ -3975,12 +4044,12 @@ const alphaBeta = (
     if (d === 0) {
         return quiescence(
             b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, gameStage, 3
+            searchInitiator, gameStage, 3, boardHash
         );
     }
 
     // 置换表探测（key 含行棋方，避免同形不同走方冲突）
-    const ttKey = `${zobristHasher.hash(b)}:${currentPlayer}`;
+    const ttKey = makeSearchTTKey(b, currentPlayer, boardHash);
     const ttEntry = transpositionTable.retrieve(ttKey);
     let ttMove = null;
     if (ttEntry) {
@@ -4045,9 +4114,10 @@ const alphaBeta = (
         if (nullDepth >= 0) {
             const nullPlayer = currentPlayerColor === 'red' ? 'black' : 'red';
             const nullMaximizing = nullPlayer === searchInitiator;
+            // 空着不改变局面哈希，仅行棋方变化（TT key 含 side）
             const nullResult = alphaBeta(
                 b, nullDepth, beta - 1e-6, beta, nullMaximizing, nullPlayer,
-                searchDepth, searchInitiator, gameStage, false
+                searchDepth, searchInitiator, gameStage, false, boardHash
             );
             if (nullResult.value >= beta) {
                 return { value: nullResult.value, moveSequence: [] };
@@ -4102,12 +4172,15 @@ const alphaBeta = (
             reduction = 1;
         }
 
+        const movingPiece = b[move.from.r][move.from.c];
         const captured = makeMove(b, move.from, move.to);
         if (SEARCH_DEFER_LEGALITY && leavesOwnKingUnsafe(b, currentPlayerColor)) {
             unmakeMove(b, move.from, move.to, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
+        const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
+        verifyBoardHash(b, nextHash);
         legalMovesFound++;
         perfStats.legalMovesSearched++;
 
@@ -4119,7 +4192,7 @@ const alphaBeta = (
             const reducedDepth = Math.max(0, d - 1 - reduction);
             result = alphaBeta(
                 b, reducedDepth, alpha, beta, nextMaximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, true
+                searchDepth, searchInitiator, gameStage, true, nextHash
             );
             const needResearch = maximizing
                 ? result.value > alpha
@@ -4127,13 +4200,13 @@ const alphaBeta = (
             if (needResearch) {
                 result = alphaBeta(
                     b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, true
+                    searchDepth, searchInitiator, gameStage, true, nextHash
                 );
             }
         } else {
             result = alphaBeta(
                 b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, true
+                searchDepth, searchInitiator, gameStage, true, nextHash
             );
         }
 
@@ -4279,10 +4352,15 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
   const workBoard = board.map((row) => [...row]);
   const NULL_WINDOW_EPS = 1e-6;
   const nextTurn = turn === 'red' ? 'black' : 'red';
-  const rootTTKey = `${zobristHasher.hash(board)}:${turn}`;
+  // 根局面哈希只算一次；增量模式整棵搜索树由此派生
+  const rootHash = zobristHasher.hash(board);
+  perfStats.fullHashCount++;
+  const rootTTKey = SEARCH_INCREMENTAL_ZOBRIST
+    ? zobristHasher.ttKeyFromHash(rootHash, turn)
+    : `${rootHash}:${turn}`;
 
   console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
   );
 
   let completedDepth = 0;
@@ -4310,30 +4388,33 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
 
     for (let i = 0; i < rootMoves.length; i++) {
       const item = rootMoves[i];
+      const movingPiece = workBoard[item.from.r][item.from.c];
       const captured = makeMove(workBoard, item.from, item.to);
+      const childHash = childBoardHash(rootHash, item, movingPiece, captured);
+      verifyBoardHash(workBoard, childHash);
 
       let alphaBetaResult;
       let scoreIsExact = true;
       if (i === 0 || rootAlpha === -Infinity) {
         alphaBetaResult = alphaBeta(
           workBoard, currentDepth - 1, -Infinity, Infinity,
-          false, nextTurn, currentDepth, turn, gameStage
+          false, nextTurn, currentDepth, turn, gameStage, true, childHash
         );
       } else {
         const probe = alphaBeta(
           workBoard, currentDepth - 1,
           rootAlpha, rootAlpha + NULL_WINDOW_EPS,
-          false, nextTurn, currentDepth, turn, gameStage
+          false, nextTurn, currentDepth, turn, gameStage, true, childHash
         );
         if (probe.value > rootAlpha) {
           alphaBetaResult = alphaBeta(
             workBoard, currentDepth - 1, rootAlpha, Infinity,
-            false, nextTurn, currentDepth, turn, gameStage
+            false, nextTurn, currentDepth, turn, gameStage, true, childHash
           );
         } else if (useExactRoot) {
           alphaBetaResult = alphaBeta(
             workBoard, currentDepth - 1, -Infinity, Infinity,
-            false, nextTurn, currentDepth, turn, gameStage
+            false, nextTurn, currentDepth, turn, gameStage, true, childHash
           );
         } else {
           // fail-low：探测分只是上界，不能当精确分写入（否则 ID 下层排序被污染，易反复走炮）
