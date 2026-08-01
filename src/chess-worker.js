@@ -192,14 +192,38 @@ const getPositionValue = (piece, r, c) => {
     return table[rowIdx][c] || 0;
 };
 
+// 攻击位图：90 格用 3×Uint32。搜索叶只需「是否敌控」；点棋/UI 仍用控制者列表。
+const ATTACK_WORDS = 3;
+const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
+const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
+// true=搜索叶用攻击位图（默认）；false=叶评估仍建 10×9 控制者表（A/B）
+let SEARCH_LEAF_ATTACK_BITS = true;
+
+const clearAttackBits = (bits) => {
+    bits[0] = 0;
+    bits[1] = 0;
+    bits[2] = 0;
+};
+
+const setAttackBit = (bits, sq) => {
+    bits[sq >>> 5] |= (1 << (sq & 31));
+};
+
+const hasAttackBit = (bits, sq) => (bits[sq >>> 5] & (1 << (sq & 31))) !== 0;
+
+const makeEmptyControllerGrid = () =>
+    Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
+
 // 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
-// options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理），仍算完整形势
+// options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
 const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', options = null) => {
+    const __t0 = performance.now();
     // 统计
     if (currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
+    const useAttackBits = forSearchLeaf && SEARCH_LEAF_ATTACK_BITS;
 
     const outputPhase = gameStage;
 
@@ -242,7 +266,19 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
         }
     }
     
-    const boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
+    // 搜索叶：复用攻击位图；点棋/UI：完整 10×9 控制者列表
+    let boardInfo;
+    if (useAttackBits) {
+        clearAttackBits(scratchRedAttack);
+        clearAttackBits(scratchBlackAttack);
+        boardInfo = {
+            useAttackBits: true,
+            redAttack: scratchRedAttack,
+            blackAttack: scratchBlackAttack
+        };
+    } else {
+        boardInfo = makeEmptyControllerGrid();
+    }
     calculateDerivedValues(board, piecesInfo, currentPlayer, depth, searchInitiator, gameStage, boardInfo, forSearchLeaf);
     
     // 第三步：计算总分（只计算剩余分数，基础分数已在棋盘遍历时计算）
@@ -283,7 +319,7 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
         blackMobility * VALUE_WEIGHTS.mobility;
     
     // 返回详细评估结果
-    return {
+    const __evalResult = {
         red: {
             total: redTotal,
             material: redMaterial * VALUE_WEIGHTS.material,
@@ -324,6 +360,10 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
         gameStage: gameStage,
         boardInfo: boardInfo
     };
+    if (typeof perfStats !== 'undefined' && perfStats.evaluateBoardMs != null) {
+        perfStats.evaluateBoardMs += performance.now() - __t0;
+    }
+    return __evalResult;
 };
 
 // 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
@@ -413,6 +453,7 @@ const filterLegalMoves = (board, from, piece, pseudoMoves) => {
 // SEARCH_DEFER_LEGALITY=false：预过滤合法着（旧路径，便于 A/B）
 // 点棋关系仍走完整 evaluateBoard，不受影响
 const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = null, depth = 0) => {
+    const __t0 = performance.now();
     perfStats.prepareSearchInfoCount[currentPlayer]++;
 
     const inCheck = isCheckRaw(board, currentPlayer);
@@ -458,6 +499,7 @@ const prepareSearchInfo = (board, currentPlayer, gameStage, searchInitiator = nu
         boardInfo.gameState = { status: 'playing' };
     }
 
+    perfStats.prepareSearchInfoMs += performance.now() - __t0;
     return { piecesInfo, boardInfo, legalMoveList, inCheck, deferredLegality: defer };
 };
 
@@ -705,9 +747,10 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         info.control = [];      // 检查这个棋子可以控制的哪些位置
     }
     
-    // 如果boardInfo为空，则初始化
+    const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
+    // 如果boardInfo为空，则初始化控制者列表（点棋/UI 路径）
     if (!boardInfo) {
-        boardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
+        boardInfo = makeEmptyControllerGrid();
     }
 
     const posByKey = new Map();
@@ -725,10 +768,19 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
 
         const control = info.control;
         
-        // 控制者列表直接引用 piecesInfo 条目，避免每格 new {r,c,color,type}
-        for (let i = 0; i < control.length; i++) {
-            const pos = control[i];
-            boardInfo[pos.r][pos.c].push(info);
+        if (useAttackBits) {
+            // 搜索叶：只记「该色是否攻击该格」，不建控制者数组
+            const bits = info.piece.color === 'red' ? boardInfo.redAttack : boardInfo.blackAttack;
+            for (let i = 0; i < control.length; i++) {
+                const pos = control[i];
+                setAttackBit(bits, pos.r * 9 + pos.c);
+            }
+        } else {
+            // 点棋/UI：控制者列表直接引用 piecesInfo 条目
+            for (let i = 0; i < control.length; i++) {
+                const pos = control[i];
+                boardInfo[pos.r][pos.c].push(info);
+            }
         }
     }
     
@@ -1194,22 +1246,30 @@ const calculateSafetyValues = (piecesInfo, boardInfo) => {
             generalInfo.push(info);
         }
     });
+
+    const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
     
     for (const general of generalInfo) {
         const generalColor = general.piece.color;
         const enemyColor = generalColor === 'red' ? 'black' : 'red';
+        const enemyBits = useAttackBits
+            ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
+            : null;
         
         // 检查将帅的控制点是否被敌方棋子控制
         for (const controlPos of general.control) {
-            // 获取该控制点的控制者
             const { r, c } = controlPos;
-            const positionControllers = boardInfo[r][c];
-            
-            // 检查是否有敌方棋子控制该位置（兼容 piecesInfo 引用与旧 {color} 结构）
-            const hasEnemyControl = positionControllers.some(controller => {
-                const color = controller.piece ? controller.piece.color : controller.color;
-                return color === enemyColor;
-            });
+            let hasEnemyControl;
+            if (useAttackBits) {
+                hasEnemyControl = hasAttackBit(enemyBits, r * 9 + c);
+            } else {
+                const positionControllers = boardInfo[r][c];
+                // 兼容 piecesInfo 引用与旧 {color} 结构
+                hasEnemyControl = positionControllers.some(controller => {
+                    const color = controller.piece ? controller.piece.color : controller.color;
+                    return color === enemyColor;
+                });
+            }
             
             // 如果位置有敌方棋子控制，扣50的安全值
             if (hasEnemyControl) {
@@ -3427,6 +3487,8 @@ let perfStats = {
     fullHashCount: 0,
     incrementalHashUpdates: 0,
     hashMismatches: 0,
+    evaluateBoardMs: 0,
+    prepareSearchInfoMs: 0,
     startTime: Date.now()
 };
 
@@ -3446,6 +3508,8 @@ const resetPerfStats = () => {
     perfStats.fullHashCount = 0;
     perfStats.incrementalHashUpdates = 0;
     perfStats.hashMismatches = 0;
+    perfStats.evaluateBoardMs = 0;
+    perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
 };
 
@@ -3465,6 +3529,7 @@ const snapshotPerfStats = () => {
         elapsedMs: elapsed,
         deferLegality: SEARCH_DEFER_LEGALITY,
         incrementalZobrist: SEARCH_INCREMENTAL_ZOBRIST,
+        leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
@@ -3476,6 +3541,8 @@ const snapshotPerfStats = () => {
         fullHashCount: perfStats.fullHashCount,
         incrementalHashUpdates: perfStats.incrementalHashUpdates,
         hashMismatches: perfStats.hashMismatches,
+        evaluateBoardMs: perfStats.evaluateBoardMs,
+        prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         tt: ttStats,
         byDepth
     };
@@ -3491,6 +3558,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
+    console.log(`   leafAttackBits=${snap.leafAttackBits} evalMs=${Math.round(snap.evaluateBoardMs)} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
@@ -3569,12 +3637,15 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, zobristVerify: searchZobristVerify } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, zobristVerify: searchZobristVerify } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
             if (typeof searchIncrementalZobrist === 'boolean') {
                 SEARCH_INCREMENTAL_ZOBRIST = searchIncrementalZobrist;
+            }
+            if (typeof searchLeafAttackBits === 'boolean') {
+                SEARCH_LEAF_ATTACK_BITS = searchLeafAttackBits;
             }
             SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
@@ -4360,7 +4431,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
     : `${rootHash}:${turn}`;
 
   console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
   );
 
   let completedDepth = 0;
