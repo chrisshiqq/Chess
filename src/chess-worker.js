@@ -177,6 +177,8 @@ const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
 const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
 // true=搜索叶用攻击位图（默认）；false=叶评估仍建 10×9 控制者表（A/B）
 let SEARCH_LEAF_ATTACK_BITS = true;
+// true=关系用格位 Uint32 攻/守/控 mask（默认）；false=threat/guard 对象列表（A/B）
+let SEARCH_RELATION_MASKS = true;
 
 const clearAttackBits = (bits) => {
     bits[0] = 0;
@@ -193,6 +195,29 @@ const hasAttackBit = (bits, sq) => (bits[sq >>> 5] & (1 << (sq & 31))) !== 0;
 const makeEmptyControllerGrid = () =>
     Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
 
+// 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
+const REL_SQUARES = 90;
+const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
+const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
+const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
+
+const clearRelationMasks = () => {
+    scratchAttackMask.fill(0);
+    scratchGuardMask.fill(0);
+    scratchControlMask.fill(0);
+};
+
+const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
+
+const forEachSetBit = (mask, fn) => {
+    let m = mask >>> 0;
+    while (m !== 0) {
+        const bit = m & -m;
+        fn(31 - Math.clz32(bit));
+        m ^= bit;
+    }
+};
+
 // 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
 const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0, searchInitiator = null, gameStage = 'mid', options = null) => {
@@ -202,7 +227,6 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
-    const useAttackBits = forSearchLeaf && SEARCH_LEAF_ATTACK_BITS;
 
     const outputPhase = gameStage;
 
@@ -231,6 +255,7 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
                 piece,
                 r,
                 c,
+                pieceIndex: piecesInfo.length,
                 moves: [],
                 allyGuards: [],
                 materialValue,
@@ -240,14 +265,33 @@ const evaluateBoard = (board, isReplay = false, currentPlayer = null, depth = 0,
                 tacticValue: 0,
                 mobilityValue: 0,
                 threat: [],
+                threatenedBy: [],
+                guard: [],
+                guardedBy: [],
+                control: [],
                 protect: []
             });
         }
     }
-    
-    // 搜索叶：复用攻击位图；点棋/UI：完整 10×9 控制者列表
+
+    // 关系 mask（≤32 子）优先；否则回退旧列表 / 叶攻击位图
+    const useRelationMasks = SEARCH_RELATION_MASKS && piecesInfo.length <= 32;
+    const useAttackBits = !useRelationMasks && forSearchLeaf && SEARCH_LEAF_ATTACK_BITS;
     let boardInfo;
-    if (useAttackBits) {
+    if (useRelationMasks) {
+        clearRelationMasks();
+        clearAttackBits(scratchRedAttack);
+        clearAttackBits(scratchBlackAttack);
+        boardInfo = {
+            useRelationMasks: true,
+            useAttackBits: true,
+            attackMask: scratchAttackMask,
+            guardMask: scratchGuardMask,
+            controlMask: scratchControlMask,
+            redAttack: scratchRedAttack,
+            blackAttack: scratchBlackAttack
+        };
+    } else if (useAttackBits) {
         clearAttackBits(scratchRedAttack);
         clearAttackBits(scratchBlackAttack);
         boardInfo = {
@@ -502,7 +546,7 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     calculateThreatValues(piecesInfo, currentPlayer, boardInfo);
     
     // 3. 计算安全值
-    calculateSafetyValues(piecesInfo, boardInfo);
+    calculateSafetyValues(piecesInfo, boardInfo, board);
     
     // 4. 计算游戏状态并保存到boardInfo
     // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
@@ -563,19 +607,27 @@ const HORSE_DIRS = [
     { dr: -1, dc: -2, legDr: 0, legDc: -1 }
 ];
 
-// 非炮：一次几何扫描同时填充 moves + control / threat / guard / mobility（对齐 fillCannonRelations）
-// 语义与 getPieceMoves + calculatePieceRelations 旧拆分路径一致；getPieceMoves 仍供着法生成使用
-const fillNonCannonRelations = (board, info, posByKey) => {
+// 非炮：一次几何扫描；relCtx.useMasks 时写格位 mask，否则写 threat/guard/control 列表
+// 语义与 getPieceMoves 一致；getPieceMoves 仍供着法生成使用
+const fillNonCannonRelations = (board, info, posByKey, relCtx = null) => {
     const piece = info.piece;
     const { r, c } = info;
     const isRed = piece.color === 'red';
     const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+    const useMasks = !!(relCtx && relCtx.useMasks);
+    const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     info.moves = [];
     info.control = [];
     info.allyGuards = [];
     let mobilityValue = 0;
 
     const linkThreat = (tr, tc) => {
+        if (useMasks) {
+            if (posByKey.has(tr * 9 + tc)) {
+                relCtx.attackMask[tr * 9 + tc] |= bit;
+            }
+            return;
+        }
         const targetInfo = posByKey.get(tr * 9 + tc);
         if (targetInfo) {
             info.threat.push(targetInfo);
@@ -584,6 +636,13 @@ const fillNonCannonRelations = (board, info, posByKey) => {
     };
 
     const linkGuard = (tr, tc) => {
+        if (useMasks) {
+            const targetInfo = posByKey.get(tr * 9 + tc);
+            if (targetInfo && targetInfo !== info) {
+                relCtx.guardMask[tr * 9 + tc] |= bit;
+            }
+            return;
+        }
         const targetInfo = posByKey.get(tr * 9 + tc);
         if (targetInfo && targetInfo !== info) {
             info.guard.push(targetInfo);
@@ -592,15 +651,26 @@ const fillNonCannonRelations = (board, info, posByKey) => {
         }
     };
 
+    const markControl = (tr, tc) => {
+        if (useMasks) {
+            const sq = tr * 9 + tc;
+            relCtx.controlMask[sq] |= bit;
+            if (isRed) setAttackBit(relCtx.redAttack, sq);
+            else setAttackBit(relCtx.blackAttack, sq);
+            return;
+        }
+        info.control.push({ r: tr, c: tc });
+    };
+
     const addSquare = (tr, tc) => {
         if (!isValidPos(tr, tc)) return;
         const target = board[tr][tc];
         if (!target) {
-            info.moves.push({ r: tr, c: tc });
-            info.control.push({ r: tr, c: tc });
+            if (!useMasks) info.moves.push({ r: tr, c: tc });
+            markControl(tr, tc);
             mobilityValue += baseMoveValue;
         } else if (target.color !== piece.color) {
-            info.moves.push({ r: tr, c: tc });
+            if (!useMasks) info.moves.push({ r: tr, c: tc });
             linkThreat(tr, tc);
         } else if (target.type !== 'general') {
             linkGuard(tr, tc);
@@ -655,12 +725,12 @@ const fillNonCannonRelations = (board, info, posByKey) => {
                 while (isValidPos(nr, nc)) {
                     const target = board[nr][nc];
                     if (target === null) {
-                        info.moves.push({ r: nr, c: nc });
-                        info.control.push({ r: nr, c: nc });
+                        if (!useMasks) info.moves.push({ r: nr, c: nc });
+                        markControl(nr, nc);
                         mobilityValue += baseMoveValue;
                     } else {
                         if (target.color !== piece.color) {
-                            info.moves.push({ r: nr, c: nc });
+                            if (!useMasks) info.moves.push({ r: nr, c: nc });
                             linkThreat(nr, nc);
                         } else if (target.type !== 'general') {
                             linkGuard(nr, nc);
@@ -688,11 +758,14 @@ const fillNonCannonRelations = (board, info, posByKey) => {
     info.mobilityValue = mobilityValue;
 };
 
-// 炮：一次四向射线同时填充 moves + threat / guard / control（避免 getPieceMoves 再扫一遍）
-const fillCannonRelations = (board, info, posByKey) => {
+// 炮：一次四向射线；mask 模式写 attack/guard/control，列表模式保持旧语义
+const fillCannonRelations = (board, info, posByKey, relCtx = null) => {
     const piece = info.piece;
     const { r, c } = info;
+    const isRed = piece.color === 'red';
     const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
+    const useMasks = !!(relCtx && relCtx.useMasks);
+    const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     info.moves = [];
     info.control = [];
     let mobilityValue = 0;
@@ -709,24 +782,38 @@ const fillCannonRelations = (board, info, posByKey) => {
                     const targetInfo = posByKey.get(nr * 9 + nc);
                     if (targetInfo && targetInfo !== info) {
                         if (p.color !== piece.color) {
-                            info.threat.push(targetInfo);
-                            targetInfo.threatenedBy.push(info);
-                            info.moves.push({ r: nr, c: nc });
+                            if (useMasks) {
+                                relCtx.attackMask[nr * 9 + nc] |= bit;
+                            } else {
+                                info.threat.push(targetInfo);
+                                targetInfo.threatenedBy.push(info);
+                                info.moves.push({ r: nr, c: nc });
+                            }
                         } else if (p.type !== 'general') {
-                            info.guard.push(targetInfo);
-                            targetInfo.guardedBy.push(info);
+                            if (useMasks) {
+                                relCtx.guardMask[nr * 9 + nc] |= bit;
+                            } else {
+                                info.guard.push(targetInfo);
+                                targetInfo.guardedBy.push(info);
+                            }
                         }
                     } else if (p.color !== piece.color) {
-                        // 目标不在 piecesInfo 时仍保留可走格
-                        info.moves.push({ r: nr, c: nc });
+                        if (!useMasks) info.moves.push({ r: nr, c: nc });
                     }
                     break;
                 }
             } else if (screenFoundCount === 0) {
-                info.moves.push({ r: nr, c: nc });
+                if (!useMasks) info.moves.push({ r: nr, c: nc });
                 mobilityValue += baseMoveValue;
             } else if (screenFoundCount === 1) {
-                info.control.push({ r: nr, c: nc });
+                if (useMasks) {
+                    const sq = nr * 9 + nc;
+                    relCtx.controlMask[sq] |= bit;
+                    if (isRed) setAttackBit(relCtx.redAttack, sq);
+                    else setAttackBit(relCtx.blackAttack, sq);
+                } else {
+                    info.control.push({ r: nr, c: nc });
+                }
             }
             nr += dr;
             nc += dc;
@@ -735,90 +822,178 @@ const fillCannonRelations = (board, info, posByKey) => {
     info.mobilityValue = mobilityValue;
 };
 
-// 计算棋子关系（威胁者、被威胁者、保护者、被保护者）
-// 同时计算boardInfo：为棋盘每个位置登记控制者
-// 复用 info.moves + allyGuards；炮用一次射线
-const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
-    // 初始化棋子关系数组
-    for (const info of piecesInfo) {
-        info.threat = [];           // 检查这个棋子可以威胁哪些棋子
-        info.threatenedBy = [];     // 检查这个棋子被哪些棋子威胁
-        info.guard = [];       // 检查这个棋子可以保护哪些棋子
-        info.guardedBy = [];      // 检查这个棋子被哪些棋子保护
-        info.control = [];      // 检查这个棋子可以控制的哪些位置
+// 从格位 mask 还原 threat/guard/control 列表（点棋/UI）
+const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
+    const attackMask = boardInfo.attackMask;
+    const guardMask = boardInfo.guardMask;
+    const controlMask = boardInfo.controlMask;
+    const n = piecesInfo.length;
+    const bySq = new Array(REL_SQUARES);
+    for (let i = 0; i < n; i++) {
+        const info = piecesInfo[i];
+        info.threat = [];
+        info.threatenedBy = [];
+        info.guard = [];
+        info.guardedBy = [];
+        info.control = [];
+        bySq[info.r * 9 + info.c] = info;
     }
-    
-    const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
-    // 如果boardInfo为空，则初始化控制者列表（点棋/UI 路径）
+
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        const r = (sq / 9) | 0;
+        const c = sq % 9;
+        const target = bySq[sq];
+
+        let cm = controlMask[sq] >>> 0;
+        while (cm !== 0) {
+            const bit = cm & -cm;
+            const i = 31 - Math.clz32(bit);
+            piecesInfo[i].control.push({ r, c });
+            cm ^= bit;
+        }
+
+        let am = attackMask[sq] >>> 0;
+        while (am !== 0) {
+            const bit = am & -am;
+            const i = 31 - Math.clz32(bit);
+            const attacker = piecesInfo[i];
+            if (target && target !== attacker && target.piece.color !== attacker.piece.color) {
+                attacker.threat.push(target);
+                target.threatenedBy.push(attacker);
+            }
+            am ^= bit;
+        }
+
+        let gm = guardMask[sq] >>> 0;
+        while (gm !== 0) {
+            const bit = gm & -gm;
+            const i = 31 - Math.clz32(bit);
+            const guarder = piecesInfo[i];
+            if (target && target !== guarder && target.piece.color === guarder.piece.color) {
+                guarder.guard.push(target);
+                target.guardedBy.push(guarder);
+            }
+            gm ^= bit;
+        }
+    }
+
+    // 供 isPositionAcceptable / 点棋 controllers：与旧语义一致，仅空控格
+    const grid = makeEmptyControllerGrid();
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        let cm = controlMask[sq] >>> 0;
+        if (cm === 0) continue;
+        const r = (sq / 9) | 0;
+        const c = sq % 9;
+        while (cm !== 0) {
+            const bit = cm & -cm;
+            const i = 31 - Math.clz32(bit);
+            grid[r][c].push(piecesInfo[i]);
+            cm ^= bit;
+        }
+    }
+    boardInfo.controllerGrid = grid;
+};
+
+// 计算棋子关系：mask 路径写 Uint32 格位表；列表路径保持旧 push
+const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
+    const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
+    const useAttackBits = !!(boardInfo && boardInfo.useAttackBits) && !useMasks;
+
+    if (!useMasks) {
+        for (const info of piecesInfo) {
+            info.threat = [];
+            info.threatenedBy = [];
+            info.guard = [];
+            info.guardedBy = [];
+            info.control = [];
+        }
+    }
+
     if (!boardInfo) {
         boardInfo = makeEmptyControllerGrid();
     }
 
     const posByKey = new Map();
-    for (const info of piecesInfo) {
+    for (let i = 0; i < piecesInfo.length; i++) {
+        const info = piecesInfo[i];
+        if (info.pieceIndex == null) info.pieceIndex = i;
         posByKey.set(info.r * 9 + info.c, info);
     }
-    
-    // 处理每个棋子：一次几何同时填 moves + 关系（炮/非炮统一模式）
-    for (const info of piecesInfo) {
+
+    for (let i = 0; i < piecesInfo.length; i++) {
+        const info = piecesInfo[i];
+        const relCtx = useMasks
+            ? {
+                useMasks: true,
+                pieceIndex: info.pieceIndex,
+                attackMask: boardInfo.attackMask,
+                guardMask: boardInfo.guardMask,
+                controlMask: boardInfo.controlMask,
+                redAttack: boardInfo.redAttack,
+                blackAttack: boardInfo.blackAttack
+            }
+            : null;
+
         if (info.piece.type === 'cannon') {
-            fillCannonRelations(board, info, posByKey);
+            fillCannonRelations(board, info, posByKey, relCtx);
         } else {
-            fillNonCannonRelations(board, info, posByKey);
+            fillNonCannonRelations(board, info, posByKey, relCtx);
         }
 
-        const control = info.control;
-        
-        if (useAttackBits) {
-            // 搜索叶：只记「该色是否攻击该格」，不建控制者数组
-            const bits = info.piece.color === 'red' ? boardInfo.redAttack : boardInfo.blackAttack;
-            for (let i = 0; i < control.length; i++) {
-                const pos = control[i];
-                setAttackBit(bits, pos.r * 9 + pos.c);
-            }
-        } else {
-            // 点棋/UI：控制者列表直接引用 piecesInfo 条目
-            for (let i = 0; i < control.length; i++) {
-                const pos = control[i];
-                boardInfo[pos.r][pos.c].push(info);
+        if (!useMasks) {
+            const control = info.control;
+            if (useAttackBits) {
+                const bits = info.piece.color === 'red' ? boardInfo.redAttack : boardInfo.blackAttack;
+                for (let k = 0; k < control.length; k++) {
+                    const pos = control[k];
+                    setAttackBit(bits, pos.r * 9 + pos.c);
+                }
+            } else if (Array.isArray(boardInfo[0])) {
+                for (let k = 0; k < control.length; k++) {
+                    const pos = control[k];
+                    boardInfo[pos.r][pos.c].push(info);
+                }
             }
         }
     }
-    
-    // 预计算将军状态
+
     let redIsInCheck = false;
     let blackIsInCheck = false;
-    
     let redGeneralInfo = null;
     let blackGeneralInfo = null;
     for (const info of piecesInfo) {
         if (info.piece.type === 'general') {
-            if (info.piece.color === 'red') {
-                redGeneralInfo = info;
-            } else {
-                blackGeneralInfo = info;
+            if (info.piece.color === 'red') redGeneralInfo = info;
+            else blackGeneralInfo = info;
+        }
+    }
+
+    if (useMasks) {
+        if (redGeneralInfo && boardInfo.attackMask[redGeneralInfo.r * 9 + redGeneralInfo.c] !== 0) {
+            redIsInCheck = true;
+        }
+        if (blackGeneralInfo && boardInfo.attackMask[blackGeneralInfo.r * 9 + blackGeneralInfo.c] !== 0) {
+            blackIsInCheck = true;
+        }
+    } else {
+        if (redGeneralInfo) {
+            for (const threatener of redGeneralInfo.threatenedBy) {
+                if (threatener.piece.color === 'black') {
+                    redIsInCheck = true;
+                    break;
+                }
+            }
+        }
+        if (blackGeneralInfo) {
+            for (const threatener of blackGeneralInfo.threatenedBy) {
+                if (threatener.piece.color === 'red') {
+                    blackIsInCheck = true;
+                    break;
+                }
             }
         }
     }
-    
-    if (redGeneralInfo) {
-        for (const threatener of redGeneralInfo.threatenedBy) {
-            if (threatener.piece.color === 'black') {
-                redIsInCheck = true;
-                break;
-            }
-        }
-    }
-    
-    if (blackGeneralInfo) {
-        for (const threatener of blackGeneralInfo.threatenedBy) {
-            if (threatener.piece.color === 'red') {
-                blackIsInCheck = true;
-                break;
-            }
-        }
-    }
-    
+
     if (redGeneralInfo && blackGeneralInfo && redGeneralInfo.c === blackGeneralInfo.c) {
         let hasPieceBetween = false;
         const startR = Math.min(redGeneralInfo.r, blackGeneralInfo.r) + 1;
@@ -834,7 +1009,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
             blackIsInCheck = true;
         }
     }
-    
+
     boardInfo.redIsInCheck = redIsInCheck;
     boardInfo.blackIsInCheck = blackIsInCheck;
 };
@@ -860,12 +1035,22 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
         const generalInfo = piecesInfo.find(
             p => p.piece && p.piece.type === 'general' && p.piece.color === currentPlayer
         );
-        if (generalInfo && generalInfo.threatenedBy) {
-            checkerKeys = new Set(
-                generalInfo.threatenedBy
-                    .filter(t => t.piece && t.piece.color !== currentPlayer)
-                    .map(t => `${t.r},${t.c}`)
-            );
+        if (generalInfo) {
+            if (boardInfo && boardInfo.useRelationMasks) {
+                checkerKeys = new Set();
+                forEachSetBit(boardInfo.attackMask[generalInfo.r * 9 + generalInfo.c], (i) => {
+                    const t = piecesInfo[i];
+                    if (t && t.piece && t.piece.color !== currentPlayer) {
+                        checkerKeys.add(`${t.r},${t.c}`);
+                    }
+                });
+            } else if (generalInfo.threatenedBy) {
+                checkerKeys = new Set(
+                    generalInfo.threatenedBy
+                        .filter(t => t.piece && t.piece.color !== currentPlayer)
+                        .map(t => `${t.r},${t.c}`)
+                );
+            }
         }
     }
 
@@ -1011,11 +1196,40 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
     // 计算棋子关系和控制信息，只在没有提供时计算
     let localBoardInfo = boardInfo;
     if (!localBoardInfo) {
-        localBoardInfo = Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
+        if (SEARCH_RELATION_MASKS && localPiecesInfo.length <= 32) {
+            clearRelationMasks();
+            clearAttackBits(scratchRedAttack);
+            clearAttackBits(scratchBlackAttack);
+            for (let i = 0; i < localPiecesInfo.length; i++) {
+                localPiecesInfo[i].pieceIndex = i;
+            }
+            localBoardInfo = {
+                useRelationMasks: true,
+                useAttackBits: true,
+                attackMask: scratchAttackMask,
+                guardMask: scratchGuardMask,
+                controlMask: scratchControlMask,
+                redAttack: scratchRedAttack,
+                blackAttack: scratchBlackAttack
+            };
+        } else {
+            localBoardInfo = makeEmptyControllerGrid();
+        }
         calculatePieceRelations(board, localPiecesInfo, localBoardInfo);
     }
 
-    const controllers = localBoardInfo[to.r][to.c] || [];
+    // 控制者：mask 用 controlMask；旧路径用 boardInfo[r][c]；hydrate 后可用 controllerGrid
+    let controllers;
+    if (localBoardInfo.useRelationMasks) {
+        controllers = [];
+        forEachSetBit(localBoardInfo.controlMask[to.r * 9 + to.c], (i) => {
+            controllers.push(localPiecesInfo[i]);
+        });
+    } else if (localBoardInfo.controllerGrid) {
+        controllers = localBoardInfo.controllerGrid[to.r][to.c] || [];
+    } else {
+        controllers = localBoardInfo[to.r][to.c] || [];
+    }
     let hasAllyController = false;
     let hasEnemyController = false;
 
@@ -1072,6 +1286,8 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
 // SEE 排序复用缓冲，降低叶评估 GC
 const seeAttackerScratch = [];
 const seeGuardScratch = [];
+const seeAttackerMatScratch = [];
+const seeGuardMatScratch = [];
 
 // 有根子简化 SEE（与旧实现逐行等价）；每个目标只应调用一次
 const calculateStaticExchangeScore = (threatenedPiece) => {
@@ -1105,6 +1321,41 @@ const calculateStaticExchangeScore = (threatenedPiece) => {
     return exchangeScore;
 };
 
+// mask 路径 SEE：材料数组排序，语义与上式一致
+const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, attackMask, guardMask) => {
+    const atkMats = seeAttackerMatScratch;
+    const grdMats = seeGuardMatScratch;
+    atkMats.length = 0;
+    grdMats.length = 0;
+    const sq = threatenedPiece.r * 9 + threatenedPiece.c;
+    forEachSetBit(attackMask[sq], (i) => {
+        atkMats.push(piecesInfo[i].materialValue);
+    });
+    forEachSetBit(guardMask[sq], (i) => {
+        grdMats.push(piecesInfo[i].materialValue);
+    });
+    atkMats.sort((a, b) => a - b);
+    grdMats.sort((a, b) => a - b);
+
+    let exchangeScore = 0;
+    let attackerIndex = 0;
+    let guardIndex = 0;
+    const targetValue = threatenedPiece.materialValue;
+
+    while (attackerIndex < atkMats.length && guardIndex < grdMats.length) {
+        if (guardIndex === 0) {
+            exchangeScore += targetValue;
+        }
+        exchangeScore -= atkMats[attackerIndex];
+        if (attackerIndex + 1 < atkMats.length) {
+            exchangeScore += grdMats[guardIndex];
+        }
+        attackerIndex++;
+        guardIndex++;
+    }
+    return exchangeScore;
+};
+
 // 计算威胁值（基于完整的威胁关系）
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
@@ -1123,43 +1374,76 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
 
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
     const canCaptureSeen = new Set();
+    const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
+    const attackMask = useMasks ? boardInfo.attackMask : null;
+    const guardMask = useMasks ? boardInfo.guardMask : null;
 
     for (let ti = 0; ti < piecesInfo.length; ti++) {
         const threatenedPiece = piecesInfo[ti];
-        const attackers = threatenedPiece.threatenedBy;
-        if (!attackers || attackers.length === 0) continue;
+        let firstAttacker;
+        let hasGuard;
+        let attackerList = null;
 
-        // threatenedBy[0] = piecesInfo 顺序下最先挂上威胁的攻击方（与旧首次计分一致）
-        const firstAttacker = attackers[0];
+        if (useMasks) {
+            const sq = threatenedPiece.r * 9 + threatenedPiece.c;
+            const am = attackMask[sq];
+            if (am === 0) continue;
+            // 最低 bit = piecesInfo 顺序下最先挂上的攻击方（与旧 threatenedBy[0] 一致）
+            firstAttacker = piecesInfo[lowestSetBitIndex(am)];
+            hasGuard = guardMask[sq] !== 0;
+        } else {
+            const attackers = threatenedPiece.threatenedBy;
+            if (!attackers || attackers.length === 0) continue;
+            firstAttacker = attackers[0];
+            hasGuard = threatenedPiece.guardedBy && threatenedPiece.guardedBy.length > 0;
+            attackerList = attackers;
+        }
 
         // 将军：只给小额先手分，绝不按将/帅材料值做 SEE
         if (threatenedPiece.piece.type === PIECE_TYPES.GENERAL) {
             if (boardInfo) {
-                for (let ai = 0; ai < attackers.length; ai++) {
-                    boardInfo.checks.push({
-                        attacker: attackers[ai],
-                        target: threatenedPiece,
-                        isCheck: true
+                if (useMasks) {
+                    forEachSetBit(attackMask[threatenedPiece.r * 9 + threatenedPiece.c], (ai) => {
+                        boardInfo.checks.push({
+                            attacker: piecesInfo[ai],
+                            target: threatenedPiece,
+                            isCheck: true
+                        });
                     });
+                } else {
+                    for (let ai = 0; ai < attackerList.length; ai++) {
+                        boardInfo.checks.push({
+                            attacker: attackerList[ai],
+                            target: threatenedPiece,
+                            isCheck: true
+                        });
+                    }
                 }
             }
             firstAttacker.threatValue += checkBonus;
             continue;
         }
 
-        const hasGuard = threatenedPiece.guardedBy && threatenedPiece.guardedBy.length > 0;
-
         // 只把对攻击方有利的威胁计入 threatValue（单向计入，不做 safety 对称扣分）
         if (!hasGuard) {
             firstAttacker.threatValue += threatenedPiece.materialValue;
             if (boardInfo) {
-                // 攻击方同色：要么全是 currentPlayer（记 canCapture），要么全不是（记 threatenedPieces）
                 if (firstAttacker.piece.color === currentPlayer) {
-                    for (let ai = 0; ai < attackers.length; ai++) {
-                        const info = attackers[ai];
-                        if (!canCaptureSeen.has(info)) {
-                            canCaptureSeen.add(info);
-                            boardInfo.canCapture.push(info);
+                    if (useMasks) {
+                        forEachSetBit(attackMask[threatenedPiece.r * 9 + threatenedPiece.c], (ai) => {
+                            const info = piecesInfo[ai];
+                            if (!canCaptureSeen.has(info)) {
+                                canCaptureSeen.add(info);
+                                boardInfo.canCapture.push(info);
+                            }
+                        });
+                    } else {
+                        for (let ai = 0; ai < attackerList.length; ai++) {
+                            const info = attackerList[ai];
+                            if (!canCaptureSeen.has(info)) {
+                                canCaptureSeen.add(info);
+                                boardInfo.canCapture.push(info);
+                            }
                         }
                     }
                 } else {
@@ -1167,54 +1451,76 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
                 }
             }
         } else {
-            // SEE 每目标一次；有根且交换仍赚则折半计入
-            const sseScore = calculateStaticExchangeScore(threatenedPiece);
+            const sseScore = useMasks
+                ? calculateStaticExchangeScoreFromMasks(threatenedPiece, piecesInfo, attackMask, guardMask)
+                : calculateStaticExchangeScore(threatenedPiece);
             if (sseScore > 0) {
                 firstAttacker.threatValue += sseScore * 0.5;
             }
-            // sseScore <= 0：亏换/平换，不记威胁分
         }
     }
 };
 
-// 计算安全值 - 重构版：基于boardInfo的控制关系
-const calculateSafetyValues = (piecesInfo, boardInfo) => {
-    // 1. 找到将和帅
-    const generalInfo = [];
-    piecesInfo.forEach(info => {
-        if (info.piece.type === PIECE_TYPES.GENERAL) {
-            generalInfo.push(info);
+// 将的空控邻格（与 fill 中 general 空着 control 一致）
+const forEachGeneralEmptyControl = (board, general, fn) => {
+    const { r, c } = general;
+    const isRed = general.piece.color === 'red';
+    for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const nr = r + ORTH_DIRS[i][0];
+        const nc = c + ORTH_DIRS[i][1];
+        if (nc < 3 || nc > 5) continue;
+        if (isRed) {
+            if (nr < 0 || nr > 2) continue;
+        } else if (nr < 7 || nr > 9) {
+            continue;
         }
-    });
+        if (board[nr][nc] === null) fn(nr, nc);
+    }
+};
+
+// 计算安全值：将空控邻格是否被敌控
+const calculateSafetyValues = (piecesInfo, boardInfo, board = null) => {
+    const generalInfo = [];
+    for (let i = 0; i < piecesInfo.length; i++) {
+        if (piecesInfo[i].piece.type === PIECE_TYPES.GENERAL) {
+            generalInfo.push(piecesInfo[i]);
+        }
+    }
 
     const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
-    
+    const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
+
     for (const general of generalInfo) {
         const generalColor = general.piece.color;
         const enemyColor = generalColor === 'red' ? 'black' : 'red';
         const enemyBits = useAttackBits
             ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
             : null;
-        
-        // 检查将帅的控制点是否被敌方棋子控制
-        for (const controlPos of general.control) {
-            const { r, c } = controlPos;
+
+        const visit = (r, c) => {
             let hasEnemyControl;
             if (useAttackBits) {
                 hasEnemyControl = hasAttackBit(enemyBits, r * 9 + c);
             } else {
                 const positionControllers = boardInfo[r][c];
-                // 兼容 piecesInfo 引用与旧 {color} 结构
                 hasEnemyControl = positionControllers.some(controller => {
                     const color = controller.piece ? controller.piece.color : controller.color;
                     return color === enemyColor;
                 });
             }
-            
-            // 如果位置有敌方棋子控制，扣50的安全值
             if (hasEnemyControl) {
                 general.safetyValue -= 50;
             }
+        };
+
+        if (useMasks && board) {
+            forEachGeneralEmptyControl(board, general, visit);
+        } else if (general.control && general.control.length) {
+            for (let i = 0; i < general.control.length; i++) {
+                visit(general.control[i].r, general.control[i].c);
+            }
+        } else if (board) {
+            forEachGeneralEmptyControl(board, general, visit);
         }
     }
 };
@@ -2941,6 +3247,7 @@ const snapshotPerfStats = () => {
         deferLegality: SEARCH_DEFER_LEGALITY,
         incrementalZobrist: SEARCH_INCREMENTAL_ZOBRIST,
         leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
+        relationMasks: SEARCH_RELATION_MASKS,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
@@ -2969,7 +3276,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
-    console.log(`   leafAttackBits=${snap.leafAttackBits} evalMs=${Math.round(snap.evaluateBoardMs)} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
+    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} evalMs=${Math.round(snap.evaluateBoardMs)} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
@@ -3048,7 +3355,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, zobristVerify: searchZobristVerify } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, zobristVerify: searchZobristVerify } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -3057,6 +3364,9 @@ if (typeof self !== 'undefined') {
             }
             if (typeof searchLeafAttackBits === 'boolean') {
                 SEARCH_LEAF_ATTACK_BITS = searchLeafAttackBits;
+            }
+            if (typeof searchRelationMasks === 'boolean') {
+                SEARCH_RELATION_MASKS = searchRelationMasks;
             }
             SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
@@ -3119,9 +3429,15 @@ if (typeof self !== 'undefined') {
             const boardEvaluation = evaluateBoard(prBoard, false, null, 0, null, gameStage);
             const piecesInfo = boardEvaluation.piecesInfo;
             const boardInfo = boardEvaluation.boardInfo;
-            
+
+            if (boardInfo.useRelationMasks) {
+                hydrateRelationsFromMasks(piecesInfo, boardInfo);
+            }
+
             // boardInfo 格内可能是 piecesInfo 引用，统一映射为 {r,c} 供 UI 使用
-            const rawControllers = boardInfo[prPos.r][prPos.c] || [];
+            const rawControllers = boardInfo.controllerGrid
+                ? (boardInfo.controllerGrid[prPos.r][prPos.c] || [])
+                : (boardInfo[prPos.r] && boardInfo[prPos.r][prPos.c]) || [];
             const controllers = rawControllers.map((ctrl) => ({ r: ctrl.r, c: ctrl.c }));
             
             let relations = {
@@ -3842,7 +4158,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
     : `${rootHash}:${turn}`;
 
   console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, relationMasks: ${SEARCH_RELATION_MASKS}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
   );
 
   let completedDepth = 0;

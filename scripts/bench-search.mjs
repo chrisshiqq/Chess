@@ -60,6 +60,7 @@ function runSearch(depth, exactRootScores, opts = {}) {
         deferLegality: opts.deferLegality !== false,
         incrementalZobrist: opts.incrementalZobrist !== false,
         leafAttackBits: opts.leafAttackBits !== false,
+        relationMasks: opts.relationMasks !== false,
         zobristVerify: !!opts.zobristVerify
       }
     });
@@ -86,6 +87,7 @@ function summarize(label, elapsed, payload) {
     deferLegality: p.deferLegality,
     incrementalZobrist: p.incrementalZobrist,
     leafAttackBits: p.leafAttackBits,
+    relationMasks: p.relationMasks,
     alphaBetaCalls: p.alphaBetaCalls,
     legalityChecks: p.legalityChecks,
     pseudoMovesGenerated: p.pseudoMovesGenerated,
@@ -116,7 +118,7 @@ function printSummary(s) {
     `  Zobrist: incr=${s.incrementalZobrist} fullHash=${s.fullHashCount} ` +
     `incrUpdates=${s.incrementalHashUpdates} mismatches=${s.hashMismatches}`
   );
-  console.log(`  leafAttackBits=${s.leafAttackBits}`);
+  console.log(`  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks}`);
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
     const prepPct = s.thinkingTimeMs ? (100 * s.prepareSearchInfoMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -182,11 +184,33 @@ function printAttackBitsCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printRelationMasksCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  const evalBefore = before.evaluateBoardMs ?? 0;
+  const evalAfter = after.evaluateBoardMs ?? 0;
+  const evalSpeedup = evalBefore / Math.max(1, evalAfter);
+  console.log('\n=== Compare (relation lists -> square Uint32 masks) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`evaluateBoardMs: ${Math.round(evalBefore)}ms -> ${Math.round(evalAfter)}ms  (x${evalSpeedup.toFixed(2)})`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
 //   node scripts/bench-search.mjs 8 play zobrist          # zobrist A/B
 //   node scripts/bench-search.mjs 8 play attackbits       # leaf attack bitmap A/B
+//   node scripts/bench-search.mjs 8 play relmasks         # relation mask A/B
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
@@ -203,12 +227,12 @@ for (const job of jobs) {
   if (pathMode === 'compare') {
     outName = `bench-d${depth}-legality.json`;
     console.log(`\n=== Bench depth=${depth} ${job.label} EAGER (deferLegality=false) ===`);
-    const beforeRun = await runSearch(depth, job.exact, { deferLegality: false, incrementalZobrist: true, leafAttackBits: true });
+    const beforeRun = await runSearch(depth, job.exact, { deferLegality: false, incrementalZobrist: true, leafAttackBits: true, relationMasks: true });
     const before = summarize('eager', beforeRun.elapsed, beforeRun.payload);
     printSummary(before);
 
     console.log(`\n=== Bench depth=${depth} ${job.label} DEFER (deferLegality=true) ===`);
-    const afterRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: true, leafAttackBits: true });
+    const afterRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: true, leafAttackBits: true, relationMasks: true });
     const after = summarize('defer', afterRun.elapsed, afterRun.payload);
     printSummary(after);
 
@@ -217,12 +241,12 @@ for (const job of jobs) {
   } else if (pathMode === 'zobrist' || pathMode === 'hash') {
     outName = `bench-d${depth}-zobrist.json`;
     console.log(`\n=== Bench depth=${depth} ${job.label} FULL (incrementalZobrist=false) ===`);
-    const beforeRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: false, leafAttackBits: true });
+    const beforeRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: false, leafAttackBits: true, relationMasks: true });
     const before = summarize('full', beforeRun.elapsed, beforeRun.payload);
     printSummary(before);
 
     console.log(`\n=== Bench depth=${depth} ${job.label} INCR (incrementalZobrist=true) ===`);
-    const afterRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: true, leafAttackBits: true });
+    const afterRun = await runSearch(depth, job.exact, { deferLegality: true, incrementalZobrist: true, leafAttackBits: true, relationMasks: true });
     const after = summarize('incr', afterRun.elapsed, afterRun.payload);
     printSummary(after);
 
@@ -234,7 +258,8 @@ for (const job of jobs) {
     const beforeRun = await runSearch(depth, job.exact, {
       deferLegality: true,
       incrementalZobrist: true,
-      leafAttackBits: false
+      leafAttackBits: false,
+      relationMasks: false
     });
     const before = summarize('grid', beforeRun.elapsed, beforeRun.payload);
     printSummary(before);
@@ -243,12 +268,37 @@ for (const job of jobs) {
     const afterRun = await runSearch(depth, job.exact, {
       deferLegality: true,
       incrementalZobrist: true,
-      leafAttackBits: true
+      leafAttackBits: true,
+      relationMasks: false
     });
     const after = summarize('bits', afterRun.elapsed, afterRun.payload);
     printSummary(after);
 
     printAttackBitsCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'relmasks' || pathMode === 'masks' || pathMode === 'relationmasks') {
+    outName = `bench-d${depth}-relmasks.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} LISTS (relationMasks=false) ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: false
+    });
+    const before = summarize('lists', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} MASKS (relationMasks=true) ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true
+    });
+    const after = summarize('masks', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printRelationMasksCompare(before, after);
     results.push({ job: job.label, before, after });
   } else {
     const incr =
@@ -261,13 +311,17 @@ for (const job of jobs) {
     const bits =
       pathMode === 'grid' ? false :
       true;
-    const tag = `${incr ? 'INCR' : 'FULL'}/${bits ? 'BITS' : 'GRID'}`;
+    const masks =
+      pathMode === 'lists' ? false :
+      true;
+    const tag = `${incr ? 'INCR' : 'FULL'}/${masks ? 'MASKS' : 'LISTS'}`;
     outName = `bench-d${depth}-latest.json`;
     console.log(`\n=== Bench depth=${depth} ${job.label} ${tag} (opening, book off) ===`);
     const { elapsed, payload } = await runSearch(depth, job.exact, {
       deferLegality: defer,
       incrementalZobrist: incr,
-      leafAttackBits: bits
+      leafAttackBits: bits,
+      relationMasks: masks
     });
     const s = summarize(tag.toLowerCase(), elapsed, payload);
     printSummary(s);

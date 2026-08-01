@@ -1,11 +1,12 @@
 @echo off
 setlocal
-REM Usage: bench-search.bat [depth] [play|analysis|both] [compare|zobrist|attackbits|incr|full|eager|grid]
+REM Usage: bench-search.bat [depth] [play|analysis|both] [compare|zobrist|attackbits|relmasks|incr|full|eager|grid]
 REM Examples:
 REM   bench-search.bat 8 play
 REM   bench-search.bat 8 play compare
 REM   bench-search.bat 8 play zobrist
 REM   bench-search.bat 8 play attackbits
+REM   bench-search.bat 8 play relmasks
 
 set "DEPTH=%~1"
 if "%DEPTH%"=="" set "DEPTH=8"
@@ -25,6 +26,12 @@ if /I "%PATHMODE%"=="compare" (
   set "OUT=scripts\bench-d%DEPTH%-attackbits-compare.txt"
 ) else if /I "%PATHMODE%"=="leafbits" (
   set "OUT=scripts\bench-d%DEPTH%-attackbits-compare.txt"
+) else if /I "%PATHMODE%"=="relmasks" (
+  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
+) else if /I "%PATHMODE%"=="masks" (
+  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
+) else if /I "%PATHMODE%"=="relationmasks" (
+  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
 ) else (
   set "OUT=scripts\bench-d%DEPTH%-latest.txt"
 )
