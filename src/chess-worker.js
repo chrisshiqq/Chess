@@ -64,27 +64,6 @@ const EVALUATION_PARAMETERS = {
     // 将军：仅作小额先手加分，禁止按将/帅材料值(10000)计入威胁/SEE
     check: {
         bonus: 80
-    },
-    // 帮助关系参数
-    assist: {
-        //cannonScreenValue: 40  // 炮架价值
-        cannonScreenValue: 0  // 炮架价值
-    },
-    // 阻挡关系参数
-    block: {
-        //enemyChariotBlockValue: 20,     // 阻挡对方车价值
-        //enemyHorseBlockValue: 15,       // 别对方马腿价值
-        //enemyElephantBlockValue: 10,    // 堵塞对方象眼价值
-        //allyChariotBlockPenalty: 20,    // 阻挡己方车惩罚
-        //allyHorseBlockPenalty: 15,      // 别己方马腿惩罚
-        //allyElephantBlockPenalty: 10    // 堵塞己方象眼惩罚
-
-        enemyChariotBlockValue: 0,     // 阻挡对方车价值
-        enemyHorseBlockValue: 0,       // 别对方马腿价值
-        enemyElephantBlockValue: 0,    // 堵塞对方象眼价值
-        allyChariotBlockPenalty: 0,    // 阻挡己方车惩罚
-        allyHorseBlockPenalty: 0,      // 别己方马腿惩罚
-        allyElephantBlockPenalty: 0    // 堵塞己方象眼惩罚
     }
 };
 
@@ -522,16 +501,10 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
     // 2. 计算威胁值（按被威胁子聚合，SEE 每目标一次）
     calculateThreatValues(piecesInfo, currentPlayer, boardInfo);
     
-    // 3. 计算战术值的其他部分（帮助关系和阻挡关系）
-    for (const info of piecesInfo) {
-        //info.tacticValue += calculateAssistValue(piecesInfo, info);
-        //info.tacticValue += calculateBlockValue(board, piecesInfo, info);
-    }
-    
-    // 4. 最后计算安全值，传递boardInfo作为参数
+    // 3. 计算安全值
     calculateSafetyValues(piecesInfo, boardInfo);
     
-    // 5. 计算游戏状态并保存到boardInfo
+    // 4. 计算游戏状态并保存到boardInfo
     // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
     if (currentPlayer && !forSearchLeaf) {
         // 检查当前玩家是否有合法走法
@@ -565,6 +538,30 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, depth =
         boardInfo.gameState = gameState;
     }
 };
+
+// 棋子几何方向表（预计算腿/眼偏移，热路径避免 Math.sign / dr/2）
+const ORTH_DIRS = [
+    [0, 1], [0, -1], [1, 0], [-1, 0]
+];
+const DIAG_DIRS = [
+    [1, 1], [1, -1], [-1, 1], [-1, -1]
+];
+const ELEPHANT_DIRS = [
+    { dr: 2, dc: 2, eyeDr: 1, eyeDc: 1 },
+    { dr: 2, dc: -2, eyeDr: 1, eyeDc: -1 },
+    { dr: -2, dc: 2, eyeDr: -1, eyeDc: 1 },
+    { dr: -2, dc: -2, eyeDr: -1, eyeDc: -1 }
+];
+const HORSE_DIRS = [
+    { dr: 2, dc: 1, legDr: 1, legDc: 0 },
+    { dr: 2, dc: -1, legDr: 1, legDc: 0 },
+    { dr: -2, dc: 1, legDr: -1, legDc: 0 },
+    { dr: -2, dc: -1, legDr: -1, legDc: 0 },
+    { dr: 1, dc: 2, legDr: 0, legDc: 1 },
+    { dr: 1, dc: -2, legDr: 0, legDc: -1 },
+    { dr: -1, dc: 2, legDr: 0, legDc: 1 },
+    { dr: -1, dc: -2, legDr: 0, legDc: -1 }
+];
 
 // 非炮：一次几何扫描同时填充 moves + control / threat / guard / mobility（对齐 fillCannonRelations）
 // 语义与 getPieceMoves + calculatePieceRelations 旧拆分路径一致；getPieceMoves 仍供着法生成使用
@@ -612,7 +609,8 @@ const fillNonCannonRelations = (board, info, posByKey) => {
 
     switch (piece.type) {
         case 'general':
-            for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
                 const nr = r + dr, nc = c + dc;
                 if (nc >= 3 && nc <= 5) {
                     if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
@@ -621,7 +619,8 @@ const fillNonCannonRelations = (board, info, posByKey) => {
             }
             break;
         case 'advisor':
-            for (const [dr, dc] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+            for (let i = 0; i < DIAG_DIRS.length; i++) {
+                const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
                 const nr = r + dr, nc = c + dc;
                 if (nc >= 3 && nc <= 5) {
                     if (isRed && nr >= 0 && nr <= 2) addSquare(nr, nc);
@@ -630,9 +629,10 @@ const fillNonCannonRelations = (board, info, posByKey) => {
             }
             break;
         case 'elephant':
-            for (const [dr, dc] of [[2, 2], [2, -2], [-2, 2], [-2, -2]]) {
-                const nr = r + dr, nc = c + dc;
-                const eyeR = r + dr / 2, eyeC = c + dc / 2;
+            for (let i = 0; i < ELEPHANT_DIRS.length; i++) {
+                const d = ELEPHANT_DIRS[i];
+                const nr = r + d.dr, nc = c + d.dc;
+                const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
                 if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
                     if (isRed && nr <= 4) addSquare(nr, nc);
                     else if (!isRed && nr >= 5) addSquare(nr, nc);
@@ -640,17 +640,17 @@ const fillNonCannonRelations = (board, info, posByKey) => {
             }
             break;
         case 'horse':
-            for (const [dr, dc] of [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]]) {
-                const nr = r + dr, nc = c + dc;
-                const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-                const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+            for (let i = 0; i < HORSE_DIRS.length; i++) {
+                const d = HORSE_DIRS[i];
+                const legR = r + d.legDr, legC = c + d.legDc;
                 if (isValidPos(legR, legC) && board[legR][legC] === null) {
-                    addSquare(nr, nc);
+                    addSquare(r + d.dr, c + d.dc);
                 }
             }
             break;
         case 'chariot':
-            for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
                 let nr = r + dr, nc = c + dc;
                 while (isValidPos(nr, nc)) {
                     const target = board[nr][nc];
@@ -697,7 +697,8 @@ const fillCannonRelations = (board, info, posByKey) => {
     info.control = [];
     let mobilityValue = 0;
 
-    for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+    for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
         let screenFoundCount = 0;
         while (isValidPos(nr, nc) && screenFoundCount < 2) {
@@ -972,21 +973,6 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', b
     return moves;
 };
 
-// 处理单个棋子的所有moves，计算机动性、威胁和保护
-const processPieceMoves = (board, piecesInfo, info) => {
-    const { piece, moves } = info;
-    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
-    
-    // 1. 计算机动性：空位置的移动数量
-    for (const move of moves) {
-        const target = board[move.r][move.c];
-        if (!target) {
-            // 目标位置为空，计算机动性
-            info.mobilityValue += baseMoveValue;
-        }
-    }
-};
-
 // 检查目标位置是否可接受（避免明显送吃/亏换）
 // 优化版：接受预计算的boardInfo和piecesInfo，避免重复计算
 const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, piecesInfo = null, tryMovePiece = null, gameStage = 'mid') => {
@@ -1081,52 +1067,6 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
         return true;
     }
     return !hasEnemyController || hasAllyController;
-};
-
-// 计算安全值
-// 九宫位置定义：[起始行, 结束行, 起始列, 结束列] - 移到函数外部，避免重复创建
-const PALACE_POSITIONS = {
-    red: { startRow: 0, endRow: 2, startCol: 3, endCol: 5 }, // 红方九宫（将的位置）
-    black: { startRow: 7, endRow: 9, startCol: 3, endCol: 5 }  // 黑方九宫（帅的位置）
-};
-
-// 卒林线定义 - 移到函数外部，避免重复创建
-const LINELINE_POSITIONS = {
-    red: 3,  // 红方卒林线（黑兵需要超过的线）
-    black: 6  // 黑方卒林线（红兵需要超过的线）
-};
-
-// 从piecesInfo生成位置控制映射表
-const buildPositionControlMap = (piecesInfo) => {
-    const positionControlMap = new Map();
-    
-    // 遍历所有棋子，记录每个位置的控制者
-    for (const info of piecesInfo) {
-        // 检查control属性是否存在且为数组
-        if (!info.control || !Array.isArray(info.control)) {
-            continue;
-        }
-        
-        // 遍历该棋子的所有控制点
-        for (const controlPos of info.control) {
-            // 检查controlPos是否有效
-            if (!controlPos || typeof controlPos.r !== 'number' || typeof controlPos.c !== 'number') {
-                continue;
-            }
-            
-            const key = `${controlPos.r},${controlPos.c}`;
-            if (!positionControlMap.has(key)) {
-                positionControlMap.set(key, []);
-            }
-            // 记录控制者的颜色和棋子类型
-            positionControlMap.get(key).push({
-                color: info.piece.color,
-                type: info.piece.type
-            });
-        }
-    }
-    
-    return positionControlMap;
 };
 
 // SEE 排序复用缓冲，降低叶评估 GC
@@ -1278,274 +1218,6 @@ const calculateSafetyValues = (piecesInfo, boardInfo) => {
         }
     }
 };
-
-// 帮助关系战术值计算
-const calculateAssistValue = (piecesInfo, info) => {
-    const { piece, r, c } = info;
-    let assistValue = 0;
-    
-    // 1. 检查是否为己方炮的炮架（加分）
-    for (const allyInfo of piecesInfo) {
-        if (allyInfo.piece.color === piece.color && allyInfo !== info && allyInfo.piece.type === PIECE_TYPES.CANNON) {
-            // 检查炮和当前棋子是否在同一直线上
-            if (allyInfo.r === r || allyInfo.c === c) {
-                // 检查炮和当前棋子之间是否没有其他棋子
-                let hasScreen = true;
-                if (allyInfo.r === r) {
-                    // 同一行
-                    const start = Math.min(allyInfo.c, c) + 1;
-                    const end = Math.max(allyInfo.c, c) - 1;
-                    for (let col = start; col <= end; col++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === r && p.c === col);
-                        if (betweenPiece) {
-                            hasScreen = false;
-                            break;
-                        }
-                    }
-                } else {
-                    // 同一列
-                    const start = Math.min(allyInfo.r, r) + 1;
-                    const end = Math.max(allyInfo.r, r) - 1;
-                    for (let row = start; row <= end; row++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === row && p.c === c);
-                        if (betweenPiece) {
-                            hasScreen = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (hasScreen) {
-                    assistValue += EVALUATION_PARAMETERS.assist.cannonScreenValue; // 为己方炮提供炮架，增加战术值
-                }
-            }
-        }
-    }
-    
-    // 2. 检查是否为敌方炮的炮架（扣分）
-    for (const enemyInfo of piecesInfo) {
-        if (enemyInfo.piece.color !== piece.color && enemyInfo.piece.type === PIECE_TYPES.CANNON) {
-            // 检查敌方炮和当前棋子是否在同一直线上
-            if (enemyInfo.r === r || enemyInfo.c === c) {
-                // 检查敌方炮和当前棋子之间是否没有其他棋子
-                let isEnemyScreen = true;
-                if (enemyInfo.r === r) {
-                    // 同一行
-                    const start = Math.min(enemyInfo.c, c) + 1;
-                    const end = Math.max(enemyInfo.c, c) - 1;
-                    for (let col = start; col <= end; col++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === r && p.c === col);
-                        if (betweenPiece) {
-                            isEnemyScreen = false;
-                            break;
-                        }
-                    }
-                } else {
-                    // 同一列
-                    const start = Math.min(enemyInfo.r, r) + 1;
-                    const end = Math.max(enemyInfo.r, r) - 1;
-                    for (let row = start; row <= end; row++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === row && p.c === c);
-                        if (betweenPiece) {
-                            isEnemyScreen = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (isEnemyScreen) {
-                    assistValue -= EVALUATION_PARAMETERS.assist.cannonScreenValue; // 为敌方炮提供炮架，减少战术值（扣分）
-                }
-            }
-        }
-    }
-    
-    return assistValue;
-};
-
-// 阻挡关系战术值计算
-const calculateBlockValue = (board, piecesInfo, info) => {
-    const { piece, r, c } = info;
-    let blockValue = 0;
-    const enemyColor = piece.color === 'red' ? 'black' : 'red';
-    
-    // 1. 阻挡敌人
-    // 1.1 检查是否阻挡对方车的道路
-    for (const enemyInfo of piecesInfo) {
-        if (enemyInfo.piece.color === enemyColor && enemyInfo.piece.type === PIECE_TYPES.CHARIOT) {
-            // 检查车和当前棋子是否在同一直线上
-            if (enemyInfo.r === r || enemyInfo.c === c) {
-                // 检查两者之间是否没有其它棋子
-                let isBlocking = true;
-                
-                if (enemyInfo.r === r) {
-                    // 同一行
-                    const start = Math.min(enemyInfo.c, c) + 1;
-                    const end = Math.max(enemyInfo.c, c) - 1;
-                    for (let col = start; col <= end; col++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === r && p.c === col);
-                        if (betweenPiece) {
-                            isBlocking = false;
-                            break;
-                        }
-                    }
-                } else {
-                    // 同一列
-                    const start = Math.min(enemyInfo.r, r) + 1;
-                    const end = Math.max(enemyInfo.r, r) - 1;
-                    for (let row = start; row <= end; row++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === row && p.c === c);
-                        if (betweenPiece) {
-                            isBlocking = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (isBlocking) {
-                    // 检查是否阻挡了车的移动
-                    blockValue += EVALUATION_PARAMETERS.block.enemyChariotBlockValue;
-                }
-            }
-        }
-    }
-    
-    // 1.2 检查是否别对方马的马腿
-    for (const enemyInfo of piecesInfo) {
-        if (enemyInfo.piece.color === enemyColor && enemyInfo.piece.type === PIECE_TYPES.HORSE) {
-            const horseR = enemyInfo.r;
-            const horseC = enemyInfo.c;
-            
-            // 马腿位置：马的周围8个方向的腿的位置
-            const legPositions = [
-                { r: horseR + 1, c: horseC }, // 下方腿
-                { r: horseR - 1, c: horseC }, // 上方腿
-                { r: horseR, c: horseC + 1 }, // 右方腿
-                { r: horseR, c: horseC - 1 }  // 左方腿
-            ];
-            
-            // 检查当前棋子是否在马腿位置
-            for (const legPos of legPositions) {
-                if (legPos.r === r && legPos.c === c) {
-                    blockValue += EVALUATION_PARAMETERS.block.enemyHorseBlockValue; // 别马腿，增加战术值
-                }
-            }
-        }
-    }
-    
-    // 1.3 检查是否堵塞对方象的象眼
-    for (const enemyInfo of piecesInfo) {
-        if (enemyInfo.piece.color === enemyColor && enemyInfo.piece.type === PIECE_TYPES.ELEPHANT) {
-            const elephantR = enemyInfo.r;
-            const elephantC = enemyInfo.c;
-            
-            // 象眼位置：象的周围4个方向的象眼位置
-            const eyePositions = [
-                { r: elephantR + 1, c: elephantC + 1 }, // 右下象眼
-                { r: elephantR + 1, c: elephantC - 1 }, // 左下象眼
-                { r: elephantR - 1, c: elephantC + 1 }, // 右上象眼
-                { r: elephantR - 1, c: elephantC - 1 }  // 左上象眼
-            ];
-            
-            // 检查当前棋子是否在象眼位置
-            for (const eyePos of eyePositions) {
-                if (eyePos.r === r && eyePos.c === c) {
-                    blockValue += EVALUATION_PARAMETERS.block.enemyElephantBlockValue; // 堵塞象眼，增加战术值
-                }
-            }
-        }
-    }
-    
-    // 2. 阻挡己方（扣分）
-    // 2.1 检查是否阻挡己方车的道路
-    for (const allyInfo of piecesInfo) {
-        if (allyInfo.piece.color === piece.color && allyInfo !== info && allyInfo.piece.type === PIECE_TYPES.CHARIOT) {
-            // 检查车和当前棋子是否在同一直线上
-            if (allyInfo.r === r || allyInfo.c === c) {
-                // 检查两者之间是否没有其它棋子
-                let isBlocking = true;
-                
-                if (allyInfo.r === r) {
-                    // 同一行
-                    const start = Math.min(allyInfo.c, c) + 1;
-                    const end = Math.max(allyInfo.c, c) - 1;
-                    for (let col = start; col <= end; col++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === r && p.c === col);
-                        if (betweenPiece) {
-                            isBlocking = false;
-                            break;
-                        }
-                    }
-                } else {
-                    // 同一列
-                    const start = Math.min(allyInfo.r, r) + 1;
-                    const end = Math.max(allyInfo.r, r) - 1;
-                    for (let row = start; row <= end; row++) {
-                        const betweenPiece = piecesInfo.find(p => p.r === row && p.c === c);
-                        if (betweenPiece) {
-                            isBlocking = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (isBlocking) {
-                    // 阻挡己方车道路，扣分
-                    blockValue -= EVALUATION_PARAMETERS.block.allyChariotBlockPenalty;
-                }
-            }
-        }
-    }
-    
-    // 2.2 检查是否别己方马的马腿
-    for (const allyInfo of piecesInfo) {
-        if (allyInfo.piece.color === piece.color && allyInfo !== info && allyInfo.piece.type === PIECE_TYPES.HORSE) {
-            const horseR = allyInfo.r;
-            const horseC = allyInfo.c;
-            
-            // 马腿位置：马的周围8个方向的腿的位置
-            const legPositions = [
-                { r: horseR + 1, c: horseC }, // 下方腿
-                { r: horseR - 1, c: horseC }, // 上方腿
-                { r: horseR, c: horseC + 1 }, // 右方腿
-                { r: horseR, c: horseC - 1 }  // 左方腿
-            ];
-            
-            // 检查当前棋子是否在马腿位置
-            for (const legPos of legPositions) {
-                if (legPos.r === r && legPos.c === c) {
-                    blockValue -= EVALUATION_PARAMETERS.block.allyHorseBlockPenalty; // 别己方马腿，扣分
-                }
-            }
-        }
-    }
-    
-    // 2.3 检查是否堵塞己方象的象眼
-    for (const allyInfo of piecesInfo) {
-        if (allyInfo.piece.color === piece.color && allyInfo !== info && allyInfo.piece.type === PIECE_TYPES.ELEPHANT) {
-            const elephantR = allyInfo.r;
-            const elephantC = allyInfo.c;
-            
-            // 象眼位置：象的周围4个方向的象眼位置
-            const eyePositions = [
-                { r: elephantR + 1, c: elephantC + 1 }, // 右下象眼
-                { r: elephantR + 1, c: elephantC - 1 }, // 左下象眼
-                { r: elephantR - 1, c: elephantC + 1 }, // 右上象眼
-                { r: elephantR - 1, c: elephantC - 1 }  // 左上象眼
-            ];
-            
-            // 检查当前棋子是否在象眼位置
-            for (const eyePos of eyePositions) {
-                if (eyePos.r === r && eyePos.c === c) {
-                    blockValue -= EVALUATION_PARAMETERS.block.allyElephantBlockPenalty; // 堵塞己方象眼，扣分
-                }
-            }
-        }
-    }
-    
-    return blockValue;
-};
-
 
 // --- Types (Inlined to avoid import issues in Worker) ---
 // // type Color - TypeScript type removed for JavaScript compatibility 'red' | 'black';
@@ -2742,209 +2414,7 @@ class OpeningBook {
 // Initialize Opening Book
 const openingBook = new OpeningBook(12);
 
-const PIECE_VALUES = {
-  general: 10000,     // 将/帅
-  chariot: 900,       // 车
-  cannon: 450,        // 炮
-  horse: 400,         // 马
-  elephant: 200,      // 象/相
-  advisor: 200,       // 士/仕
-  soldier: 100,       // 兵/卒
-};
-
-// --- Piece-Square Tables ---
-const PST_SOLDIER = [
-  [10, 15, 20, 25, 25, 25, 20, 15, 10],
-  [10, 15, 20, 25, 25, 25, 20, 15, 10],
-  [10, 15, 20, 25, 25, 25, 20, 15, 10],
-  [10, 15, 25, 30, 30, 30, 25, 15, 10],
-  [5, 10, 20, 25, 25, 25, 20, 10, 5],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0]
-];
-const PST_CHARIOT = [
-  [5, 10, 10, 10, 10, 10, 10, 10, 5],
-  [10, 15, 20, 20, 20, 20, 20, 15, 10],
-  [10, 15, 20, 20, 20, 20, 20, 15, 10],
-  [10, 15, 20, 20, 20, 20, 20, 15, 10],
-  [10, 15, 20, 20, 20, 20, 20, 15, 10],
-  [10, 12, 15, 15, 15, 15, 15, 12, 10],
-  [10, 12, 15, 15, 15, 15, 15, 12, 10],
-  [5, 10, 12, 10, 10, 10, 12, 10, 5],
-  [10, 10, 10, 10, 10, 10, 10, 10, 10],
-  [0, 10, 5, 10, 5, 10, 5, 10, 0]
-];
-const PST_HORSE = [
-  [0, -5, 0, 0, 0, 0, 0, -5, 0],
-  [0, 5, 15, 10, 10, 10, 15, 5, 0],
-  [5, 5, 20, 25, 25, 25, 20, 5, 5],
-  [5, 10, 20, 25, 25, 25, 20, 10, 5],
-  [0, 5, 15, 20, 20, 20, 15, 5, 0],
-  [0, 5, 15, 20, 20, 20, 15, 5, 0],
-  [0, 5, 10, 15, 15, 15, 10, 5, 0],
-  [0, 0, 5, 5, 5, 5, 5, 0, 0],
-  [0, -5, 0, 5, 5, 5, 0, -5, 0],
-  [0, -10, -5, 0, 0, 0, -5, -10, 0]
-];
-const PST_CANNON = [
-  [0, 0, 5, 10, 10, 10, 5, 0, 0],
-  [0, 5, 15, 10, 10, 10, 15, 5, 0],
-  [0, 5, 15, 25, 25, 25, 15, 5, 0],
-  [0, 5, 10, 15, 15, 15, 10, 5, 0],
-  [0, 5, 5, 5, 5, 5, 5, 5, 0],
-  [0, 5, 5, 5, 5, 5, 5, 5, 0],
-  [0, 5, 5, 5, 5, 5, 5, 5, 0],
-  [5, 15, 20, 30, 30, 30, 20, 15, 5], 
-  [0, 5, 5, 10, 10, 10, 5, 5, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0]
-];
-const PST_DEFENSE = [
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [0, 0, 0, 20, 30, 20, 0, 0, 0]
-];
-
-const getPSTValue = (type, color, r, c) => {
-  const rowIdx = color === 'red' ? r : (9 - r);
-  let table = [];
-  switch (type) {
-    case 'soldier': table = PST_SOLDIER; break;
-    case 'chariot': table = PST_CHARIOT; break;
-    case 'horse': table = PST_HORSE; break;
-    case 'cannon': table = PST_CANNON; break;
-    default: table = PST_DEFENSE; break; 
-  }
-  return table[rowIdx]?.[c] || 0;
-};
-
 const isValidPos = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
-
-// 获取棋子的威胁目标和保护目标
-const getPieceTargets = (board, pos, piece) => {
-  const threat = [];           // 当前棋子威胁的敌方棋子
-  const guard = [];       // 当前棋子保护的己方棋子
-  const { r, c } = pos;
-  const isRed = piece.color === 'red';
-
-  const addIfValid = (tr, tc) => {
-    if (isValidPos(tr, tc)) {
-        const target = board[tr][tc];
-        if (target) {
-            if (target.color !== piece.color) {
-                // 敌方棋子，加入威胁列表
-                threat.push({ r: tr, c: tc });
-            } else {
-                // 己方棋子，加入保护列表，将帅不需要事后的保护
-                if (target.type != 'general') {
-                    guard.push({ r: tr, c: tc });
-                }
-            }
-        }
-    }
-  };
-  
-
-
-  switch (piece.type) {
-    case 'general': 
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        if (nc >= 3 && nc <= 5) {
-          if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
-          else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
-        }
-      });
-      break;
-    case 'advisor':
-      [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        if (nc >= 3 && nc <= 5) {
-          if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
-          else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
-        }
-      });
-      break;
-    case 'elephant':
-      [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        const eyeR = r + dr / 2, eyeC = c + dc / 2;
-        if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-          if (isRed && nr <= 4) addIfValid(nr, nc); 
-          else if (!isRed && nr >= 5) addIfValid(nr, nc);
-        }
-      });
-      break;
-    case 'horse':
-      [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-        const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
-        if (isValidPos(legR, legC) && board[legR][legC] === null) {
-          addIfValid(nr, nc);
-        }
-      });
-      break;
-    case 'chariot':
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-        let nr = r + dr, nc = c + dc;
-        while (isValidPos(nr, nc)) {
-          if (board[nr][nc] === null) {
-            // 空位置，不做处理
-          } else {
-            addIfValid(nr, nc);
-            break;
-          }
-          nr += dr; nc += dc;
-        }
-      });
-      break;
-    case 'cannon':
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-        let nr = r + dr, nc = c + dc;
-        let screenFound = false;
-        while (isValidPos(nr, nc)) {
-          if (!screenFound) {
-            if (board[nr][nc] === null) {
-              // 空位置，不做处理
-            } else {
-              screenFound = true;
-            }
-          } else {
-            if (board[nr][nc] !== null) {
-              addIfValid(nr, nc);
-              break;
-            }
-          }
-          nr += dr; nc += dc;
-        }
-      });
-      break;
-    case 'soldier': {
-      // 红方兵初始位置在r=3，向前走是r增大（向下）；黑方兵初始位置在r=6，向前走是r减小（向上）
-      const forward = isRed ? 1 : -1;
-      // 红方兵过河条件是r >= 5，黑方兵过河条件是r <= 4
-      // 河界位于r=4和r=5之间，红方兵需要走到r=5才能过河，黑方兵需要走到r=4才能过河
-      const crossedRiver = isRed ? r >= 5 : r <= 4;
-      addIfValid(r + forward, c);
-      if (crossedRiver) {
-        addIfValid(r, c - 1);
-        addIfValid(r, c + 1);
-      }
-      break;
-    }
-  }
-  return { threat, guard };
-};
 
 // alliesOut: 可选，收集可保护的己方落点（不含将帅），供关系计算复用，避免二次射线
 const getPieceMoves = (board, pos, piece, alliesOut = null) => {
@@ -2970,46 +2440,49 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
   };
 
   switch (piece.type) {
-    case 'general': 
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+    case 'general':
+      for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         const nr = r + dr, nc = c + dc;
         if (nc >= 3 && nc <= 5) {
           if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
           else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
         }
-      });
+      }
       break;
     case 'advisor':
-      [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => {
+      for (let i = 0; i < DIAG_DIRS.length; i++) {
+        const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
         const nr = r + dr, nc = c + dc;
         if (nc >= 3 && nc <= 5) {
           if (isRed && nr >= 0 && nr <= 2) addIfValid(nr, nc);
           else if (!isRed && nr >= 7 && nr <= 9) addIfValid(nr, nc);
         }
-      });
+      }
       break;
     case 'elephant':
-      [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        const eyeR = r + dr / 2, eyeC = c + dc / 2;
+      for (let i = 0; i < ELEPHANT_DIRS.length; i++) {
+        const d = ELEPHANT_DIRS[i];
+        const nr = r + d.dr, nc = c + d.dc;
+        const eyeR = r + d.eyeDr, eyeC = c + d.eyeDc;
         if (isValidPos(nr, nc) && board[eyeR][eyeC] === null) {
-          if (isRed && nr <= 4) addIfValid(nr, nc); 
+          if (isRed && nr <= 4) addIfValid(nr, nc);
           else if (!isRed && nr >= 5) addIfValid(nr, nc);
         }
-      });
+      }
       break;
     case 'horse':
-      [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(([dr, dc]) => {
-        const nr = r + dr, nc = c + dc;
-        const legR = r + (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-        const legC = c + (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+      for (let i = 0; i < HORSE_DIRS.length; i++) {
+        const d = HORSE_DIRS[i];
+        const legR = r + d.legDr, legC = c + d.legDc;
         if (isValidPos(legR, legC) && board[legR][legC] === null) {
-          addIfValid(nr, nc);
+          addIfValid(r + d.dr, c + d.dc);
         }
-      });
+      }
       break;
     case 'chariot':
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+      for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
         while (isValidPos(nr, nc)) {
           const target = board[nr][nc];
@@ -3022,11 +2495,12 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
           }
           nr += dr; nc += dc;
         }
-      });
+      }
       break;
     case 'cannon':
       // 着法仍只含敌方隔打；己方隔打保护由 fillCannonRelations 统一处理
-      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+      for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = r + dr, nc = c + dc;
         let screenFound = false;
         while (isValidPos(nr, nc)) {
@@ -3044,7 +2518,7 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
           }
           nr += dr; nc += dc;
         }
-      });
+      }
       break;
     case 'soldier': {
       // 红方兵初始位置在r=3，向前走是r增大（向下）；黑方兵初始位置在r=6，向前走是r减小（向上）
@@ -3061,55 +2535,6 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
     }
   }
   return moves;
-};
-
-// 获取棋子的控制点
-const getPieceControl = (board, pos, piece) => {
-  const control = [];
-  const { r, c } = pos;
-  const isRed = piece.color === 'red';
-
-  const addIfValid = (tr, tc) => {
-    if (isValidPos(tr, tc)) {
-        control.push({ r: tr, c: tc });
-    }
-  };
-
-  // 对于非炮棋子，控制点只包括其可以打到的空位置，即如果敌方棋子进入这些点将被攻击
-  if (piece.type !== 'cannon') {
-    // 获取所有可能的移动位置，然后过滤掉有棋子的位置
-    const moves = getPieceMoves(board, pos, piece);
-    moves.forEach(move => {
-      // 只添加空位置作为控制点
-      if (board[move.r][move.c] === null) {
-        control.push(move);
-      }
-    });
-  } else {
-    // 对于炮棋子，需要特殊计算控制点，控制点只包括其可以打到的空位置，即如果敌方棋子进入这些点将被攻击
-    // 炮能控制的是第1个炮台之后（不含炮台）第2个炮台之前（不含炮台）的所有空位置
-    // 如果没有第2个炮台那么就是第1个炮台之后（不含炮台）的所有空位置
-    [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
-      let nr = r + dr, nc = c + dc;
-      let screenFoundCount = 0;
-      
-      while (isValidPos(nr, nc) && screenFoundCount < 2) {
-        const currentPiece = board[nr][nc];
-        
-        if (currentPiece !== null) {
-          // 找到一个炮台，增加计数
-          screenFoundCount++;
-        } else if (screenFoundCount === 1) {
-          // 第1个炮台之后，第2个炮台之前的空位置，添加到控制点
-          addIfValid(nr, nc);
-        }
-        
-        nr += dr; nc += dc;
-      }
-    });
-  }
-
-  return control;
 };
 
 const isFlyingGeneral = (board) => {
@@ -3136,8 +2561,8 @@ const isCheckRaw = (board, color) => {
     const { r: gr, c: gc } = generalPos;
 
     // 直线：第一子为敌车/将则将军；越过炮架后第二子为敌炮则将军
-    const directions = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-    for (const [dr, dc] of directions) {
+    for (let i = 0; i < ORTH_DIRS.length; i++) {
+        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
         let nr = gr + dr;
         let nc = gc + dc;
         let seen = 0;
@@ -3162,14 +2587,14 @@ const isCheckRaw = (board, color) => {
         }
     }
 
-    // 马：从将位反推，马腿在马一侧（与 getPieceMoves 一致）
-    const horseMoves = [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]];
-    for (const [dr, dc] of horseMoves) {
-        const nr = gr + dr;
-        const nc = gc + dc;
+    // 马：从将位反推，马腿在马一侧（与 getPieceMoves / HORSE_DIRS 一致）
+    for (let i = 0; i < HORSE_DIRS.length; i++) {
+        const d = HORSE_DIRS[i];
+        const nr = gr + d.dr;
+        const nc = gc + d.dc;
         if (isValidPos(nr, nc)) {
-            const legR = nr - (Math.abs(dr) === 2 ? Math.sign(dr) : 0);
-            const legC = nc - (Math.abs(dc) === 2 ? Math.sign(dc) : 0);
+            const legR = nr - d.legDr;
+            const legC = nc - d.legDc;
             if (board[legR][legC] === null) {
                 const p = board[nr][nc];
                 if (p && p.color === enemyColor && p.type === 'horse') {
@@ -3180,8 +2605,8 @@ const isCheckRaw = (board, color) => {
     }
 
     // 士（九宫内）
-    const advisorMoves = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
-    for (const [dr, dc] of advisorMoves) {
+    for (let i = 0; i < DIAG_DIRS.length; i++) {
+        const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
         const nr = gr + dr;
         const nc = gc + dc;
         if (isValidPos(nr, nc) &&
@@ -3353,20 +2778,6 @@ const getGamePhase = (board) => {
   return 'opening';
   */
   return 'opening';
-};
-
-// 动态权重计算
-const calculateDynamicWeights = (phase) => {
-  switch (phase) {
-    case 'opening':
-      return { material: 8, position: 2, tactic: 6, safety: 4, mobility: 7, threat: 3 };
-    case 'middlegame':
-      return { material: 6, position: 9, tactic: 7, safety: 6, mobility: 8, threat: 7 };
-    case 'endgame':
-      return { material: 9, position: 7, tactic: 2, safety: 8, mobility: 4, threat: 9 };
-    default:
-      return { material: 8, position: 5, tactic: 5, safety: 6, mobility: 5, threat: 5 };
-  }
 };
 
 // 计算棋子总数
