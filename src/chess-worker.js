@@ -171,6 +171,32 @@ const getPositionValue = (piece, r, c) => {
     return table[rowIdx][c] || 0;
 };
 
+// Search leaves use numeric piece codes. Flatten position values once so the
+// hot evaluator never has to dereference a piece object or a nested table.
+const SEARCH_POSITION_VALUES = Array.from({ length: 16 }, () => new Int16Array(90));
+(() => {
+    const typeTables = [
+        null,
+        null,
+        POSITION_TABLES.chariot,
+        POSITION_TABLES.horse,
+        POSITION_TABLES.elephant,
+        POSITION_TABLES.advisor,
+        POSITION_TABLES.cannon,
+        POSITION_TABLES.soldier
+    ];
+    for (let pieceCode = 1; pieceCode < 16; pieceCode++) {
+        const table = typeTables[pieceCode & 7];
+        if (!table) continue;
+        const isRed = pieceCode < 8;
+        const values = SEARCH_POSITION_VALUES[pieceCode];
+        for (let sq = 0; sq < 90; sq++) {
+            const r = (sq / 9) | 0;
+            values[sq] = table[isRed ? 9 - r : r][sq % 9] || 0;
+        }
+    }
+})();
+
 // 攻击位图：90 格用 3×Uint32。搜索叶只需「是否敌控」；点棋/UI 仍用控制者列表。
 const ATTACK_WORDS = 3;
 const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
@@ -181,6 +207,10 @@ let SEARCH_LEAF_ATTACK_BITS = true;
 let SEARCH_RELATION_MASKS = true;
 let SEARCH_FAST_LEAF_EVAL = true;
 let SEARCH_FAST_LEAF_RELATIONS = true;
+let SEARCH_NUMERIC_LEAF_EVAL = true;
+// Packed destinations/rays and inlined relation writes for search leaves.
+// Kept separate from the original specialized path for benchmark verification.
+let SEARCH_PACKED_LEAF_RELATIONS = true;
 let SEARCH_FAST_SORT = true;
 let SEARCH_FAST_PSEUDO_MOVES = true;
 let SEARCH_NUMERIC_CHECK = true;
@@ -242,6 +272,7 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     pieceCode: 0,
     r: 0,
     c: 0,
+    sq: 0,
     pieceIndex,
     moves: [],
     allyGuards: [],
@@ -589,20 +620,28 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     let blackMaterial = 0;
     let blackPosition = 0;
     const pieceState = activePieceStateFor(board);
+    const numericLeaf = SEARCH_NUMERIC_LEAF_EVAL && !!pieceState && SEARCH_FAST_LEAF_RELATIONS;
+    const materialValues = numericLeaf ? searchMaterialTable(gameStage) : null;
     let overflow = false;
     if (pieceState) {
         const records = pieceState.records;
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (!record.alive) continue;
-            const piece = record.piece;
             const info = scratchLeafPieceSlots[count++];
-            const materialValue = getMaterialValue(piece, gameStage);
-            const positionValue = getPositionValue(piece, record.r, record.c);
+            const pieceCode = pieceState.pieceCodes[i];
+            const piece = numericLeaf ? null : record.piece;
+            const materialValue = numericLeaf
+                ? materialValues[pieceCode & 7]
+                : getMaterialValue(piece, gameStage);
+            const positionValue = numericLeaf
+                ? SEARCH_POSITION_VALUES[pieceCode][record.sq]
+                : getPositionValue(piece, record.r, record.c);
             info.piece = piece;
-            info.pieceCode = pieceState.pieceCodes[i];
+            info.pieceCode = pieceCode;
             info.r = record.r;
             info.c = record.c;
+            info.sq = record.sq;
             info.pieceIndex = count - 1;
             info.materialValue = materialValue;
             info.positionValue = positionValue;
@@ -611,7 +650,7 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
             info.tacticValue = 0;
             info.mobilityValue = 0;
             piecesInfo[count - 1] = info;
-            if (piece.color === 'red') {
+            if (numericLeaf ? pieceCode < 8 : piece.color === 'red') {
                 redMaterial += materialValue;
                 redPosition += positionValue;
             } else {
@@ -635,6 +674,7 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
                 info.pieceCode = searchPieceCode(piece);
                 info.r = r;
                 info.c = c;
+                info.sq = r * 9 + c;
                 info.pieceIndex = count - 1;
                 info.materialValue = materialValue;
                 info.positionValue = positionValue;
@@ -661,9 +701,18 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     piecesInfo.length = count;
 
     if (SEARCH_FAST_LEAF_RELATIONS && pieceState) {
-        calculateSearchLeafRelations(piecesInfo, pieceState.squareCodes);
-        calculateThreatValues(piecesInfo, searchInitiator, scratchLeafBoardInfo, true);
-        calculateSafetyValues(piecesInfo, scratchLeafBoardInfo, board, true);
+        if (SEARCH_PACKED_LEAF_RELATIONS) {
+            calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
+        } else {
+            calculateSearchLeafRelations(piecesInfo, pieceState.squareCodes);
+        }
+        if (numericLeaf) {
+            calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
+            calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
+        } else {
+            calculateThreatValues(piecesInfo, searchInitiator, scratchLeafBoardInfo, true);
+            calculateSafetyValues(piecesInfo, scratchLeafBoardInfo, board, true);
+        }
     } else {
         clearRelationMasks(true);
         clearAttackBits(scratchRedAttack);
@@ -681,7 +730,7 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     let blackMobility = 0;
     for (let i = 0; i < count; i++) {
         const info = piecesInfo[i];
-        if (info.piece.color === 'red') {
+        if (numericLeaf ? info.pieceCode < 8 : info.piece.color === 'red') {
             redThreat += info.threatValue;
             redTactic += info.tacticValue;
             redSafety += info.safetyValue;
@@ -1856,6 +1905,122 @@ const calculateSearchLeafRelations = (piecesInfo, squareCodes) => {
     }
 };
 
+// Search-only relation builder. It is equivalent to calculateSearchLeafRelations,
+// but reuses the packed move tables and rays already used by pseudo move generation.
+const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
+    scratchAttackMask.fill(0);
+    scratchGuardMask.fill(0);
+    clearAttackBits(scratchRedAttack);
+    clearAttackBits(scratchBlackAttack);
+
+    const baseMoveValue = EVALUATION_PARAMETERS.mobility.baseMoveValue;
+    const attackMask = scratchAttackMask;
+    const guardMask = scratchGuardMask;
+    const redAttack = scratchRedAttack;
+    const blackAttack = scratchBlackAttack;
+
+    for (let pi = 0; pi < piecesInfo.length; pi++) {
+        const info = piecesInfo[pi];
+        const fromSq = info.sq;
+        const pieceCode = info.pieceCode;
+        const pieceType = pieceCode & 7;
+        const isRed = pieceCode < 8;
+        const colorIdx = isRed ? 0 : 1;
+        const bit = 1 << pi;
+        const attackBits = isRed ? redAttack : blackAttack;
+        let mobilityValue = 0;
+
+        switch (pieceType) {
+            case 1:
+            case 5:
+            case 7: {
+                const dests = pieceType === 1
+                    ? SEARCH_GENERAL_DEST[colorIdx][fromSq]
+                    : pieceType === 5
+                        ? SEARCH_ADVISOR_DEST[colorIdx][fromSq]
+                        : SEARCH_SOLDIER_DEST[colorIdx][fromSq];
+                for (let i = 0; i < dests.length; i++) {
+                    const sq = dests[i];
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        mobilityValue += baseMoveValue;
+                    } else if ((targetCode < 8) !== isRed) {
+                        attackMask[sq] |= bit;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardMask[sq] |= bit;
+                    }
+                }
+                break;
+            }
+            case 4:
+            case 3: {
+                const dests = pieceType === 4
+                    ? SEARCH_ELEPHANT_DEST[colorIdx][fromSq]
+                    : SEARCH_HORSE_DEST[fromSq];
+                for (let i = 0; i < dests.length; i++) {
+                    const packed = dests[i];
+                    if (squareCodes[packed >>> 7] !== 0) continue;
+                    const sq = packed & 127;
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        mobilityValue += baseMoveValue;
+                    } else if ((targetCode < 8) !== isRed) {
+                        attackMask[sq] |= bit;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardMask[sq] |= bit;
+                    }
+                }
+                break;
+            }
+            case 2:
+                for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+                    const ray = SEARCH_RAYS[fromSq][dir];
+                    for (let i = 0; i < ray.length; i++) {
+                        const sq = ray[i];
+                        const targetCode = squareCodes[sq];
+                        if (targetCode === 0) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            mobilityValue += baseMoveValue;
+                            continue;
+                        }
+                        if ((targetCode < 8) !== isRed) attackMask[sq] |= bit;
+                        else if ((targetCode & 7) !== 1) guardMask[sq] |= bit;
+                        break;
+                    }
+                }
+                break;
+            case 6:
+                for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+                    const ray = SEARCH_RAYS[fromSq][dir];
+                    let screenFound = false;
+                    for (let i = 0; i < ray.length; i++) {
+                        const sq = ray[i];
+                        const targetCode = squareCodes[sq];
+                        if (!screenFound) {
+                            if (targetCode === 0) {
+                                mobilityValue += baseMoveValue;
+                            } else {
+                                screenFound = true;
+                            }
+                        } else if (targetCode === 0) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        } else {
+                            if ((targetCode < 8) !== isRed) attackMask[sq] |= bit;
+                            else if ((targetCode & 7) !== 1) guardMask[sq] |= bit;
+                            break;
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+        info.mobilityValue = mobilityValue;
+    }
+};
+
 const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
     const attackMask = boardInfo.attackMask;
     const guardMask = boardInfo.guardMask;
@@ -2216,7 +2381,9 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
     const grdMats = seeGuardMatScratch;
     atkMats.length = 0;
     grdMats.length = 0;
-    const sq = threatenedPiece.r * 9 + threatenedPiece.c;
+    const sq = threatenedPiece.sq == null
+        ? threatenedPiece.r * 9 + threatenedPiece.c
+        : threatenedPiece.sq;
     let am = attackMask[sq] >>> 0;
     while (am !== 0) {
         const bit = am & -am;
@@ -2364,6 +2531,36 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null, forS
     }
 };
 
+// Search leaves never construct UI relation lists. This path consumes only
+// pieceCode/sq and the masks emitted by the numeric relation builder.
+const calculateNumericSearchLeafThreatValues = (piecesInfo, currentPlayer) => {
+    if (currentPlayer) {
+        perfStats.calculateThreatValuesCount[currentPlayer]++;
+    }
+
+    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    for (let ti = 0; ti < piecesInfo.length; ti++) {
+        const threatenedPiece = piecesInfo[ti];
+        const sq = threatenedPiece.sq;
+        const attackers = scratchAttackMask[sq];
+        if (attackers === 0) continue;
+
+        const firstAttacker = piecesInfo[lowestSetBitIndex(attackers)];
+        if ((threatenedPiece.pieceCode & 7) === 1) {
+            firstAttacker.threatValue += checkBonus;
+        } else if (scratchGuardMask[sq] === 0) {
+            firstAttacker.threatValue += threatenedPiece.materialValue;
+        } else {
+            const sseScore = calculateStaticExchangeScoreFromMasks(
+                threatenedPiece, piecesInfo, scratchAttackMask, scratchGuardMask
+            );
+            if (sseScore > 0) {
+                firstAttacker.threatValue += sseScore * 0.5;
+            }
+        }
+    }
+};
+
 // 计算安全值：将空控邻格是否被敌控（无 visit 回调）
 const calculateSafetyValues = (piecesInfo, boardInfo, board = null, forSearchLeaf = false) => {
     if (forSearchLeaf && boardInfo && boardInfo.useAttackBits && board) {
@@ -2442,6 +2639,23 @@ const calculateSafetyValues = (piecesInfo, boardInfo, board = null, forSearchLea
         } else if (general.control && general.control.length) {
             for (let i = 0; i < general.control.length; i++) {
                 penalizeIfEnemy(general.control[i].r, general.control[i].c);
+            }
+        }
+    }
+};
+
+const calculateNumericSearchLeafSafetyValues = (piecesInfo, squareCodes) => {
+    for (let gi = 0; gi < piecesInfo.length; gi++) {
+        const general = piecesInfo[gi];
+        if ((general.pieceCode & 7) !== 1) continue;
+
+        const isRed = general.pieceCode < 8;
+        const enemyBits = isRed ? scratchBlackAttack : scratchRedAttack;
+        const destinations = SEARCH_GENERAL_DEST[isRed ? 0 : 1][general.sq];
+        for (let i = 0; i < destinations.length; i++) {
+            const sq = destinations[i];
+            if (squareCodes[sq] === 0 && hasAttackBit(enemyBits, sq)) {
+                general.safetyValue -= 50;
             }
         }
     }
@@ -4269,6 +4483,8 @@ const snapshotPerfStats = () => {
         leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
         relationMasks: SEARCH_RELATION_MASKS,
         fastLeafRelations: SEARCH_FAST_LEAF_RELATIONS,
+        numericLeafEval: SEARCH_NUMERIC_LEAF_EVAL,
+        packedLeafRelations: SEARCH_PACKED_LEAF_RELATIONS,
         fastSort: SEARCH_FAST_SORT,
         fastPseudoMoves: SEARCH_FAST_PSEUDO_MOVES,
         numericCheck: SEARCH_NUMERIC_CHECK,
@@ -4317,7 +4533,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
-    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} fastLeafRelations=${snap.fastLeafRelations} pieceList=${snap.pieceList} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
+    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} fastLeafRelations=${snap.fastLeafRelations} numericLeafEval=${snap.numericLeafEval} packedLeafRelations=${snap.packedLeafRelations} pieceList=${snap.pieceList} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     if (snap.profile) {
         console.log(`   Profile (overlapping scopes): prepCheck=${Math.round(snap.prepareCheckMs)}ms prepMoves=${Math.round(snap.prepareMoveGenMs)}ms sort=${Math.round(snap.sortMovesMs)}ms/${snap.sortMovesCount} legality=${Math.round(snap.legalityCheckMs)}ms captureGen=${Math.round(snap.captureGenMs)}ms/${snap.captureGenCount} qs=${snap.quiescenceCalls} captureMoves=${snap.quiescenceCaptureMoves} evalCache=${snap.staticEvalCacheHits}/${snap.staticEvalCacheMisses}`);
     }
@@ -4398,7 +4614,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, fastLeafRelations: searchFastLeafRelations, fastSort: searchFastSort, fastPseudoMoves: searchFastPseudoMoves, numericCheck: searchNumericCheck, fastZobrist: searchFastZobrist, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, fastLeafRelations: searchFastLeafRelations, numericLeafEval: searchNumericLeafEval, packedLeafRelations: searchPackedLeafRelations, fastSort: searchFastSort, fastPseudoMoves: searchFastPseudoMoves, numericCheck: searchNumericCheck, fastZobrist: searchFastZobrist, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -4416,6 +4632,12 @@ if (typeof self !== 'undefined') {
             }
             if (typeof searchFastLeafRelations === 'boolean') {
                 SEARCH_FAST_LEAF_RELATIONS = searchFastLeafRelations;
+            }
+            if (typeof searchNumericLeafEval === 'boolean') {
+                SEARCH_NUMERIC_LEAF_EVAL = searchNumericLeafEval;
+            }
+            if (typeof searchPackedLeafRelations === 'boolean') {
+                SEARCH_PACKED_LEAF_RELATIONS = searchPackedLeafRelations;
             }
             if (typeof searchFastSort === 'boolean') {
                 SEARCH_FAST_SORT = searchFastSort;

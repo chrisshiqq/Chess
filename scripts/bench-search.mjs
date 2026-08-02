@@ -111,6 +111,8 @@ function runSearch(depth, exactRootScores, opts = {}) {
         relationMasks: opts.relationMasks !== false,
         fastLeafEval: opts.fastLeafEval !== false,
         fastLeafRelations: opts.fastLeafRelations !== false,
+        numericLeafEval: opts.numericLeafEval !== false,
+        packedLeafRelations: opts.packedLeafRelations !== false,
         fastSort: opts.fastSort !== false,
         fastPseudoMoves: opts.fastPseudoMoves !== false,
         numericCheck: opts.numericCheck !== false,
@@ -147,6 +149,8 @@ function summarize(label, elapsed, payload) {
     leafAttackBits: p.leafAttackBits,
     relationMasks: p.relationMasks,
     fastLeafRelations: p.fastLeafRelations,
+    numericLeafEval: p.numericLeafEval,
+    packedLeafRelations: p.packedLeafRelations,
     fastSort: p.fastSort,
     fastPseudoMoves: p.fastPseudoMoves,
     numericCheck: p.numericCheck,
@@ -200,7 +204,7 @@ function printSummary(s) {
   );
   console.log(
     `  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks} ` +
-    `fastLeafEval=${s.fastLeafEval} fastLeafRelations=${s.fastLeafRelations} fastSort=${s.fastSort} fastPseudoMoves=${s.fastPseudoMoves} numericCheck=${s.numericCheck} fastZobrist=${s.fastZobrist} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
+    `fastLeafEval=${s.fastLeafEval} fastLeafRelations=${s.fastLeafRelations} numericLeafEval=${s.numericLeafEval} packedLeafRelations=${s.packedLeafRelations} fastSort=${s.fastSort} fastPseudoMoves=${s.fastPseudoMoves} numericCheck=${s.numericCheck} fastZobrist=${s.fastZobrist} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
   );
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -461,6 +465,42 @@ function printLeafRelationsCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printPackedLeafRelationsCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (object destinations/coordinate rays -> packed destinations/precomputed rays) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`fast leaf: ${Math.round(before.fastLeafEvalMs ?? 0)}ms -> ${Math.round(after.fastLeafEvalMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
+function printNumericLeafEvalCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (object-based leaf values -> numeric leaf values) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`fast leaf: ${Math.round(before.fastLeafEvalMs ?? 0)}ms -> ${Math.round(after.fastLeafEvalMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play                  # cpuperf by default
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
@@ -470,6 +510,8 @@ function printLeafRelationsCompare(before, after) {
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
 //   node scripts/bench-search.mjs 8 both leafrelations     # specialized leaf relation A/B
+//   node scripts/bench-search.mjs 8 both packedleafrelations # packed leaf relation A/B
+//   node scripts/bench-search.mjs 8 both numericleafeval    # numeric leaf evaluation A/B
 //   node scripts/bench-search.mjs 8 both fastpseudomoves   # encoded search pseudo moves A/B
 //   node scripts/bench-search.mjs 8 both numericcheck      # numeric search-state check A/B
 //   node scripts/bench-search.mjs 8 both fastzobrist       # direct Zobrist index A/B
@@ -663,6 +705,92 @@ for (const job of jobs) {
     printSummary(after);
 
     printLeafRelationsCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'packedleafrelations' || pathMode === 'packedleaf' || pathMode === 'packedrelations') {
+    outName = `bench-d${depth}-packedleafrelations.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} OBJECT DESTINATIONS/COORDINATE RAYS ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      packedLeafRelations: false,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: true,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const before = summarize('object-destinations-coordinate-rays', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} PACKED DESTINATIONS/PRECOMPUTED RAYS ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      packedLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: true,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const after = summarize('packed-destinations-precomputed-rays', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printPackedLeafRelationsCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'numericleafeval' || pathMode === 'numericleaf' || pathMode === 'leafnumeric') {
+    outName = `bench-d${depth}-numericleafeval.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} OBJECT-BASED LEAF VALUES ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      numericLeafEval: false,
+      packedLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: true,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const before = summarize('object-based-leaf-values', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} NUMERIC LEAF VALUES ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      numericLeafEval: true,
+      packedLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: true,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const after = summarize('numeric-leaf-values', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printNumericLeafEvalCompare(before, after);
     results.push({ job: job.label, before, after });
   } else if (pathMode === 'fastsort' || pathMode === 'sort') {
     outName = `bench-d${depth}-fastsort.json`;
