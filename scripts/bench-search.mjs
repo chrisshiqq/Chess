@@ -61,6 +61,7 @@ function runSearch(depth, exactRootScores, opts = {}) {
         incrementalZobrist: opts.incrementalZobrist !== false,
         leafAttackBits: opts.leafAttackBits !== false,
         relationMasks: opts.relationMasks !== false,
+        fastLeafEval: opts.fastLeafEval !== false,
         zobristVerify: !!opts.zobristVerify,
         collectMoveSequence: opts.collectMoveSequence
       }
@@ -89,6 +90,9 @@ function summarize(label, elapsed, payload) {
     incrementalZobrist: p.incrementalZobrist,
     leafAttackBits: p.leafAttackBits,
     relationMasks: p.relationMasks,
+    fastLeafEval: p.fastLeafEval,
+    fastLeafEvalCount: p.fastLeafEvalCount,
+    fastLeafEvalMs: p.fastLeafEvalMs,
     alphaBetaCalls: p.alphaBetaCalls,
     legalityChecks: p.legalityChecks,
     pseudoMovesGenerated: p.pseudoMovesGenerated,
@@ -119,7 +123,10 @@ function printSummary(s) {
     `  Zobrist: incr=${s.incrementalZobrist} fullHash=${s.fullHashCount} ` +
     `incrUpdates=${s.incrementalHashUpdates} mismatches=${s.hashMismatches}`
   );
-  console.log(`  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks}`);
+  console.log(
+    `  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks} ` +
+    `fastLeafEval=${s.fastLeafEval} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
+  );
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
     const prepPct = s.thinkingTimeMs ? (100 * s.prepareSearchInfoMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -224,6 +231,25 @@ function printMoveSequenceCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printLeafEvalCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (full leaf evaluator -> allocation-free leaf evaluator) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`full evaluateBoardMs: ${Math.round(before.evaluateBoardMs ?? 0)}ms -> ${Math.round(after.evaluateBoardMs ?? 0)}ms`);
+  console.log(`fast leaf: ${before.fastLeafEvalCount ?? 0}/${Math.round(before.fastLeafEvalMs ?? 0)}ms -> ${after.fastLeafEvalCount ?? 0}/${Math.round(after.fastLeafEvalMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
@@ -231,6 +257,7 @@ function printMoveSequenceCompare(before, after) {
 //   node scripts/bench-search.mjs 8 play attackbits       # leaf attack bitmap A/B
 //   node scripts/bench-search.mjs 8 play relmasks         # relation mask A/B
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
+//   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
@@ -345,6 +372,32 @@ for (const job of jobs) {
     printSummary(after);
 
     printMoveSequenceCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'leafeval' || pathMode === 'leaf' || pathMode === 'fastleaf') {
+    outName = `bench-d${depth}-leafeval.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} FULL LEAF EVALUATOR ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: false
+    });
+    const before = summarize('full-leaf-evaluator', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} ALLOCATION-FREE LEAF EVALUATOR ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true
+    });
+    const after = summarize('fast-leaf-evaluator', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printLeafEvalCompare(before, after);
     results.push({ job: job.label, before, after });
   } else {
     const incr =

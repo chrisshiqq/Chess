@@ -179,6 +179,7 @@ const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
 let SEARCH_LEAF_ATTACK_BITS = true;
 // true=关系用格位 Uint32 攻/守/控 mask（默认）；false=threat/guard 对象列表（A/B）
 let SEARCH_RELATION_MASKS = true;
+let SEARCH_FAST_LEAF_EVAL = true;
 
 const clearAttackBits = (bits) => {
     bits[0] = 0;
@@ -223,6 +224,39 @@ const scratchRelCtx = {
     controlMask: null,
     redAttack: null,
     blackAttack: null
+};
+
+const scratchLeafPiecesInfo = [];
+const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
+    piece: null,
+    r: 0,
+    c: 0,
+    pieceIndex,
+    moves: [],
+    allyGuards: [],
+    materialValue: 0,
+    positionValue: 0,
+    threatValue: 0,
+    safetyValue: 0,
+    tacticValue: 0,
+    mobilityValue: 0,
+    threat: [],
+    threatenedBy: [],
+    guard: [],
+    guardedBy: [],
+    control: [],
+    protect: []
+}));
+
+const scratchLeafBoardInfo = {
+    useRelationMasks: true,
+    useAttackBits: true,
+    skipControlMask: true,
+    attackMask: scratchAttackMask,
+    guardMask: scratchGuardMask,
+    controlMask: scratchControlMask,
+    redAttack: scratchRedAttack,
+    blackAttack: scratchBlackAttack
 };
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
@@ -406,6 +440,100 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
+};
+
+const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
+    const __t0 = performance.now();
+    const piecesInfo = scratchLeafPiecesInfo;
+    let count = 0;
+    let redMaterial = 0;
+    let redPosition = 0;
+    let blackMaterial = 0;
+    let blackPosition = 0;
+
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const piece = board[r][c];
+            if (!piece) continue;
+
+            const info = scratchLeafPieceSlots[count];
+            if (!info) {
+                const result = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
+                const opponent = searchInitiator === 'red' ? 'black' : 'red';
+                return result[searchInitiator].total - result[opponent].total;
+            }
+
+            const materialValue = getMaterialValue(piece, gameStage);
+            const positionValue = getPositionValue(piece, r, c);
+            info.piece = piece;
+            info.r = r;
+            info.c = c;
+            info.pieceIndex = count;
+            info.materialValue = materialValue;
+            info.positionValue = positionValue;
+            info.threatValue = 0;
+            info.safetyValue = 0;
+            info.tacticValue = 0;
+            info.mobilityValue = 0;
+            piecesInfo[count++] = info;
+
+            if (piece.color === 'red') {
+                redMaterial += materialValue;
+                redPosition += positionValue;
+            } else {
+                blackMaterial += materialValue;
+                blackPosition += positionValue;
+            }
+        }
+    }
+    piecesInfo.length = count;
+
+    clearRelationMasks(true);
+    clearAttackBits(scratchRedAttack);
+    clearAttackBits(scratchBlackAttack);
+    calculateDerivedValues(board, piecesInfo, searchInitiator, scratchLeafBoardInfo, true);
+
+    let redThreat = 0;
+    let redTactic = 0;
+    let redSafety = 0;
+    let redMobility = 0;
+    let blackThreat = 0;
+    let blackTactic = 0;
+    let blackSafety = 0;
+    let blackMobility = 0;
+    for (let i = 0; i < count; i++) {
+        const info = piecesInfo[i];
+        if (info.piece.color === 'red') {
+            redThreat += info.threatValue;
+            redTactic += info.tacticValue;
+            redSafety += info.safetyValue;
+            redMobility += info.mobilityValue;
+        } else {
+            blackThreat += info.threatValue;
+            blackTactic += info.tacticValue;
+            blackSafety += info.safetyValue;
+            blackMobility += info.mobilityValue;
+        }
+    }
+
+    const redTotal =
+        redMaterial * VALUE_WEIGHTS.material +
+        redPosition * VALUE_WEIGHTS.position +
+        redThreat * VALUE_WEIGHTS.threat +
+        redTactic * VALUE_WEIGHTS.tactic +
+        redSafety * VALUE_WEIGHTS.safety +
+        redMobility * VALUE_WEIGHTS.mobility;
+    const blackTotal =
+        blackMaterial * VALUE_WEIGHTS.material +
+        blackPosition * VALUE_WEIGHTS.position +
+        blackThreat * VALUE_WEIGHTS.threat +
+        blackTactic * VALUE_WEIGHTS.tactic +
+        blackSafety * VALUE_WEIGHTS.safety +
+        blackMobility * VALUE_WEIGHTS.mobility;
+
+    perfStats.fastLeafEvalCount++;
+    perfStats.fastLeafEvalMs += performance.now() - __t0;
+    return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
 // 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
@@ -804,10 +932,10 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
     calculatePieceRelations(board, piecesInfo, boardInfo);
     
     // 2. 计算威胁值（按被威胁子聚合，SEE 每目标一次）
-    calculateThreatValues(piecesInfo, currentPlayer, boardInfo);
+    calculateThreatValues(piecesInfo, currentPlayer, boardInfo, forSearchLeaf);
     
     // 3. 计算安全值
-    calculateSafetyValues(piecesInfo, boardInfo, board);
+    calculateSafetyValues(piecesInfo, boardInfo, board, forSearchLeaf);
     
     // 4. 计算游戏状态并保存到boardInfo
     // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
@@ -1581,21 +1709,22 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
 // 计算威胁值（基于完整的威胁关系）
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
-const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
+const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null, forSearchLeaf = false) => {
     // 统计
     if (currentPlayer) {
         perfStats.calculateThreatValuesCount[currentPlayer]++;
     }
 
     // 初始化威胁类型统计信息
-    if (boardInfo) {
+    const collectUi = !!boardInfo && !forSearchLeaf;
+    if (collectUi) {
         boardInfo.checks = [];      // 将军信息
         boardInfo.threatenedPieces = [];  // 被捉的棋子
         boardInfo.canCapture = [];  // 可吃的棋子
     }
 
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
-    const canCaptureSeen = new Set();
+    const canCaptureSeen = collectUi ? new Set() : null;
     const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
     const attackMask = useMasks ? boardInfo.attackMask : null;
     const guardMask = useMasks ? boardInfo.guardMask : null;
@@ -1623,7 +1752,7 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
 
         // 将军：只给小额先手分，绝不按将/帅材料值做 SEE
         if (threatenedPiece.piece.type === PIECE_TYPES.GENERAL) {
-            if (boardInfo) {
+            if (collectUi) {
                 if (useMasks) {
                     let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
                     while (m !== 0) {
@@ -1653,7 +1782,7 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
         // 只把对攻击方有利的威胁计入 threatValue（单向计入，不做 safety 对称扣分）
         if (!hasGuard) {
             firstAttacker.threatValue += threatenedPiece.materialValue;
-            if (boardInfo) {
+            if (collectUi) {
                 if (firstAttacker.piece.color === currentPlayer) {
                     if (useMasks) {
                         let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
@@ -1691,7 +1820,29 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null) => {
 };
 
 // 计算安全值：将空控邻格是否被敌控（无 visit 回调）
-const calculateSafetyValues = (piecesInfo, boardInfo, board = null) => {
+const calculateSafetyValues = (piecesInfo, boardInfo, board = null, forSearchLeaf = false) => {
+    if (forSearchLeaf && boardInfo && boardInfo.useAttackBits && board) {
+        for (let gi = 0; gi < piecesInfo.length; gi++) {
+            const general = piecesInfo[gi];
+            if (general.piece.type !== PIECE_TYPES.GENERAL) continue;
+
+            const generalColor = general.piece.color;
+            const enemyBits = generalColor === 'red' ? boardInfo.blackAttack : boardInfo.redAttack;
+            const isRed = generalColor === 'red';
+            const { r, c } = general;
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const nr = r + ORTH_DIRS[i][0];
+                const nc = c + ORTH_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
+                if (board[nr][nc] === null && hasAttackBit(enemyBits, nr * 9 + nc)) {
+                    general.safetyValue -= 50;
+                }
+            }
+        }
+        return;
+    }
+
     const generalInfo = [];
     for (let i = 0; i < piecesInfo.length; i++) {
         if (piecesInfo[i].piece.type === PIECE_TYPES.GENERAL) {
@@ -3399,6 +3550,8 @@ let perfStats = {
     fullHashCount: 0,
     incrementalHashUpdates: 0,
     hashMismatches: 0,
+    fastLeafEvalCount: 0,
+    fastLeafEvalMs: 0,
     evaluateBoardMs: 0,
     prepareSearchInfoMs: 0,
     startTime: Date.now()
@@ -3420,6 +3573,8 @@ const resetPerfStats = () => {
     perfStats.fullHashCount = 0;
     perfStats.incrementalHashUpdates = 0;
     perfStats.hashMismatches = 0;
+    perfStats.fastLeafEvalCount = 0;
+    perfStats.fastLeafEvalMs = 0;
     perfStats.evaluateBoardMs = 0;
     perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
@@ -3454,6 +3609,9 @@ const snapshotPerfStats = () => {
         fullHashCount: perfStats.fullHashCount,
         incrementalHashUpdates: perfStats.incrementalHashUpdates,
         hashMismatches: perfStats.hashMismatches,
+        fastLeafEval: SEARCH_FAST_LEAF_EVAL,
+        fastLeafEvalCount: perfStats.fastLeafEvalCount,
+        fastLeafEvalMs: perfStats.fastLeafEvalMs,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         tt: ttStats,
@@ -3471,7 +3629,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
-    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} evalMs=${Math.round(snap.evaluateBoardMs)} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
+    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
@@ -3549,7 +3707,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -3561,6 +3719,9 @@ if (typeof self !== 'undefined') {
             }
             if (typeof searchRelationMasks === 'boolean') {
                 SEARCH_RELATION_MASKS = searchRelationMasks;
+            }
+            if (typeof searchFastLeafEval === 'boolean') {
+                SEARCH_FAST_LEAF_EVAL = searchFastLeafEval;
             }
             SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
@@ -3905,9 +4066,14 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
     if (evalCache.has(cacheKey)) {
         return evalCache.get(cacheKey);
     }
-    const evalResult = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
-    const opponent = searchInitiator === 'red' ? 'black' : 'red';
-    const net = evalResult[searchInitiator].total - evalResult[opponent].total;
+    let net;
+    if (SEARCH_FAST_LEAF_EVAL && !SEARCH_COLLECT_MOVE_SEQUENCE) {
+        net = evaluateSearchLeafFast(board, searchInitiator, gameStage);
+    } else {
+        const evalResult = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
+        const opponent = searchInitiator === 'red' ? 'black' : 'red';
+        net = evalResult[searchInitiator].total - evalResult[opponent].total;
+    }
     if (evalCache.size >= EVAL_CACHE_MAX) {
         // 简单淘汰最早写入的一批，避免 Map 无限涨
         let drop = 0;
