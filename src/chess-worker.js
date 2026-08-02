@@ -4381,14 +4381,18 @@ const getGamePhase = () => {
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
 
-// 置换表实现（容量约 2^20，避免 Map 过大拖慢 GC）
-const TT_DEFAULT_EVICTION_BATCH = 1024;
+// Keep the depth-8 iterative-deepening tree resident. Replacement only runs
+// for deeper searches that exceed this capacity.
+const TT_DEFAULT_SIZE = Math.pow(2, 21);
+const TT_DEFAULT_EVICTION_BATCH = 512;
+const TT_EVICTION_SCAN = TT_DEFAULT_EVICTION_BATCH * 4;
 
 class TranspositionTable {
-    constructor(size = Math.pow(2, 20), evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
+    constructor(size = TT_DEFAULT_SIZE, evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
         this.table = new Map();
         this.size = size;
         this.evictionBatch = evictionBatch;
+        this.evictionCandidates = [];
         this.hasher = zobristHasher;
         // 统计信息
         this.stats = {
@@ -4399,7 +4403,10 @@ class TranspositionTable {
             upperboundHits: 0,
             stores: 0,
             lruEvictions: 0,
+            depthPreferredEvictions: 0,
+            fallbackEvictions: 0,
             updatedStores: 0,
+            retainedUpdates: 0,
             evictionBatches: 0,
             clears: 0
         };
@@ -4410,19 +4417,50 @@ class TranspositionTable {
     }
     
     store(key, depth, value, flag, bestMove = null, moveSequence = null) {
-        if (this.table.size >= this.size) {
-            if (this.table.has(key)) {
-                this.stats.updatedStores++;
-            } else {
-                const dropCount = Math.min(this.evictionBatch, this.table.size);
-                let dropped = 0;
-                for (const oldestKey of this.table.keys()) {
-                    this.table.delete(oldestKey);
-                    if (++dropped >= dropCount) break;
-                }
-                this.stats.lruEvictions += dropped;
-                this.stats.evictionBatches++;
+        const existing = this.table.get(key);
+        if (existing) {
+            this.stats.updatedStores++;
+            // A deeper exact entry dominates a shallow bound for replacement.
+            if (existing.depth > depth && existing.flag === 'exact' && flag !== 'exact') {
+                this.stats.retainedUpdates++;
+                return;
             }
+            this.table.set(key, { depth, value, flag, bestMove, moveSequence });
+            this.stats.stores++;
+            return;
+        }
+
+        if (this.table.size >= this.size) {
+            const candidates = this.evictionCandidates;
+            candidates.length = 0;
+            let scanned = 0;
+            for (const candidateKey of this.table.keys()) {
+                candidates.push(candidateKey);
+                if (++scanned >= TT_EVICTION_SCAN) break;
+            }
+
+            const dropCount = Math.min(this.evictionBatch, candidates.length);
+            let dropped = 0;
+            // Prefer preserving entries that searched deeper than the incoming node.
+            for (let i = 0; i < candidates.length && dropped < dropCount; i++) {
+                const candidateKey = candidates[i];
+                const candidate = this.table.get(candidateKey);
+                if (candidate && candidate.depth <= depth) {
+                    this.table.delete(candidateKey);
+                    dropped++;
+                    this.stats.depthPreferredEvictions++;
+                }
+            }
+            // The table may contain only deeper entries in the scan window.
+            for (let i = 0; i < candidates.length && dropped < dropCount; i++) {
+                const candidateKey = candidates[i];
+                if (this.table.delete(candidateKey)) {
+                    dropped++;
+                    this.stats.fallbackEvictions++;
+                }
+            }
+            this.stats.lruEvictions += dropped;
+            this.stats.evictionBatches++;
         }
         this.table.set(key, { depth, value, flag, bestMove, moveSequence });
         this.stats.stores++;
@@ -4480,7 +4518,10 @@ class TranspositionTable {
             upperboundHits: 0,
             stores: 0,
             lruEvictions: 0,
+            depthPreferredEvictions: 0,
+            fallbackEvictions: 0,
             updatedStores: 0,
+            retainedUpdates: 0,
             evictionBatches: 0,
             clears: 0
         };
@@ -5612,7 +5653,7 @@ const alphaBeta = (
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMoveInternal = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, exactRootScores = false, collectMoveSequenceOverride = null) => {
+const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false, collectMoveSequenceOverride = null) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -5889,7 +5930,7 @@ const getBestMoveForPlay = (board, turn, depth, ply, enableTimeLimit) =>
 const getBestMoveForAnalysis = (board, turn, depth, ply, enableTimeLimit) =>
   getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, true, true);
 
-const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, exactRootScores = false) =>
+const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false) =>
   exactRootScores
     ? getBestMoveForAnalysis(board, turn, depth, ply, enableTimeLimit)
     : getBestMoveForPlay(board, turn, depth, ply, enableTimeLimit);

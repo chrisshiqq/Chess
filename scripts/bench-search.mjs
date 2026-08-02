@@ -92,14 +92,14 @@ function printSummary(label, run) {
   console.log(`  alphaBeta=${perf.alphaBetaCalls} legalityChecks=${perf.legalityChecks} legalSearched=${perf.legalMovesSearched}`);
   console.log(`  Zobrist: fullHash=${perf.fullHashCount} incrUpdates=${perf.incrementalHashUpdates}`);
   console.log(`  numericLeaf: count=${perf.fastLeafEvalCount} ms=${Math.round(perf.fastLeafEvalMs ?? 0)} prepare=${Math.round(perf.prepareSearchInfoMs ?? 0)}ms`);
-  console.log(`  TT hits=${perf.tt?.hits} misses=${perf.tt?.misses} hitRate=${perf.tt?.hitRate}% stores=${perf.tt?.stores} updates=${perf.tt?.updatedStores ?? 0} evicted=${perf.tt?.lruEvictions}/${perf.tt?.evictionBatches ?? 0} batch=${perf.tt?.evictionBatch}`);
+  console.log(`  TT hits=${perf.tt?.hits} misses=${perf.tt?.misses} hitRate=${perf.tt?.hitRate}% stores=${perf.tt?.stores} updates=${perf.tt?.updatedStores ?? 0} evicted=${perf.tt?.lruEvictions}/${perf.tt?.evictionBatches ?? 0} depth/fallback=${perf.tt?.depthPreferredEvictions ?? 0}/${perf.tt?.fallbackEvictions ?? 0} size=${perf.tt?.currentSize}/${perf.tt?.maxSize} batch=${perf.tt?.evictionBatch}`);
   if (perf.profile) {
     console.log(`  profile: sort=${Math.round(perf.sortMovesMs)}ms/${perf.sortMovesCount} legality=${Math.round(perf.legalityCheckMs)}ms captureGen=${Math.round(perf.captureGenMs)}ms/${perf.captureGenCount} QS=${perf.quiescenceCalls}`);
   }
   return { label, wallMs, thinkingTimeMs: payload.thinkingTime, bestMove: formatMove(payload.bestMove), score: payload.bestMoveScore, perf };
 }
 
-const depth = Number(process.argv[2]) || 6;
+const depth = Number(process.argv[2]) || 8;
 const mode = (process.argv[3] || 'play').toLowerCase();
 const pathMode = (process.argv[4] || 'cpuperf').toLowerCase();
 
