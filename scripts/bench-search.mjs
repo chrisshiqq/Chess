@@ -61,7 +61,8 @@ function runSearch(depth, exactRootScores, opts = {}) {
         incrementalZobrist: opts.incrementalZobrist !== false,
         leafAttackBits: opts.leafAttackBits !== false,
         relationMasks: opts.relationMasks !== false,
-        zobristVerify: !!opts.zobristVerify
+        zobristVerify: !!opts.zobristVerify,
+        collectMoveSequence: opts.collectMoveSequence
       }
     });
   });
@@ -205,12 +206,31 @@ function printRelationMasksCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printMoveSequenceCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (collect moveSequence in play -> skip in play) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`evaluateBoardMs: ${Math.round(before.evaluateBoardMs ?? 0)}ms -> ${Math.round(after.evaluateBoardMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
 //   node scripts/bench-search.mjs 8 play zobrist          # zobrist A/B
 //   node scripts/bench-search.mjs 8 play attackbits       # leaf attack bitmap A/B
 //   node scripts/bench-search.mjs 8 play relmasks         # relation mask A/B
+//   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
@@ -299,6 +319,32 @@ for (const job of jobs) {
     printSummary(after);
 
     printRelationMasksCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'moveseq' || pathMode === 'sequence' || pathMode === 'pv') {
+    outName = `bench-d${depth}-moveseq.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} COLLECT_MOVE_SEQUENCE=true ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      collectMoveSequence: true
+    });
+    const before = summarize('collect-moveseq', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} COLLECT_MOVE_SEQUENCE=false ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      collectMoveSequence: false
+    });
+    const after = summarize('skip-moveseq', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printMoveSequenceCompare(before, after);
     results.push({ job: job.label, before, after });
   } else {
     const incr =

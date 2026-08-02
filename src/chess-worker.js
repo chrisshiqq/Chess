@@ -3422,6 +3422,7 @@ const SEARCH_ENABLE_LMR = false;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 let SEARCH_DEFER_LEGALITY = true;
+let SEARCH_COLLECT_MOVE_SEQUENCE = true;
 
 // Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
 let SEARCH_INCREMENTAL_ZOBRIST = true;
@@ -3473,7 +3474,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, zobristVerify: searchZobristVerify } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, randomness: searchRandomness, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -3492,7 +3493,7 @@ if (typeof self !== 'undefined') {
             // 记录搜索开始时间
             const startTime = performance.now();
             // 执行搜索
-            const bestSearchMove = getBestMove(searchBoard, searchTurn, searchDepth, searchRandomness, searchPly, searchEnableTimeLimit, searchExactRootScores);
+            const bestSearchMove = getBestMove(searchBoard, searchTurn, searchDepth, searchRandomness, searchPly, searchEnableTimeLimit, searchExactRootScores, searchCollectMoveSequence);
             // 记录搜索结束时间并计算思考时间
             const endTime = performance.now();
             const thinkingTime = endTime - startTime;
@@ -3920,7 +3921,9 @@ const quiescence = (
         if (maximizing) {
             if (result.value > bestEval) {
                 bestEval = result.value;
-                bestMoveSequence = [move, ...(result.moveSequence || [])];
+                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                    bestMoveSequence = [move, ...(result.moveSequence || [])];
+                }
             }
             if (result.value > alpha) {
                 alpha = result.value;
@@ -3928,7 +3931,9 @@ const quiescence = (
         } else {
             if (result.value < bestEval) {
                 bestEval = result.value;
-                bestMoveSequence = [move, ...(result.moveSequence || [])];
+                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                    bestMoveSequence = [move, ...(result.moveSequence || [])];
+                }
             }
             if (result.value < beta) {
                 beta = result.value;
@@ -3939,7 +3944,7 @@ const quiescence = (
         }
     }
 
-    return { value: bestEval, moveSequence: bestMoveSequence };
+    return { value: bestEval, moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE ? bestMoveSequence : [] };
 };
 
 // alphaBeta：评估始终从 searchInitiator 角度；TT + killer/history + 空着剪枝 + LMR + QS
@@ -3974,7 +3979,9 @@ const alphaBeta = (
             if (ttEntry.flag === 'exact') {
                 return {
                     value: ttEntry.value,
-                    moveSequence: ttEntry.moveSequence || (ttMove ? [ttMove] : [])
+                    moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE
+                        ? (ttEntry.moveSequence || (ttMove ? [ttMove] : []))
+                        : []
                 };
             }
             if (ttEntry.flag === 'lowerbound' && ttEntry.value >= beta) {
@@ -4057,7 +4064,7 @@ const alphaBeta = (
         if (value <= originalAlpha) flag = 'upperbound';
         else if (value >= originalBeta) flag = 'lowerbound';
         else flag = 'exact';
-        transpositionTable.store(ttKey, d, value, flag, bestMove, moveSequence);
+        transpositionTable.store(ttKey, d, value, flag, bestMove, SEARCH_COLLECT_MOVE_SEQUENCE ? moveSequence : null);
     };
 
     let bestEval = maximizing ? -Infinity : Infinity;
@@ -4132,14 +4139,18 @@ const alphaBeta = (
             if (result.value > bestEval) {
                 bestEval = result.value;
                 bestMove = move;
-                bestMoveSequence = [move, ...result.moveSequence];
+                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                    bestMoveSequence = [move, ...result.moveSequence];
+                }
             }
             alpha = Math.max(alpha, result.value);
         } else {
             if (result.value < bestEval) {
                 bestEval = result.value;
                 bestMove = move;
-                bestMoveSequence = [move, ...result.moveSequence];
+                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                    bestMoveSequence = [move, ...result.moveSequence];
+                }
             }
             beta = Math.min(beta, result.value);
         }
@@ -4161,11 +4172,11 @@ const alphaBeta = (
     }
 
     storeTT(bestEval, bestMove, bestMoveSequence);
-    return { value: bestEval, moveSequence: bestMoveSequence };
+    return { value: bestEval, moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE ? bestMoveSequence : [] };
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTimeLimit = false, exactRootScores = false) => {
+const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTimeLimit = false, exactRootScores = false, collectMoveSequenceOverride = null) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -4200,6 +4211,9 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
   syncGeneralPosCache(board);
+  SEARCH_COLLECT_MOVE_SEQUENCE = typeof collectMoveSequenceOverride === 'boolean'
+    ? collectMoveSequenceOverride
+    : !!exactRootScores;
 
   const phase = getGamePhase(board);
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
@@ -4276,7 +4290,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
     : `${rootHash}:${turn}`;
 
   console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, relationMasks: ${SEARCH_RELATION_MASKS}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, relationMasks: ${SEARCH_RELATION_MASKS}, collectMoveSequence: ${SEARCH_COLLECT_MOVE_SEQUENCE}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
   );
 
   let completedDepth = 0;
@@ -4343,7 +4357,9 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
 
       if (scoreIsExact) {
         item.score = alphaBetaResult.value;
-        item.moveSequence = [{ from: item.from, to: item.to }, ...(alphaBetaResult.moveSequence || [])];
+        item.moveSequence = SEARCH_COLLECT_MOVE_SEQUENCE
+          ? [{ from: item.from, to: item.to }, ...(alphaBetaResult.moveSequence || [])]
+          : [];
         if (item.score > rootAlpha) {
           rootAlpha = item.score;
         }
@@ -4363,7 +4379,7 @@ const getBestMove = (board, turn, depth = 6, randomness = 0, ply = 0, enableTime
       rootMoves[0].score,
       'exact',
       rootMoves[0],
-      rootMoves[0].moveSequence || []
+      SEARCH_COLLECT_MOVE_SEQUENCE ? (rootMoves[0].moveSequence || []) : null
     );
 
     console.log(
