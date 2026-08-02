@@ -182,6 +182,9 @@ let SEARCH_RELATION_MASKS = true;
 let SEARCH_FAST_LEAF_EVAL = true;
 let SEARCH_FAST_LEAF_RELATIONS = true;
 let SEARCH_FAST_SORT = true;
+let SEARCH_FAST_PSEUDO_MOVES = true;
+let SEARCH_NUMERIC_CHECK = true;
+let SEARCH_FAST_ZOBRIST = true;
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘（A/B 可关闭）
 let SEARCH_PIECE_LIST = true;
 // 静默搜索吃子生成复用搜索态棋子表；独立开关用于 A/B。
@@ -297,6 +300,8 @@ const createSearchPieceState = (board) => {
     const squareToSlot = new Int8Array(REL_SQUARES);
     const squareCodes = new Uint8Array(REL_SQUARES);
     const pieceCodes = new Uint8Array(32);
+    let redGeneralSq = -1;
+    let blackGeneralSq = -1;
     squareToSlot.fill(-1);
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -306,6 +311,10 @@ const createSearchPieceState = (board) => {
             const slot = records.length;
             records.push({ piece, r, c, sq: r * 9 + c, alive: true });
             const code = searchPieceCode(piece);
+            if ((code & 7) === 1) {
+                if (code < 8) redGeneralSq = r * 9 + c;
+                else blackGeneralSq = r * 9 + c;
+            }
             pieceCodes[slot] = code;
             squareToSlot[r * 9 + c] = slot;
             squareCodes[r * 9 + c] = code;
@@ -317,6 +326,8 @@ const createSearchPieceState = (board) => {
         squareToSlot,
         squareCodes,
         pieceCodes,
+        redGeneralSq,
+        blackGeneralSq,
         moverStack: new Int8Array(32),
         capturedStack: new Int8Array(32),
         stackDepth: 0
@@ -346,6 +357,15 @@ const updatePieceStateAfterMake = (board, fromSq, toSq) => {
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
     state.squareCodes[toSq] = state.pieceCodes[moverSlot];
+    const moverCode = state.pieceCodes[moverSlot];
+    if ((moverCode & 7) === 1) {
+        if (moverCode < 8) state.redGeneralSq = toSq;
+        else state.blackGeneralSq = toSq;
+    }
+    if (capturedSlot >= 0 && (state.pieceCodes[capturedSlot] & 7) === 1) {
+        if (state.pieceCodes[capturedSlot] < 8) state.redGeneralSq = -1;
+        else state.blackGeneralSq = -1;
+    }
     if (capturedSlot >= 0) state.records[capturedSlot].alive = false;
 };
 
@@ -365,6 +385,15 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
     state.squareToSlot[toSq] = capturedSlot;
     state.squareCodes[fromSq] = state.pieceCodes[moverSlot];
     state.squareCodes[toSq] = capturedSlot >= 0 ? state.pieceCodes[capturedSlot] : 0;
+    const moverCode = state.pieceCodes[moverSlot];
+    if ((moverCode & 7) === 1) {
+        if (moverCode < 8) state.redGeneralSq = fromSq;
+        else state.blackGeneralSq = fromSq;
+    }
+    if (capturedSlot >= 0 && (state.pieceCodes[capturedSlot] & 7) === 1) {
+        if (state.pieceCodes[capturedSlot] < 8) state.redGeneralSq = toSq;
+        else state.blackGeneralSq = toSq;
+    }
     if (capturedSlot >= 0) state.records[capturedSlot].alive = true;
 };
 
@@ -754,7 +783,8 @@ const unmakeMove = (board, from, to, captured) => {
 const leavesOwnKingUnsafe = (board, color) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     perfStats.legalityChecks++;
-    const unsafe = isFlyingGeneral(board) || isCheckRaw(board, color);
+    const pieceState = SEARCH_NUMERIC_CHECK ? activePieceStateFor(board) : null;
+    const unsafe = pieceState ? isCheckRawFromPieceState(pieceState, color) : (isFlyingGeneral(board) || isCheckRaw(board, color));
     if (SEARCH_PROFILE) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
 };
@@ -1072,7 +1102,22 @@ const prepareSearchInfo = (board, currentPlayer) => {
     const defer = SEARCH_DEFER_LEGALITY;
     const pieceState = activePieceStateFor(board);
 
-    if (pieceState) {
+    if (pieceState && SEARCH_FAST_PSEUDO_MOVES && defer) {
+        const records = pieceState.records;
+        const squareToSlot = pieceState.squareToSlot;
+        const squareCodes = pieceState.squareCodes;
+        const pieceCodes = pieceState.pieceCodes;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            const slot = squareToSlot[sq];
+            if (slot < 0) continue;
+            const record = records[slot];
+            if (!record.alive || record.piece.color !== currentPlayer) continue;
+            piecesInfo.push({ piece: record.piece, r: record.r, c: record.c });
+            perfStats.pseudoMovesGenerated += appendSearchPseudoMovesForPiece(
+                legalMoveList, sq, pieceCodes[slot], squareCodes, false
+            );
+        }
+    } else if (pieceState) {
         const records = pieceState.records;
         const squareToSlot = pieceState.squareToSlot;
         for (let sq = 0; sq < REL_SQUARES; sq++) {
@@ -1283,6 +1328,150 @@ const SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
         }
     }
 })();
+
+const SEARCH_GENERAL_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const SEARCH_ADVISOR_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const SEARCH_ELEPHANT_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const SEARCH_HORSE_DEST = new Array(REL_SQUARES);
+const SEARCH_SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+const SEARCH_RAYS = Array.from({ length: REL_SQUARES }, () => new Array(ORTH_DIRS.length));
+const SEARCH_HORSE_CHECKERS = new Array(REL_SQUARES);
+
+(() => {
+    const squareDestinations = (dests) => {
+        const packed = new Uint8Array(dests.length);
+        for (let i = 0; i < dests.length; i++) packed[i] = dests[i].r * 9 + dests[i].c;
+        return packed;
+    };
+    const blockedDestinations = (dests) => {
+        const packed = new Uint16Array(dests.length);
+        for (let i = 0; i < dests.length; i++) {
+            packed[i] = (dests[i].br * 9 + dests[i].bc) * 128 + dests[i].r * 9 + dests[i].c;
+        }
+        return packed;
+    };
+
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        SEARCH_GENERAL_DEST[0][sq] = squareDestinations(GENERAL_DEST[0][sq]);
+        SEARCH_GENERAL_DEST[1][sq] = squareDestinations(GENERAL_DEST[1][sq]);
+        SEARCH_ADVISOR_DEST[0][sq] = squareDestinations(ADVISOR_DEST[0][sq]);
+        SEARCH_ADVISOR_DEST[1][sq] = squareDestinations(ADVISOR_DEST[1][sq]);
+        SEARCH_ELEPHANT_DEST[0][sq] = blockedDestinations(ELEPHANT_DEST[0][sq]);
+        SEARCH_ELEPHANT_DEST[1][sq] = blockedDestinations(ELEPHANT_DEST[1][sq]);
+        SEARCH_HORSE_DEST[sq] = blockedDestinations(HORSE_DEST[sq]);
+        SEARCH_SOLDIER_DEST[0][sq] = squareDestinations(SOLDIER_DEST[0][sq]);
+        SEARCH_SOLDIER_DEST[1][sq] = squareDestinations(SOLDIER_DEST[1][sq]);
+
+        const r = (sq / 9) | 0;
+        const c = sq % 9;
+        for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+            const ray = [];
+            const dr = ORTH_DIRS[dir][0];
+            const dc = ORTH_DIRS[dir][1];
+            for (let nr = r + dr, nc = c + dc; nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS; nr += dr, nc += dc) {
+                ray.push(nr * 9 + nc);
+            }
+            SEARCH_RAYS[sq][dir] = new Uint8Array(ray);
+        }
+
+        const horseCheckers = [];
+        for (let i = 0; i < HORSE_DIRS.length; i++) {
+            const d = HORSE_DIRS[i];
+            const horseR = r + d.dr;
+            const horseC = c + d.dc;
+            if (horseR < 0 || horseR >= ROWS || horseC < 0 || horseC >= COLS) continue;
+            const legR = horseR - d.legDr;
+            const legC = horseC - d.legDc;
+            horseCheckers.push((legR * 9 + legC) * 128 + horseR * 9 + horseC);
+        }
+        SEARCH_HORSE_CHECKERS[sq] = new Uint16Array(horseCheckers);
+    }
+})();
+
+const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked) => {
+    let generated = 0;
+    for (let i = 0; i < dests.length; i++) {
+        let toSq = dests[i];
+        if (blocked) {
+            if (squareCodes[toSq >>> 7] !== 0) continue;
+            toSq &= 127;
+        }
+        const targetCode = squareCodes[toSq];
+        if (targetCode === 0) {
+            generated++;
+            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+        } else if ((targetCode < 8) !== isRed) {
+            generated++;
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+    return generated;
+};
+
+const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, capturesOnly = false) => {
+    const pieceType = pieceCode & 7;
+    const isRed = pieceCode < 8;
+    const colorIdx = isRed ? 0 : 1;
+    let generated = 0;
+
+    switch (pieceType) {
+        case 1:
+            return appendSearchShortMoves(moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+        case 5:
+            return appendSearchShortMoves(moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+        case 4:
+            return appendSearchShortMoves(moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true);
+        case 3:
+            return appendSearchShortMoves(moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true);
+        case 7:
+            return appendSearchShortMoves(moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+        case 2:
+            for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+                const ray = SEARCH_RAYS[fromSq][dir];
+                for (let i = 0; i < ray.length; i++) {
+                    const toSq = ray[i];
+                    const targetCode = squareCodes[toSq];
+                    if (targetCode === 0) {
+                        generated++;
+                        if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                    } else {
+                        if ((targetCode < 8) !== isRed) {
+                            generated++;
+                            moves.push((fromSq << 7) | toSq);
+                        }
+                        break;
+                    }
+                }
+            }
+            return generated;
+        case 6:
+            for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+                const ray = SEARCH_RAYS[fromSq][dir];
+                let screenFound = false;
+                for (let i = 0; i < ray.length; i++) {
+                    const toSq = ray[i];
+                    const targetCode = squareCodes[toSq];
+                    if (!screenFound) {
+                        if (targetCode === 0) {
+                            generated++;
+                            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                        } else {
+                            screenFound = true;
+                        }
+                    } else if (targetCode !== 0) {
+                        if ((targetCode < 8) !== isRed) {
+                            generated++;
+                            moves.push((fromSq << 7) | toSq);
+                        }
+                        break;
+                    }
+                }
+            }
+            return generated;
+        default:
+            return generated;
+    }
+};
 
 // 模块级落点处理（非每子新建闭包）；返回机动增量
 // pieceAtSq: 90 格 → piecesInfo；relCtx.useMasks 时写 mask
@@ -2282,22 +2471,11 @@ class ZobristHasher {
 
     constructor() {
         this.pieceToIndex = new Map([
-            ['red-general', 0],
-            ['red-advisor', 1],
-            ['red-elephant', 2],
-            ['red-horse', 3],
-            ['red-chariot', 4],
-            ['red-cannon', 5],
-            ['red-soldier', 6],
-            ['black-general', 7],
-            ['black-advisor', 8],
-            ['black-elephant', 9],
-            ['black-horse', 10],
-            ['black-chariot', 11],
-            ['black-cannon', 12],
-            ['black-soldier', 13],
+            ['red-general', 0], ['red-advisor', 1], ['red-elephant', 2], ['red-horse', 3],
+            ['red-chariot', 4], ['red-cannon', 5], ['red-soldier', 6],
+            ['black-general', 7], ['black-advisor', 8], ['black-elephant', 9], ['black-horse', 10],
+            ['black-chariot', 11], ['black-cannon', 12], ['black-soldier', 13]
         ]);
-
         // Initialize random hash values using seeded RNG (53-bit integers to avoid precision issues)
         this.hashTable = [];
         const MAX_SAFE = 0x1FFFFFFFFFFFFF; // 2^53 - 1
@@ -2315,7 +2493,8 @@ class ZobristHasher {
                 this.hashTable[r][c] = [];
                 for (let p = 0; p < 14; p++) {
                     // Generate deterministic 53-bit integer
-                    this.hashTable[r][c][p] = Math.floor(seededRandom() * MAX_SAFE);
+                    const value = Math.floor(seededRandom() * MAX_SAFE);
+                    this.hashTable[r][c][p] = value;
                 }
             }
         }
@@ -2334,8 +2513,35 @@ class ZobristHasher {
 
     pieceIndex(pieceOrKey) {
         if (pieceOrKey == null) return undefined;
-        if (typeof pieceOrKey === 'string') return this.pieceToIndex.get(pieceOrKey);
-        return this.pieceToIndex.get(`${pieceOrKey.color}-${pieceOrKey.type}`);
+        if (!SEARCH_FAST_ZOBRIST) {
+            return typeof pieceOrKey === 'string'
+                ? this.pieceToIndex.get(pieceOrKey)
+                : this.pieceToIndex.get(`${pieceOrKey.color}-${pieceOrKey.type}`);
+        }
+        let color;
+        let type;
+        if (typeof pieceOrKey === 'string') {
+            const separator = pieceOrKey.indexOf('-');
+            if (separator < 0) return undefined;
+            color = pieceOrKey.slice(0, separator);
+            type = pieceOrKey.slice(separator + 1);
+        } else {
+            color = pieceOrKey.color;
+            type = pieceOrKey.type;
+        }
+        let typeIndex;
+        switch (type) {
+            case PIECE_TYPES.GENERAL: typeIndex = 0; break;
+            case PIECE_TYPES.ADVISOR: typeIndex = 1; break;
+            case PIECE_TYPES.ELEPHANT: typeIndex = 2; break;
+            case PIECE_TYPES.HORSE: typeIndex = 3; break;
+            case PIECE_TYPES.CHARIOT: typeIndex = 4; break;
+            case PIECE_TYPES.CANNON: typeIndex = 5; break;
+            case PIECE_TYPES.SOLDIER: typeIndex = 6; break;
+            default: return undefined;
+        }
+        if (color === 'red') return typeIndex;
+        return color === 'black' ? typeIndex + 7 : undefined;
     }
 
     evalCacheKey(board, searchInitiator, gameStage) {
@@ -3580,7 +3786,72 @@ const isFlyingGeneral = (board) => {
 };
 
 // 无 boardInfo 时的快速将军检测：将位缓存 + 从将位四向射线（车/将/炮合并）
+const isCheckRawFromPieceState = (state, color) => {
+    const ownIsRed = color === 'red';
+    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) return true;
+
+    const squareCodes = state.squareCodes;
+    const enemyIsRed = !ownIsRed;
+    const gr = (generalSq / 9) | 0;
+    const gc = generalSq % 9;
+
+    for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
+        const ray = SEARCH_RAYS[generalSq][dir];
+        let seen = 0;
+        for (let i = 0; i < ray.length; i++) {
+            const pieceCode = squareCodes[ray[i]];
+            if (pieceCode === 0) continue;
+            seen++;
+            const isEnemy = (pieceCode < 8) === enemyIsRed;
+            const pieceType = pieceCode & 7;
+            if (seen === 1) {
+                if (isEnemy && (pieceType === 2 || pieceType === 1)) return true;
+            } else {
+                if (isEnemy && pieceType === 6) return true;
+                break;
+            }
+        }
+    }
+
+    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+    for (let i = 0; i < horseCheckers.length; i++) {
+        const entry = horseCheckers[i];
+        if (squareCodes[entry >>> 7] !== 0) continue;
+        const pieceCode = squareCodes[entry & 127];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
+    }
+
+    const advisorSquares = SEARCH_ADVISOR_DEST[ownIsRed ? 0 : 1][generalSq];
+    for (let i = 0; i < advisorSquares.length; i++) {
+        const pieceCode = squareCodes[advisorSquares[i]];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 5) return true;
+    }
+
+    const enemyForward = enemyIsRed ? 1 : -1;
+    const forwardR = gr - enemyForward;
+    if (forwardR >= 0 && forwardR < ROWS) {
+        const pieceCode = squareCodes[forwardR * 9 + gc];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
+    }
+    const crossedRiver = enemyIsRed ? gr >= 5 : gr <= 4;
+    if (crossedRiver) {
+        if (gc < COLS - 1) {
+            const pieceCode = squareCodes[generalSq + 1];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
+        }
+        if (gc > 0) {
+            const pieceCode = squareCodes[generalSq - 1];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
+        }
+    }
+
+    return false;
+};
+
 const isCheckRaw = (board, color) => {
+    const pieceState = SEARCH_NUMERIC_CHECK ? activePieceStateFor(board) : null;
+    if (pieceState) return isCheckRawFromPieceState(pieceState, color);
     const generalPos = getGeneralPos(board, color);
     if (!generalPos) return true;
 
@@ -3999,6 +4270,9 @@ const snapshotPerfStats = () => {
         relationMasks: SEARCH_RELATION_MASKS,
         fastLeafRelations: SEARCH_FAST_LEAF_RELATIONS,
         fastSort: SEARCH_FAST_SORT,
+        fastPseudoMoves: SEARCH_FAST_PSEUDO_MOVES,
+        numericCheck: SEARCH_NUMERIC_CHECK,
+        fastZobrist: SEARCH_FAST_ZOBRIST,
         pieceList: SEARCH_PIECE_LIST,
         profile: SEARCH_PROFILE,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
@@ -4124,7 +4398,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, fastLeafRelations: searchFastLeafRelations, fastSort: searchFastSort, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, fastLeafRelations: searchFastLeafRelations, fastSort: searchFastSort, fastPseudoMoves: searchFastPseudoMoves, numericCheck: searchNumericCheck, fastZobrist: searchFastZobrist, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -4145,6 +4419,15 @@ if (typeof self !== 'undefined') {
             }
             if (typeof searchFastSort === 'boolean') {
                 SEARCH_FAST_SORT = searchFastSort;
+            }
+            if (typeof searchFastPseudoMoves === 'boolean') {
+                SEARCH_FAST_PSEUDO_MOVES = searchFastPseudoMoves;
+            }
+            if (typeof searchNumericCheck === 'boolean') {
+                SEARCH_NUMERIC_CHECK = searchNumericCheck;
+            }
+            if (typeof searchFastZobrist === 'boolean') {
+                SEARCH_FAST_ZOBRIST = searchFastZobrist;
             }
             if (typeof searchPieceList === 'boolean') {
                 SEARCH_PIECE_LIST = searchPieceList;
@@ -4524,6 +4807,24 @@ const generateCapturesForSearch = (board, currentPlayer) => {
     if (SEARCH_PROFILE) perfStats.captureGenCount++;
     const captures = [];
     const defer = SEARCH_DEFER_LEGALITY;
+    const pieceState = activePieceStateFor(board);
+    if (pieceState && SEARCH_FAST_PSEUDO_MOVES && defer) {
+        const records = pieceState.records;
+        const squareToSlot = pieceState.squareToSlot;
+        const squareCodes = pieceState.squareCodes;
+        const pieceCodes = pieceState.pieceCodes;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            const slot = squareToSlot[sq];
+            if (slot < 0) continue;
+            const record = records[slot];
+            if (!record.alive || record.piece.color !== currentPlayer) continue;
+            perfStats.pseudoMovesGenerated += appendSearchPseudoMovesForPiece(
+                captures, sq, pieceCodes[slot], squareCodes, true
+            );
+        }
+        if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
+        return captures;
+    }
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const piece = board[r][c];

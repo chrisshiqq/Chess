@@ -112,6 +112,9 @@ function runSearch(depth, exactRootScores, opts = {}) {
         fastLeafEval: opts.fastLeafEval !== false,
         fastLeafRelations: opts.fastLeafRelations !== false,
         fastSort: opts.fastSort !== false,
+        fastPseudoMoves: opts.fastPseudoMoves !== false,
+        numericCheck: opts.numericCheck !== false,
+        fastZobrist: opts.fastZobrist !== false,
         pieceList: opts.pieceList !== false,
         ttEvictionBatch: opts.ttEvictionBatch,
         profile: opts.profile === true,
@@ -145,6 +148,9 @@ function summarize(label, elapsed, payload) {
     relationMasks: p.relationMasks,
     fastLeafRelations: p.fastLeafRelations,
     fastSort: p.fastSort,
+    fastPseudoMoves: p.fastPseudoMoves,
+    numericCheck: p.numericCheck,
+    fastZobrist: p.fastZobrist,
     pieceList: p.pieceList,
     fastLeafEval: p.fastLeafEval,
     fastLeafEvalCount: p.fastLeafEvalCount,
@@ -194,7 +200,7 @@ function printSummary(s) {
   );
   console.log(
     `  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks} ` +
-    `fastLeafEval=${s.fastLeafEval} fastLeafRelations=${s.fastLeafRelations} fastSort=${s.fastSort} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
+    `fastLeafEval=${s.fastLeafEval} fastLeafRelations=${s.fastLeafRelations} fastSort=${s.fastSort} fastPseudoMoves=${s.fastPseudoMoves} numericCheck=${s.numericCheck} fastZobrist=${s.fastZobrist} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
   );
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -330,6 +336,56 @@ function printFastSortCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printFastPseudoMovesCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (object pseudo moves -> encoded search pseudo moves) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
+function printNumericCheckCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (object-board check -> numeric search-state check) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalityChecks: ${before.legalityChecks} -> ${after.legalityChecks}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
+function printFastZobristCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (Map/string Zobrist lookup -> direct Zobrist index) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`hash mismatches: ${before.hashMismatches} -> ${after.hashMismatches}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 function printLeafEvalCompare(before, after) {
   const speedup = before.wallMs / Math.max(1, after.wallMs);
   const sameBest = before.bestMove === after.bestMove && before.score === after.score;
@@ -414,6 +470,9 @@ function printLeafRelationsCompare(before, after) {
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
 //   node scripts/bench-search.mjs 8 both leafrelations     # specialized leaf relation A/B
+//   node scripts/bench-search.mjs 8 both fastpseudomoves   # encoded search pseudo moves A/B
+//   node scripts/bench-search.mjs 8 both numericcheck      # numeric search-state check A/B
+//   node scripts/bench-search.mjs 8 both fastzobrist       # direct Zobrist index A/B
 //   node scripts/bench-search.mjs 8 both piecelist         # maintained search piece list A/B
 //   node scripts/bench-search.mjs 8 both ttfifo            # TT eviction batch A/B
 //   node scripts/bench-search.mjs 8 play profile           # diagnostic timing (not a speed benchmark)
@@ -636,6 +695,116 @@ for (const job of jobs) {
     printSummary(after);
 
     printFastSortCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'fastpseudomoves' || pathMode === 'pseudomoves' || pathMode === 'fastmoves') {
+    outName = `bench-d${depth}-fastpseudomoves.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} OBJECT PSEUDO MOVES ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: false,
+      pieceList: true
+    });
+    const before = summarize('object-pseudo-moves', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} ENCODED SEARCH PSEUDO MOVES ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      pieceList: true
+    });
+    const after = summarize('encoded-search-pseudo-moves', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printFastPseudoMovesCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'numericcheck' || pathMode === 'check') {
+    outName = `bench-d${depth}-numericcheck.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} OBJECT-BOARD CHECK ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: false,
+      pieceList: true
+    });
+    const before = summarize('object-board-check', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} NUMERIC SEARCH-STATE CHECK ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      pieceList: true
+    });
+    const after = summarize('numeric-search-state-check', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printNumericCheckCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'fastzobrist' || pathMode === 'zobristindex') {
+    outName = `bench-d${depth}-fastzobrist.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} MAP/STRING ZOBRIST LOOKUP ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: false,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const before = summarize('map-string-zobrist-lookup', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} DIRECT ZOBRIST INDEX ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      fastPseudoMoves: true,
+      numericCheck: true,
+      fastZobrist: true,
+      pieceList: true,
+      zobristVerify: depth <= 4
+    });
+    const after = summarize('direct-zobrist-index', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printFastZobristCompare(before, after);
     results.push({ job: job.label, before, after });
   } else if (pathMode === 'piecelist' || pathMode === 'pieces' || pathMode === 'plist') {
     outName = `bench-d${depth}-piecelist.json`;

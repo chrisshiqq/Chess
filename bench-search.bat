@@ -9,7 +9,7 @@ if errorlevel 1 (
 
 REM Usage: bench-search.bat [depth] [play^|analysis^|both] [mode]
 REM Modes: compare, zobrist, attackbits, relmasks, moveseq, leafeval,
-REM        leafrelations, fastsort, piecelist, ttfifo, profile, cpuperf,
+REM        leafrelations, fastsort, fastpseudomoves, numericcheck, fastzobrist, piecelist, ttfifo, profile, cpuperf,
 REM        incr, full, eager, grid
 
 set "DEPTH=%~1"
@@ -41,6 +41,12 @@ if /I "%PATHMODE%"=="compare" (
   set "OUT=scripts\bench-d%DEPTH%-leafrelations-compare.txt"
 ) else if /I "%PATHMODE%"=="fastsort" (
   set "OUT=scripts\bench-d%DEPTH%-fastsort-compare.txt"
+) else if /I "%PATHMODE%"=="fastpseudomoves" (
+  set "OUT=scripts\bench-d%DEPTH%-fastpseudomoves-compare.txt"
+) else if /I "%PATHMODE%"=="numericcheck" (
+  set "OUT=scripts\bench-d%DEPTH%-numericcheck-compare.txt"
+) else if /I "%PATHMODE%"=="fastzobrist" (
+  set "OUT=scripts\bench-d%DEPTH%-fastzobrist-compare.txt"
 ) else if /I "%PATHMODE%"=="piecelist" (
   set "OUT=scripts\bench-d%DEPTH%-piecelist-compare.txt"
 ) else if /I "%PATHMODE%"=="ttfifo" (
