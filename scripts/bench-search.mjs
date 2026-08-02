@@ -1,9 +1,11 @@
 import { Worker } from 'worker_threads';
-import { readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const scriptPath = fileURLToPath(import.meta.url);
 const src = readFileSync(join(__dirname, '../src/chess-worker.js'), 'utf8');
 const wrapped = `
 const { parentPort } = require('worker_threads');
@@ -11,9 +13,55 @@ const self = {
   onmessage: null,
   postMessage: (msg) => parentPort.postMessage(msg)
 };
+// Worker console forwarding on Windows can corrupt UTF-8 and duplicates benchmark summaries.
+const console = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 parentPort.on('message', (data) => { if (self.onmessage) self.onmessage({ data }); });
 ${src}
 `;
+
+function printCpuProfile(profileDir, priorFiles) {
+  const files = readdirSync(profileDir)
+    .filter((name) => name.endsWith('.cpuprofile') && !priorFiles.has(name));
+  const profiles = files.map((file) => ({
+    file,
+    profile: JSON.parse(readFileSync(join(profileDir, file), 'utf8'))
+  }));
+  const workerProfiles = profiles.filter(({ profile }) =>
+    profile.nodes.some((node) => node.callFrame?.url === '[worker eval]')
+  );
+  const selectedProfiles = workerProfiles.length > 0 ? workerProfiles : profiles;
+  const totals = new Map();
+  let activeUs = 0;
+
+  for (const { profile } of selectedProfiles) {
+    const frames = new Map(profile.nodes.map((node) => [node.id, node.callFrame]));
+    for (let i = 0; i < profile.samples.length; i++) {
+      const delta = profile.timeDeltas[i] || 0;
+      const frame = frames.get(profile.samples[i]);
+      if (!frame || frame.functionName === '(idle)') continue;
+      const url = frame.url ? frame.url.split(/[\\/]/).pop() : '';
+      const name = `${frame.functionName || '(anonymous)'} @${url}:${(frame.lineNumber || 0) + 1}`;
+      activeUs += delta;
+      totals.set(name, (totals.get(name) || 0) + delta);
+    }
+  }
+
+  if (activeUs === 0) {
+    console.log('\nCPU profile did not contain active worker samples.');
+    return;
+  }
+
+  const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  const workerFrames = sorted.filter(([name]) => name.includes('@[worker eval]:'));
+  const display = workerFrames.length > 0 ? workerFrames : sorted;
+  const displayUs = display.reduce((sum, [, us]) => sum + us, 0);
+
+  console.log(`\n=== CPU Profile (${selectedProfiles.length} worker files, ${(displayUs / 1000).toFixed(0)}ms worker self samples) ===`);
+  console.log('Self time is sampled CPU time; it excludes child function time.');
+  for (const [name, us] of display.slice(0, 20)) {
+    console.log(`${(us / 1000).toFixed(0).padStart(7)}ms ${(100 * us / displayUs).toFixed(1).padStart(5)}% ${name}`);
+  }
+}
 
 function makeInitialBoard() {
   const board = Array.from({ length: 10 }, () => Array(9).fill(null));
@@ -62,6 +110,8 @@ function runSearch(depth, exactRootScores, opts = {}) {
         leafAttackBits: opts.leafAttackBits !== false,
         relationMasks: opts.relationMasks !== false,
         fastLeafEval: opts.fastLeafEval !== false,
+        fastLeafRelations: opts.fastLeafRelations !== false,
+        fastSort: opts.fastSort !== false,
         pieceList: opts.pieceList !== false,
         ttEvictionBatch: opts.ttEvictionBatch,
         profile: opts.profile === true,
@@ -93,6 +143,8 @@ function summarize(label, elapsed, payload) {
     incrementalZobrist: p.incrementalZobrist,
     leafAttackBits: p.leafAttackBits,
     relationMasks: p.relationMasks,
+    fastLeafRelations: p.fastLeafRelations,
+    fastSort: p.fastSort,
     pieceList: p.pieceList,
     fastLeafEval: p.fastLeafEval,
     fastLeafEvalCount: p.fastLeafEvalCount,
@@ -142,7 +194,7 @@ function printSummary(s) {
   );
   console.log(
     `  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks} ` +
-    `fastLeafEval=${s.fastLeafEval} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
+    `fastLeafEval=${s.fastLeafEval} fastLeafRelations=${s.fastLeafRelations} fastSort=${s.fastSort} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
   );
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -262,6 +314,22 @@ function printMoveSequenceCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printFastSortCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (generic sort -> search-state numeric sort) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 function printLeafEvalCompare(before, after) {
   const speedup = before.wallMs / Math.max(1, after.wallMs);
   const sameBest = before.bestMove === after.bestMove && before.score === after.score;
@@ -319,21 +387,59 @@ function printTTEvictionCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printLeafRelationsCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (generic leaf relations -> specialized leaf relations) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`fast leaf: ${Math.round(before.fastLeafEvalMs ?? 0)}ms -> ${Math.round(after.fastLeafEvalMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
-//   node scripts/bench-search.mjs 8 play
+//   node scripts/bench-search.mjs 8 play                  # cpuperf by default
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
 //   node scripts/bench-search.mjs 8 play zobrist          # zobrist A/B
 //   node scripts/bench-search.mjs 8 play attackbits       # leaf attack bitmap A/B
 //   node scripts/bench-search.mjs 8 play relmasks         # relation mask A/B
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
+//   node scripts/bench-search.mjs 8 both leafrelations     # specialized leaf relation A/B
 //   node scripts/bench-search.mjs 8 both piecelist         # maintained search piece list A/B
 //   node scripts/bench-search.mjs 8 both ttfifo            # TT eviction batch A/B
 //   node scripts/bench-search.mjs 8 play profile           # diagnostic timing (not a speed benchmark)
+//   node scripts/bench-search.mjs 8 play cpuperf           # V8 --cpu-prof self-time report
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
-const pathMode = (process.argv[4] || '').toLowerCase();
+const pathMode = (process.argv[4] || 'cpuperf').toLowerCase();
+
+if (pathMode === 'cpuperf' && process.env.BENCH_CPU_PROF_CHILD !== '1') {
+  const profileDir = join(__dirname, 'profiles');
+  mkdirSync(profileDir, { recursive: true });
+  const priorFiles = new Set(readdirSync(profileDir).filter((name) => name.endsWith('.cpuprofile')));
+  const child = spawnSync(
+    process.execPath,
+    ['--cpu-prof', '--cpu-prof-dir', profileDir, scriptPath, String(depth), mode, 'cpuperf-run'],
+    {
+      stdio: 'inherit',
+      env: { ...process.env, BENCH_CPU_PROF_CHILD: '1' }
+    }
+  );
+  if (child.error) throw child.error;
+  if (child.status !== 0) process.exit(child.status ?? 1);
+  printCpuProfile(profileDir, priorFiles);
+  process.exit(0);
+}
 
 const jobs = [];
 if (mode === 'play' || mode === 'both') jobs.push({ label: 'play(exactRootScores=false)', exact: false });
@@ -470,6 +576,66 @@ for (const job of jobs) {
     printSummary(after);
 
     printLeafEvalCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'leafrelations' || pathMode === 'leafrel' || pathMode === 'relations') {
+    outName = `bench-d${depth}-leafrelations.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} GENERIC LEAF RELATIONS ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: false
+    });
+    const before = summarize('generic-leaf-relations', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} SPECIALIZED LEAF RELATIONS ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true
+    });
+    const after = summarize('specialized-leaf-relations', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printLeafRelationsCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'fastsort' || pathMode === 'sort') {
+    outName = `bench-d${depth}-fastsort.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} GENERIC MOVE SORT ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: false,
+      pieceList: true
+    });
+    const before = summarize('generic-move-sort', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} SEARCH-STATE NUMERIC SORT ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      fastLeafRelations: true,
+      fastSort: true,
+      pieceList: true
+    });
+    const after = summarize('search-state-numeric-sort', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printFastSortCompare(before, after);
     results.push({ job: job.label, before, after });
   } else if (pathMode === 'piecelist' || pathMode === 'pieces' || pathMode === 'plist') {
     outName = `bench-d${depth}-piecelist.json`;
