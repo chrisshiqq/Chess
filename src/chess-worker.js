@@ -182,6 +182,9 @@ let SEARCH_RELATION_MASKS = true;
 let SEARCH_FAST_LEAF_EVAL = true;
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘（A/B 可关闭）
 let SEARCH_PIECE_LIST = true;
+// 静默搜索吃子生成复用搜索态棋子表；独立开关用于 A/B。
+// 仅基准诊断开启：额外 performance.now 会影响绝对耗时，正式对弈保持关闭。
+let SEARCH_PROFILE = false;
 
 const clearAttackBits = (bits) => {
     bits[0] = 0;
@@ -704,8 +707,11 @@ const unmakeMove = (board, from, to, captured) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
 const leavesOwnKingUnsafe = (board, color) => {
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     perfStats.legalityChecks++;
-    return isFlyingGeneral(board) || isCheckRaw(board, color);
+    const unsafe = isFlyingGeneral(board) || isCheckRaw(board, color);
+    if (SEARCH_PROFILE) perfStats.legalityCheckMs += performance.now() - __t0;
+    return unsafe;
 };
 
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
@@ -809,6 +815,8 @@ const clearSortSquareMarks = () => {
 };
 
 const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null, searchHeuristics = null) => {
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    if (SEARCH_PROFILE) perfStats.sortMovesCount++;
     const currentIsInCheck = boardInfo
         ? ((currentPlayer === 'red' && boardInfo.redIsInCheck) ||
            (currentPlayer === 'black' && boardInfo.blackIsInCheck))
@@ -962,6 +970,7 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     }
 
     clearSortSquareMarks();
+    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
@@ -974,6 +983,8 @@ const prepareSearchInfo = (board, currentPlayer) => {
     perfStats.prepareSearchInfoCount[currentPlayer]++;
 
     const inCheck = isCheckRaw(board, currentPlayer);
+    if (SEARCH_PROFILE) perfStats.prepareCheckMs += performance.now() - __t0;
+    const __movesT0 = SEARCH_PROFILE ? performance.now() : 0;
     const piecesInfo = [];
     const legalMoveList = [];
     const defer = SEARCH_DEFER_LEGALITY;
@@ -1018,6 +1029,7 @@ const prepareSearchInfo = (board, currentPlayer) => {
             }
         }
     }
+    if (SEARCH_PROFILE) perfStats.prepareMoveGenMs += performance.now() - __movesT0;
 
     // 轻量 boardInfo：仅被将标志
     const boardInfo = {
@@ -3571,10 +3583,13 @@ const getGamePhase = () => {
 const zobristHasher = new ZobristHasher();
 
 // 置换表实现（容量约 2^20，避免 Map 过大拖慢 GC）
+const TT_DEFAULT_EVICTION_BATCH = 1024;
+
 class TranspositionTable {
-    constructor(size = Math.pow(2, 20)) {
+    constructor(size = Math.pow(2, 20), evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
         this.table = new Map();
         this.size = size;
+        this.evictionBatch = evictionBatch;
         this.hasher = zobristHasher;
         // 统计信息
         this.stats = {
@@ -3585,16 +3600,30 @@ class TranspositionTable {
             upperboundHits: 0,
             stores: 0,
             lruEvictions: 0,
+            updatedStores: 0,
+            evictionBatches: 0,
             clears: 0
         };
+    }
+
+    setEvictionBatch(batch) {
+        this.evictionBatch = Math.max(1, batch | 0);
     }
     
     store(key, depth, value, flag, bestMove = null, moveSequence = null) {
         if (this.table.size >= this.size) {
-            // 简单的LRU策略：移除第一个元素
-            const firstKey = this.table.keys().next().value;
-            this.table.delete(firstKey);
-            this.stats.lruEvictions++;
+            if (this.table.has(key)) {
+                this.stats.updatedStores++;
+            } else {
+                const dropCount = Math.min(this.evictionBatch, this.table.size);
+                let dropped = 0;
+                for (const oldestKey of this.table.keys()) {
+                    this.table.delete(oldestKey);
+                    if (++dropped >= dropCount) break;
+                }
+                this.stats.lruEvictions += dropped;
+                this.stats.evictionBatches++;
+            }
         }
         this.table.set(key, { depth, value, flag, bestMove, moveSequence });
         this.stats.stores++;
@@ -3633,6 +3662,7 @@ class TranspositionTable {
         const hitRate = totalAccesses > 0 ? (this.stats.hits / totalAccesses * 100).toFixed(2) : 0;
         return {
             ...this.stats,
+            evictionBatch: this.evictionBatch,
             totalAccesses,
             hitRate,
             currentSize: this.table.size,
@@ -3651,6 +3681,8 @@ class TranspositionTable {
             upperboundHits: 0,
             stores: 0,
             lruEvictions: 0,
+            updatedStores: 0,
+            evictionBatches: 0,
             clears: 0
         };
     }
@@ -3676,6 +3708,17 @@ let perfStats = {
     hashMismatches: 0,
     fastLeafEvalCount: 0,
     fastLeafEvalMs: 0,
+    prepareCheckMs: 0,
+    prepareMoveGenMs: 0,
+    sortMovesCount: 0,
+    sortMovesMs: 0,
+    legalityCheckMs: 0,
+    captureGenCount: 0,
+    captureGenMs: 0,
+    quiescenceCalls: 0,
+    quiescenceCaptureMoves: 0,
+    staticEvalCacheHits: 0,
+    staticEvalCacheMisses: 0,
     evaluateBoardMs: 0,
     prepareSearchInfoMs: 0,
     startTime: Date.now()
@@ -3700,6 +3743,17 @@ const resetPerfStats = () => {
     perfStats.hashMismatches = 0;
     perfStats.fastLeafEvalCount = 0;
     perfStats.fastLeafEvalMs = 0;
+    perfStats.prepareCheckMs = 0;
+    perfStats.prepareMoveGenMs = 0;
+    perfStats.sortMovesCount = 0;
+    perfStats.sortMovesMs = 0;
+    perfStats.legalityCheckMs = 0;
+    perfStats.captureGenCount = 0;
+    perfStats.captureGenMs = 0;
+    perfStats.quiescenceCalls = 0;
+    perfStats.quiescenceCaptureMoves = 0;
+    perfStats.staticEvalCacheHits = 0;
+    perfStats.staticEvalCacheMisses = 0;
     perfStats.evaluateBoardMs = 0;
     perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
@@ -3724,6 +3778,7 @@ const snapshotPerfStats = () => {
         leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
         relationMasks: SEARCH_RELATION_MASKS,
         pieceList: SEARCH_PIECE_LIST,
+        profile: SEARCH_PROFILE,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
@@ -3738,6 +3793,17 @@ const snapshotPerfStats = () => {
         fastLeafEval: SEARCH_FAST_LEAF_EVAL,
         fastLeafEvalCount: perfStats.fastLeafEvalCount,
         fastLeafEvalMs: perfStats.fastLeafEvalMs,
+        prepareCheckMs: perfStats.prepareCheckMs,
+        prepareMoveGenMs: perfStats.prepareMoveGenMs,
+        sortMovesCount: perfStats.sortMovesCount,
+        sortMovesMs: perfStats.sortMovesMs,
+        legalityCheckMs: perfStats.legalityCheckMs,
+        captureGenCount: perfStats.captureGenCount,
+        captureGenMs: perfStats.captureGenMs,
+        quiescenceCalls: perfStats.quiescenceCalls,
+        quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
+        staticEvalCacheHits: perfStats.staticEvalCacheHits,
+        staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         tt: ttStats,
@@ -3756,7 +3822,10 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
     console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} pieceList=${snap.pieceList} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
-    console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
+    if (snap.profile) {
+        console.log(`   Profile (overlapping scopes): prepCheck=${Math.round(snap.prepareCheckMs)}ms prepMoves=${Math.round(snap.prepareMoveGenMs)}ms sort=${Math.round(snap.sortMovesMs)}ms/${snap.sortMovesCount} legality=${Math.round(snap.legalityCheckMs)}ms captureGen=${Math.round(snap.captureGenMs)}ms/${snap.captureGenCount} qs=${snap.quiescenceCalls} captureMoves=${snap.quiescenceCaptureMoves} evalCache=${snap.staticEvalCacheHits}/${snap.staticEvalCacheMisses}`);
+    }
+    console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, updates=${snap.tt.updatedStores}, evicted=${snap.tt.lruEvictions}/${snap.tt.evictionBatches} batches=${snap.tt.evictionBatch}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
     if (depths.length > 0) {
@@ -3833,7 +3902,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, pieceList: searchPieceList, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -3852,6 +3921,10 @@ if (typeof self !== 'undefined') {
             if (typeof searchPieceList === 'boolean') {
                 SEARCH_PIECE_LIST = searchPieceList;
             }
+            if (typeof searchTTEvictionBatch === 'number') {
+                transpositionTable.setEvictionBatch(searchTTEvictionBatch);
+            }
+            SEARCH_PROFILE = !!searchProfile;
             SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
@@ -4193,8 +4266,10 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
         cacheKey = zobristHasher.evalCacheKey(board, searchInitiator, gameStage);
     }
     if (evalCache.has(cacheKey)) {
+        if (SEARCH_PROFILE) perfStats.staticEvalCacheHits++;
         return evalCache.get(cacheKey);
     }
+    if (SEARCH_PROFILE) perfStats.staticEvalCacheMisses++;
     let net;
     if (SEARCH_FAST_LEAF_EVAL && !SEARCH_COLLECT_MOVE_SEQUENCE) {
         net = evaluateSearchLeafFast(board, searchInitiator, gameStage);
@@ -4217,23 +4292,25 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
 
 // 生成当前方吃子着（供静默搜索）
 const generateCapturesForSearch = (board, currentPlayer) => {
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    if (SEARCH_PROFILE) perfStats.captureGenCount++;
     const captures = [];
     const defer = SEARCH_DEFER_LEGALITY;
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const piece = board[r][c];
             if (!piece || piece.color !== currentPlayer) continue;
-            const pseudo = getPieceMoves(board, { r, c }, piece);
+            const from = { r, c };
+            const pseudo = getPieceMoves(board, from, piece);
             perfStats.pseudoMovesGenerated += pseudo.length;
-            const useMoves = defer ? pseudo : filterLegalMoves(board, { r, c }, piece, pseudo);
+            const useMoves = defer ? pseudo : filterLegalMoves(board, from, piece, pseudo);
             for (let i = 0; i < useMoves.length; i++) {
                 const to = useMoves[i];
-                if (board[to.r][to.c]) {
-                    captures.push(encodeMoveFromCoords(r, c, to.r, to.c));
-                }
+                if (board[to.r][to.c]) captures.push(encodeMoveFromCoords(r, c, to.r, to.c));
             }
         }
     }
+    if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
     return captures;
 };
 
@@ -4242,6 +4319,7 @@ const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
     searchInitiator, gameStage, qsDepth, boardHash = 0
 ) => {
+    if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
     const standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
 
     if (qsDepth <= 0) {
@@ -4265,6 +4343,7 @@ const quiescence = (
     }
 
     let captures = generateCapturesForSearch(b, currentPlayer);
+    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += captures.length;
     if (captures.length === 0) {
         return { value: standPat, moveSequence: [] };
     }

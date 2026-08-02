@@ -63,6 +63,8 @@ function runSearch(depth, exactRootScores, opts = {}) {
         relationMasks: opts.relationMasks !== false,
         fastLeafEval: opts.fastLeafEval !== false,
         pieceList: opts.pieceList !== false,
+        ttEvictionBatch: opts.ttEvictionBatch,
+        profile: opts.profile === true,
         zobristVerify: !!opts.zobristVerify,
         collectMoveSequence: opts.collectMoveSequence
       }
@@ -95,6 +97,19 @@ function summarize(label, elapsed, payload) {
     fastLeafEval: p.fastLeafEval,
     fastLeafEvalCount: p.fastLeafEvalCount,
     fastLeafEvalMs: p.fastLeafEvalMs,
+    profile: p.profile ? {
+      prepareCheckMs: p.prepareCheckMs,
+      prepareMoveGenMs: p.prepareMoveGenMs,
+      sortMovesCount: p.sortMovesCount,
+      sortMovesMs: p.sortMovesMs,
+      legalityCheckMs: p.legalityCheckMs,
+      captureGenCount: p.captureGenCount,
+      captureGenMs: p.captureGenMs,
+      quiescenceCalls: p.quiescenceCalls,
+      quiescenceCaptureMoves: p.quiescenceCaptureMoves,
+      staticEvalCacheHits: p.staticEvalCacheHits,
+      staticEvalCacheMisses: p.staticEvalCacheMisses
+    } : null,
     alphaBetaCalls: p.alphaBetaCalls,
     legalityChecks: p.legalityChecks,
     pseudoMovesGenerated: p.pseudoMovesGenerated,
@@ -139,7 +154,21 @@ function printSummary(s) {
   }
   if (s.tt) {
     console.log(
-      `  TT hits=${s.tt.hits} misses=${s.tt.misses} hitRate=${s.tt.hitRate}% stores=${s.tt.stores}`
+      `  TT hits=${s.tt.hits} misses=${s.tt.misses} hitRate=${s.tt.hitRate}% stores=${s.tt.stores} ` +
+      `updates=${s.tt.updatedStores ?? 0} evicted=${s.tt.lruEvictions}/${s.tt.evictionBatches ?? 0} batch=${s.tt.evictionBatch}`
+    );
+  }
+  if (s.profile) {
+    console.log(
+      `  profile (overlapping): prepCheck=${Math.round(s.profile.prepareCheckMs)}ms ` +
+      `prepMoves=${Math.round(s.profile.prepareMoveGenMs)}ms ` +
+      `sort=${Math.round(s.profile.sortMovesMs)}ms/${s.profile.sortMovesCount} ` +
+      `legality=${Math.round(s.profile.legalityCheckMs)}ms ` +
+      `captureGen=${Math.round(s.profile.captureGenMs)}ms/${s.profile.captureGenCount}`
+    );
+    console.log(
+      `  QS: calls=${s.profile.quiescenceCalls} captureMoves=${s.profile.quiescenceCaptureMoves} ` +
+      `evalCache hit/miss=${s.profile.staticEvalCacheHits}/${s.profile.staticEvalCacheMisses}`
     );
   }
 }
@@ -271,6 +300,25 @@ function printPieceListCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printTTEvictionCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (single-entry FIFO -> batched FIFO TT eviction) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`TT hitRate: ${before.tt?.hitRate}% -> ${after.tt?.hitRate}%`);
+  console.log(`TT evicted: ${before.tt?.lruEvictions}/${before.tt?.evictionBatches} -> ${after.tt?.lruEvictions}/${after.tt?.evictionBatches}`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
@@ -280,6 +328,8 @@ function printPieceListCompare(before, after) {
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
 //   node scripts/bench-search.mjs 8 both piecelist         # maintained search piece list A/B
+//   node scripts/bench-search.mjs 8 both ttfifo            # TT eviction batch A/B
+//   node scripts/bench-search.mjs 8 play profile           # diagnostic timing (not a speed benchmark)
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
@@ -449,6 +499,36 @@ for (const job of jobs) {
 
     printPieceListCompare(before, after);
     results.push({ job: job.label, before, after });
+  } else if (pathMode === 'ttfifo' || pathMode === 'ttbatch' || pathMode === 'eviction') {
+    outName = `bench-d${depth}-ttfifo.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} SINGLE-ENTRY FIFO ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      pieceList: true,
+      ttEvictionBatch: 1
+    });
+    const before = summarize('single-entry-fifo', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} BATCHED FIFO (1024) ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      pieceList: true,
+      ttEvictionBatch: 1024
+    });
+    const after = summarize('batched-fifo-1024', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printTTEvictionCompare(before, after);
+    results.push({ job: job.label, before, after });
   } else {
     const incr =
       pathMode === 'full' || pathMode === 'false' ? false :
@@ -463,14 +543,16 @@ for (const job of jobs) {
     const masks =
       pathMode === 'lists' ? false :
       true;
-    const tag = `${incr ? 'INCR' : 'FULL'}/${masks ? 'MASKS' : 'LISTS'}`;
-    outName = `bench-d${depth}-latest.json`;
+    const profile = pathMode === 'profile';
+    const tag = `${incr ? 'INCR' : 'FULL'}/${masks ? 'MASKS' : 'LISTS'}${profile ? '/PROFILE' : ''}`;
+    outName = `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`;
     console.log(`\n=== Bench depth=${depth} ${job.label} ${tag} (opening, book off) ===`);
     const { elapsed, payload } = await runSearch(depth, job.exact, {
       deferLegality: defer,
       incrementalZobrist: incr,
       leafAttackBits: bits,
-      relationMasks: masks
+      relationMasks: masks,
+      profile
     });
     const s = summarize(tag.toLowerCase(), elapsed, payload);
     printSummary(s);
