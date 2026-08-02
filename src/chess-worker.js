@@ -180,6 +180,8 @@ let SEARCH_LEAF_ATTACK_BITS = true;
 // true=关系用格位 Uint32 攻/守/控 mask（默认）；false=threat/guard 对象列表（A/B）
 let SEARCH_RELATION_MASKS = true;
 let SEARCH_FAST_LEAF_EVAL = true;
+// 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘（A/B 可关闭）
+let SEARCH_PIECE_LIST = true;
 
 const clearAttackBits = (bits) => {
     bits[0] = 0;
@@ -257,6 +259,73 @@ const scratchLeafBoardInfo = {
     controlMask: scratchControlMask,
     redAttack: scratchRedAttack,
     blackAttack: scratchBlackAttack
+};
+
+let activeSearchPieceState = null;
+
+const createSearchPieceState = (board) => {
+    const records = [];
+    const squareToSlot = new Int8Array(REL_SQUARES);
+    squareToSlot.fill(-1);
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const piece = board[r][c];
+            if (!piece) continue;
+            if (records.length >= 32) return null;
+            const slot = records.length;
+            records.push({ piece, r, c, sq: r * 9 + c, alive: true });
+            squareToSlot[r * 9 + c] = slot;
+        }
+    }
+    return {
+        board,
+        records,
+        squareToSlot,
+        moverStack: new Int8Array(32),
+        capturedStack: new Int8Array(32),
+        stackDepth: 0
+    };
+};
+
+const activePieceStateFor = (board) => {
+    const state = activeSearchPieceState;
+    return SEARCH_PIECE_LIST && state && state.board === board ? state : null;
+};
+
+const updatePieceStateAfterMake = (board, fromSq, toSq) => {
+    const state = activePieceStateFor(board);
+    if (!state) return;
+    const moverSlot = state.squareToSlot[fromSq];
+    const capturedSlot = state.squareToSlot[toSq];
+    const stackIndex = state.stackDepth++;
+    state.moverStack[stackIndex] = moverSlot;
+    state.capturedStack[stackIndex] = capturedSlot;
+    if (moverSlot < 0) return;
+
+    const mover = state.records[moverSlot];
+    mover.sq = toSq;
+    mover.r = (toSq / 9) | 0;
+    mover.c = toSq % 9;
+    state.squareToSlot[fromSq] = -1;
+    state.squareToSlot[toSq] = moverSlot;
+    if (capturedSlot >= 0) state.records[capturedSlot].alive = false;
+};
+
+const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
+    const state = activePieceStateFor(board);
+    if (!state) return;
+    const stackIndex = --state.stackDepth;
+    const moverSlot = state.moverStack[stackIndex];
+    const capturedSlot = state.capturedStack[stackIndex];
+    if (moverSlot < 0) return;
+
+    const mover = state.records[moverSlot];
+    mover.sq = fromSq;
+    mover.r = (fromSq / 9) | 0;
+    mover.c = fromSq % 9;
+    state.squareToSlot[fromSq] = moverSlot;
+    state.squareToSlot[toSq] = capturedSlot;
+    if (capturedSlot >= 0) state.records[capturedSlot].alive = true;
 };
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
@@ -450,33 +519,28 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     let redPosition = 0;
     let blackMaterial = 0;
     let blackPosition = 0;
-
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece) continue;
-
-            const info = scratchLeafPieceSlots[count];
-            if (!info) {
-                const result = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
-                const opponent = searchInitiator === 'red' ? 'black' : 'red';
-                return result[searchInitiator].total - result[opponent].total;
-            }
-
+    const pieceState = activePieceStateFor(board);
+    let overflow = false;
+    if (pieceState) {
+        const records = pieceState.records;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (!record.alive) continue;
+            const piece = record.piece;
+            const info = scratchLeafPieceSlots[count++];
             const materialValue = getMaterialValue(piece, gameStage);
-            const positionValue = getPositionValue(piece, r, c);
+            const positionValue = getPositionValue(piece, record.r, record.c);
             info.piece = piece;
-            info.r = r;
-            info.c = c;
-            info.pieceIndex = count;
+            info.r = record.r;
+            info.c = record.c;
+            info.pieceIndex = count - 1;
             info.materialValue = materialValue;
             info.positionValue = positionValue;
             info.threatValue = 0;
             info.safetyValue = 0;
             info.tacticValue = 0;
             info.mobilityValue = 0;
-            piecesInfo[count++] = info;
-
+            piecesInfo[count - 1] = info;
             if (piece.color === 'red') {
                 redMaterial += materialValue;
                 redPosition += positionValue;
@@ -485,6 +549,43 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
                 blackPosition += positionValue;
             }
         }
+    } else {
+        scanBoard: for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                const piece = board[r][c];
+                if (!piece) continue;
+                if (count >= scratchLeafPieceSlots.length) {
+                    overflow = true;
+                    break scanBoard;
+                }
+                const info = scratchLeafPieceSlots[count++];
+                const materialValue = getMaterialValue(piece, gameStage);
+                const positionValue = getPositionValue(piece, r, c);
+                info.piece = piece;
+                info.r = r;
+                info.c = c;
+                info.pieceIndex = count - 1;
+                info.materialValue = materialValue;
+                info.positionValue = positionValue;
+                info.threatValue = 0;
+                info.safetyValue = 0;
+                info.tacticValue = 0;
+                info.mobilityValue = 0;
+                piecesInfo[count - 1] = info;
+                if (piece.color === 'red') {
+                    redMaterial += materialValue;
+                    redPosition += positionValue;
+                } else {
+                    blackMaterial += materialValue;
+                    blackPosition += positionValue;
+                }
+            }
+        }
+    }
+    if (overflow) {
+        const result = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
+        const opponent = searchInitiator === 'red' ? 'black' : 'red';
+        return result[searchInitiator].total - result[opponent].total;
     }
     piecesInfo.length = count;
 
@@ -578,6 +679,7 @@ const makeMove = (board, from, to) => {
     const captured = board[to.r][to.c];
     board[to.r][to.c] = piece;
     board[from.r][from.c] = null;
+    updatePieceStateAfterMake(board, from.r * 9 + from.c, to.r * 9 + to.c);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: to.r, c: to.c };
     }
@@ -591,6 +693,7 @@ const unmakeMove = (board, from, to, captured) => {
     const piece = board[to.r][to.c];
     board[from.r][from.c] = piece;
     board[to.r][to.c] = captured;
+    updatePieceStateAfterUnmake(board, from.r * 9 + from.c, to.r * 9 + to.c);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: from.r, c: from.c };
     }
@@ -655,6 +758,7 @@ const makeSearchMove = (board, move) => {
     const captured = board[tr][tc];
     board[tr][tc] = piece;
     board[fr][fc] = null;
+    updatePieceStateAfterMake(board, from, to);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: tr, c: tc };
     }
@@ -676,6 +780,7 @@ const unmakeSearchMove = (board, move, captured) => {
     const piece = board[tr][tc];
     board[fr][fc] = piece;
     board[tr][tc] = captured;
+    updatePieceStateAfterUnmake(board, from, to);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: fr, c: fc };
     }
@@ -872,26 +977,45 @@ const prepareSearchInfo = (board, currentPlayer) => {
     const piecesInfo = [];
     const legalMoveList = [];
     const defer = SEARCH_DEFER_LEGALITY;
+    const pieceState = activePieceStateFor(board);
 
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece || piece.color !== currentPlayer) continue;
-
-            const moves = getPieceMoves(board, { r, c }, piece);
-            const useMoves = defer ? moves : filterLegalMoves(board, { r, c }, piece, moves);
-            piecesInfo.push({
-                piece,
-                r,
-                c,
-                moves,
-                legalMoves: useMoves
-            });
-            for (let i = 0; i < useMoves.length; i++) {
-                const to = useMoves[i];
-                legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
+    if (pieceState) {
+        const records = pieceState.records;
+        const squareToSlot = pieceState.squareToSlot;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            const slot = squareToSlot[sq];
+            if (slot < 0) continue;
+            const record = records[slot];
+            if (record.alive && record.piece.color === currentPlayer) {
+                const r = record.r;
+                const c = record.c;
+                const piece = record.piece;
+                const from = { r, c };
+                const moves = getPieceMoves(board, from, piece);
+                const useMoves = defer ? moves : filterLegalMoves(board, from, piece, moves);
+                piecesInfo.push({ piece, r, c, moves, legalMoves: useMoves });
+                for (let j = 0; j < useMoves.length; j++) {
+                    const to = useMoves[j];
+                    legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
+                }
+                perfStats.pseudoMovesGenerated += moves.length;
             }
-            perfStats.pseudoMovesGenerated += moves.length;
+        }
+    } else {
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                const piece = board[r][c];
+                if (!piece || piece.color !== currentPlayer) continue;
+                const from = { r, c };
+                const moves = getPieceMoves(board, from, piece);
+                const useMoves = defer ? moves : filterLegalMoves(board, from, piece, moves);
+                piecesInfo.push({ piece, r, c, moves, legalMoves: useMoves });
+                for (let i = 0; i < useMoves.length; i++) {
+                    const to = useMoves[i];
+                    legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
+                }
+                perfStats.pseudoMovesGenerated += moves.length;
+            }
         }
     }
 
@@ -3559,6 +3683,7 @@ let perfStats = {
 
 // 重置统计（每次搜索开始时调用）
 const resetPerfStats = () => {
+    activeSearchPieceState = null;
     perfStats.evaluateBoardCount = { red: 0, black: 0 };
     perfStats.prepareSearchInfoCount = { red: 0, black: 0 };
     perfStats.calculateThreatValuesCount = { red: 0, black: 0 };
@@ -3598,6 +3723,7 @@ const snapshotPerfStats = () => {
         incrementalZobrist: SEARCH_INCREMENTAL_ZOBRIST,
         leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
         relationMasks: SEARCH_RELATION_MASKS,
+        pieceList: SEARCH_PIECE_LIST,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
@@ -3629,7 +3755,7 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
     console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
-    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
+    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} pieceList=${snap.pieceList} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
     
     const depths = Object.keys(snap.byDepth);
@@ -3707,7 +3833,7 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, pieceList: searchPieceList, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
             if (typeof searchDeferLegality === 'boolean') {
                 SEARCH_DEFER_LEGALITY = searchDeferLegality;
             }
@@ -3722,6 +3848,9 @@ if (typeof self !== 'undefined') {
             }
             if (typeof searchFastLeafEval === 'boolean') {
                 SEARCH_FAST_LEAF_EVAL = searchFastLeafEval;
+            }
+            if (typeof searchPieceList === 'boolean') {
+                SEARCH_PIECE_LIST = searchPieceList;
             }
             SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
@@ -4537,6 +4666,7 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
   };
 
   const workBoard = board.map((row) => [...row]);
+  activeSearchPieceState = SEARCH_PIECE_LIST ? createSearchPieceState(workBoard) : null;
   const NULL_WINDOW_EPS = 1e-6;
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
@@ -4660,7 +4790,7 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
     moveSequence: moveInfo.moveSequence || []
   }));
 
-  return {
+  const result = {
     bestMove,
     secondBestMove,
     moveSequence: bestMoveSequence,
@@ -4670,6 +4800,8 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
     allMovesWithScores,
     completedDepth
   };
+  activeSearchPieceState = null;
+  return result;
 };
 
 // --- WORKER LISTENER (统一消息处理) ---

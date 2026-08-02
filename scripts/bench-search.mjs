@@ -62,6 +62,7 @@ function runSearch(depth, exactRootScores, opts = {}) {
         leafAttackBits: opts.leafAttackBits !== false,
         relationMasks: opts.relationMasks !== false,
         fastLeafEval: opts.fastLeafEval !== false,
+        pieceList: opts.pieceList !== false,
         zobristVerify: !!opts.zobristVerify,
         collectMoveSequence: opts.collectMoveSequence
       }
@@ -90,6 +91,7 @@ function summarize(label, elapsed, payload) {
     incrementalZobrist: p.incrementalZobrist,
     leafAttackBits: p.leafAttackBits,
     relationMasks: p.relationMasks,
+    pieceList: p.pieceList,
     fastLeafEval: p.fastLeafEval,
     fastLeafEvalCount: p.fastLeafEvalCount,
     fastLeafEvalMs: p.fastLeafEvalMs,
@@ -125,7 +127,7 @@ function printSummary(s) {
   );
   console.log(
     `  leafAttackBits=${s.leafAttackBits} relationMasks=${s.relationMasks} ` +
-    `fastLeafEval=${s.fastLeafEval} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
+    `fastLeafEval=${s.fastLeafEval} pieceList=${s.pieceList} count=${s.fastLeafEvalCount} ms=${Math.round(s.fastLeafEvalMs ?? 0)}`
   );
   if (s.evaluateBoardMs != null) {
     const evalPct = s.thinkingTimeMs ? (100 * s.evaluateBoardMs / s.thinkingTimeMs).toFixed(1) : '?';
@@ -250,6 +252,25 @@ function printLeafEvalCompare(before, after) {
   console.log(`  after:  ${after.bestMove} score=${after.score}`);
 }
 
+function printPieceListCompare(before, after) {
+  const speedup = before.wallMs / Math.max(1, after.wallMs);
+  const sameBest = before.bestMove === after.bestMove && before.score === after.score;
+  const sameTree =
+    before.alphaBetaCalls === after.alphaBetaCalls &&
+    before.legalMovesSearched === after.legalMovesSearched;
+  console.log('\n=== Compare (board scans -> maintained search piece list) ===');
+  console.log(`wall: ${before.wallMs}ms -> ${after.wallMs}ms  (x${speedup.toFixed(2)})`);
+  console.log(`thinkingTime: ${before.thinkingTimeMs}ms -> ${after.thinkingTimeMs}ms`);
+  console.log(`fast leaf: ${Math.round(before.fastLeafEvalMs ?? 0)}ms -> ${Math.round(after.fastLeafEvalMs ?? 0)}ms`);
+  console.log(`prepareSearchInfo: ${Math.round(before.prepareSearchInfoMs ?? 0)}ms -> ${Math.round(after.prepareSearchInfoMs ?? 0)}ms`);
+  console.log(`alphaBeta: ${before.alphaBetaCalls} -> ${after.alphaBetaCalls}`);
+  console.log(`legalSearched: ${before.legalMovesSearched} -> ${after.legalMovesSearched}`);
+  console.log(`search tree identical (ab+legal): ${sameTree}`);
+  console.log(`bestMove+score identical: ${sameBest}`);
+  console.log(`  before: ${before.bestMove} score=${before.score}`);
+  console.log(`  after:  ${after.bestMove} score=${after.score}`);
+}
+
 // usage:
 //   node scripts/bench-search.mjs 8 play
 //   node scripts/bench-search.mjs 8 play compare          # legality A/B
@@ -258,6 +279,7 @@ function printLeafEvalCompare(before, after) {
 //   node scripts/bench-search.mjs 8 play relmasks         # relation mask A/B
 //   node scripts/bench-search.mjs 8 play moveseq          # moveSequence A/B
 //   node scripts/bench-search.mjs 8 both leafeval          # search-only leaf evaluator A/B
+//   node scripts/bench-search.mjs 8 both piecelist         # maintained search piece list A/B
 //   node scripts/bench-search.mjs 8 play incr|full
 const depth = Number(process.argv[2]) || 6;
 const mode = (process.argv[3] || 'both').toLowerCase();
@@ -398,6 +420,34 @@ for (const job of jobs) {
     printSummary(after);
 
     printLeafEvalCompare(before, after);
+    results.push({ job: job.label, before, after });
+  } else if (pathMode === 'piecelist' || pathMode === 'pieces' || pathMode === 'plist') {
+    outName = `bench-d${depth}-piecelist.json`;
+    console.log(`\n=== Bench depth=${depth} ${job.label} BOARD SCANS ===`);
+    const beforeRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      pieceList: false
+    });
+    const before = summarize('board-scans', beforeRun.elapsed, beforeRun.payload);
+    printSummary(before);
+
+    console.log(`\n=== Bench depth=${depth} ${job.label} MAINTAINED PIECE LIST ===`);
+    const afterRun = await runSearch(depth, job.exact, {
+      deferLegality: true,
+      incrementalZobrist: true,
+      leafAttackBits: true,
+      relationMasks: true,
+      fastLeafEval: true,
+      pieceList: true
+    });
+    const after = summarize('maintained-piece-list', afterRun.elapsed, afterRun.payload);
+    printSummary(after);
+
+    printPieceListCompare(before, after);
     results.push({ job: job.label, before, after });
   } else {
     const incr =
