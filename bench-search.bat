@@ -7,11 +7,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM Usage: bench-search.bat [depth] [play^|analysis^|both] [mode]
-REM Modes: compare, zobrist, attackbits, relmasks, moveseq, leafeval,
-REM        leafrelations, packedleafrelations, numericleafeval, fastsort, fastpseudomoves, numericcheck, fastzobrist, piecelist, ttfifo, profile, cpuperf,
-REM        incr, full, eager, grid
-
+REM Usage: bench-search.bat [depth] [play^|analysis^|both] [cpuperf^|profile]
 set "DEPTH=%~1"
 if "%DEPTH%"=="" set "DEPTH=8"
 set "MODE=%~2"
@@ -19,48 +15,10 @@ if "%MODE%"=="" set "MODE=play"
 set "PATHMODE=%~3"
 if "%PATHMODE%"=="" set "PATHMODE=cpuperf"
 
-if /I "%PATHMODE%"=="compare" (
-  set "OUT=scripts\bench-d%DEPTH%-legality-compare.txt"
-) else if /I "%PATHMODE%"=="zobrist" (
-  set "OUT=scripts\bench-d%DEPTH%-zobrist-compare.txt"
-) else if /I "%PATHMODE%"=="hash" (
-  set "OUT=scripts\bench-d%DEPTH%-zobrist-compare.txt"
-) else if /I "%PATHMODE%"=="attackbits" (
-  set "OUT=scripts\bench-d%DEPTH%-attackbits-compare.txt"
-) else if /I "%PATHMODE%"=="bits" (
-  set "OUT=scripts\bench-d%DEPTH%-attackbits-compare.txt"
-) else if /I "%PATHMODE%"=="leafbits" (
-  set "OUT=scripts\bench-d%DEPTH%-attackbits-compare.txt"
-) else if /I "%PATHMODE%"=="relmasks" (
-  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
-) else if /I "%PATHMODE%"=="masks" (
-  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
-) else if /I "%PATHMODE%"=="relationmasks" (
-  set "OUT=scripts\bench-d%DEPTH%-relmasks-compare.txt"
-) else if /I "%PATHMODE%"=="leafrelations" (
-  set "OUT=scripts\bench-d%DEPTH%-leafrelations-compare.txt"
-) else if /I "%PATHMODE%"=="packedleafrelations" (
-  set "OUT=scripts\bench-d%DEPTH%-packedleafrelations-compare.txt"
-) else if /I "%PATHMODE%"=="numericleafeval" (
-  set "OUT=scripts\bench-d%DEPTH%-numericleafeval-compare.txt"
-) else if /I "%PATHMODE%"=="fastsort" (
-  set "OUT=scripts\bench-d%DEPTH%-fastsort-compare.txt"
-) else if /I "%PATHMODE%"=="fastpseudomoves" (
-  set "OUT=scripts\bench-d%DEPTH%-fastpseudomoves-compare.txt"
-) else if /I "%PATHMODE%"=="numericcheck" (
-  set "OUT=scripts\bench-d%DEPTH%-numericcheck-compare.txt"
-) else if /I "%PATHMODE%"=="fastzobrist" (
-  set "OUT=scripts\bench-d%DEPTH%-fastzobrist-compare.txt"
-) else if /I "%PATHMODE%"=="piecelist" (
-  set "OUT=scripts\bench-d%DEPTH%-piecelist-compare.txt"
-) else if /I "%PATHMODE%"=="ttfifo" (
-  set "OUT=scripts\bench-d%DEPTH%-ttfifo-compare.txt"
-) else if /I "%PATHMODE%"=="profile" (
+if /I "%PATHMODE%"=="profile" (
   set "OUT=scripts\bench-d%DEPTH%-profile.txt"
-) else if /I "%PATHMODE%"=="cpuperf" (
-  set "OUT=scripts\bench-d%DEPTH%-cpuperf.txt"
 ) else (
-  set "OUT=scripts\bench-d%DEPTH%-latest.txt"
+  set "OUT=scripts\bench-d%DEPTH%-cpuperf.txt"
 )
 
 echo Running benchmark: depth=%DEPTH%, mode=%MODE%, path=%PATHMODE%
@@ -78,7 +36,6 @@ if exist "%OUT%" (
 
 echo.
 echo Log saved: %OUT%
-echo JSON is written by bench-search.mjs under scripts\
 if not "%EXIT_CODE%"=="0" echo ERROR: Benchmark exited with code %EXIT_CODE%.
 echo Press any key to exit...
 pause >nul

@@ -202,21 +202,10 @@ const ATTACK_WORDS = 3;
 const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
 const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
 // true=搜索叶用攻击位图（默认）；false=叶评估仍建 10×9 控制者表（A/B）
-let SEARCH_LEAF_ATTACK_BITS = true;
 // true=关系用格位 Uint32 攻/守/控 mask（默认）；false=threat/guard 对象列表（A/B）
-let SEARCH_RELATION_MASKS = true;
-let SEARCH_FAST_LEAF_EVAL = true;
-let SEARCH_FAST_LEAF_RELATIONS = true;
-let SEARCH_NUMERIC_LEAF_EVAL = true;
 // Packed destinations/rays and inlined relation writes for search leaves.
 // Kept separate from the original specialized path for benchmark verification.
-let SEARCH_PACKED_LEAF_RELATIONS = true;
-let SEARCH_FAST_SORT = true;
-let SEARCH_FAST_PSEUDO_MOVES = true;
-let SEARCH_NUMERIC_CHECK = true;
-let SEARCH_FAST_ZOBRIST = true;
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘（A/B 可关闭）
-let SEARCH_PIECE_LIST = true;
 // 静默搜索吃子生成复用搜索态棋子表；独立开关用于 A/B。
 // 仅基准诊断开启：额外 performance.now 会影响绝对耗时，正式对弈保持关闭。
 let SEARCH_PROFILE = false;
@@ -367,7 +356,7 @@ const createSearchPieceState = (board) => {
 
 const activePieceStateFor = (board) => {
     const state = activeSearchPieceState;
-    return SEARCH_PIECE_LIST && state && state.board === board ? state : null;
+    return state && state.board === board ? state : null;
 };
 
 const updatePieceStateAfterMake = (board, fromSq, toSq) => {
@@ -496,8 +485,8 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
     }
 
     // 关系 mask（≤32 子）优先；否则回退旧列表 / 叶攻击位图
-    const useRelationMasks = SEARCH_RELATION_MASKS && piecesInfo.length <= 32;
-    const useAttackBits = !useRelationMasks && forSearchLeaf && SEARCH_LEAF_ATTACK_BITS;
+    const useRelationMasks = piecesInfo.length <= 32;
+    const useAttackBits = false;
     let boardInfo;
     if (useRelationMasks) {
         clearRelationMasks(!forSearchLeaf);
@@ -620,7 +609,7 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     let blackMaterial = 0;
     let blackPosition = 0;
     const pieceState = activePieceStateFor(board);
-    const numericLeaf = SEARCH_NUMERIC_LEAF_EVAL && !!pieceState && SEARCH_FAST_LEAF_RELATIONS;
+    const numericLeaf = !!pieceState;
     const materialValues = numericLeaf ? searchMaterialTable(gameStage) : null;
     let overflow = false;
     if (pieceState) {
@@ -700,19 +689,10 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     }
     piecesInfo.length = count;
 
-    if (SEARCH_FAST_LEAF_RELATIONS && pieceState) {
-        if (SEARCH_PACKED_LEAF_RELATIONS) {
-            calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
-        } else {
-            calculateSearchLeafRelations(piecesInfo, pieceState.squareCodes);
-        }
-        if (numericLeaf) {
-            calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
-            calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
-        } else {
-            calculateThreatValues(piecesInfo, searchInitiator, scratchLeafBoardInfo, true);
-            calculateSafetyValues(piecesInfo, scratchLeafBoardInfo, board, true);
-        }
+    if (pieceState) {
+        calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
+        calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
+        calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
     } else {
         clearRelationMasks(true);
         clearAttackBits(scratchRedAttack);
@@ -832,7 +812,7 @@ const unmakeMove = (board, from, to, captured) => {
 const leavesOwnKingUnsafe = (board, color) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     perfStats.legalityChecks++;
-    const pieceState = SEARCH_NUMERIC_CHECK ? activePieceStateFor(board) : null;
+    const pieceState = activePieceStateFor(board);
     const unsafe = pieceState ? isCheckRawFromPieceState(pieceState, color) : (isFlyingGeneral(board) || isCheckRaw(board, color));
     if (SEARCH_PROFILE) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
@@ -997,7 +977,7 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     const ttMove = searchHeuristics?.ttMove || null;
     const killers = searchHeuristics?.killers || null;
     const pieceState = activePieceStateFor(board);
-    const useSimpleSearchSort = SEARCH_FAST_SORT && pieceState && !currentIsInCheck && !hasThreatened && !hasCanCapture;
+    const useSimpleSearchSort = pieceState && !currentIsInCheck && !hasThreatened && !hasCanCapture;
     const isMarkedThreatened = (sq) => {
         if (!hasThreatened) return false;
         for (let i = 0; i < threatenedMarkEnd; i++) {
@@ -1148,10 +1128,10 @@ const prepareSearchInfo = (board, currentPlayer) => {
     const __movesT0 = SEARCH_PROFILE ? performance.now() : 0;
     const piecesInfo = [];
     const legalMoveList = [];
-    const defer = SEARCH_DEFER_LEGALITY;
+    const defer = true;
     const pieceState = activePieceStateFor(board);
 
-    if (pieceState && SEARCH_FAST_PSEUDO_MOVES && defer) {
+    if (pieceState) {
         const records = pieceState.records;
         const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
@@ -1165,28 +1145,6 @@ const prepareSearchInfo = (board, currentPlayer) => {
             perfStats.pseudoMovesGenerated += appendSearchPseudoMovesForPiece(
                 legalMoveList, sq, pieceCodes[slot], squareCodes, false
             );
-        }
-    } else if (pieceState) {
-        const records = pieceState.records;
-        const squareToSlot = pieceState.squareToSlot;
-        for (let sq = 0; sq < REL_SQUARES; sq++) {
-            const slot = squareToSlot[sq];
-            if (slot < 0) continue;
-            const record = records[slot];
-            if (record.alive && record.piece.color === currentPlayer) {
-                const r = record.r;
-                const c = record.c;
-                const piece = record.piece;
-                const from = { r, c };
-                const moves = getPieceMoves(board, from, piece);
-                const useMoves = defer ? moves : filterLegalMoves(board, from, piece, moves);
-                piecesInfo.push({ piece, r, c, moves, legalMoves: useMoves });
-                for (let j = 0; j < useMoves.length; j++) {
-                    const to = useMoves[j];
-                    legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
-                }
-                perfStats.pseudoMovesGenerated += moves.length;
-            }
         }
     } else {
         for (let r = 0; r < ROWS; r++) {
@@ -2250,7 +2208,7 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
     // 计算棋子关系和控制信息，只在没有提供时计算
     let localBoardInfo = boardInfo;
     if (!localBoardInfo) {
-        if (SEARCH_RELATION_MASKS && localPiecesInfo.length <= 32) {
+        if (localPiecesInfo.length <= 32) {
             clearRelationMasks();
             clearAttackBits(scratchRedAttack);
             clearAttackBits(scratchBlackAttack);
@@ -2727,11 +2685,6 @@ class ZobristHasher {
 
     pieceIndex(pieceOrKey) {
         if (pieceOrKey == null) return undefined;
-        if (!SEARCH_FAST_ZOBRIST) {
-            return typeof pieceOrKey === 'string'
-                ? this.pieceToIndex.get(pieceOrKey)
-                : this.pieceToIndex.get(`${pieceOrKey.color}-${pieceOrKey.type}`);
-        }
         let color;
         let type;
         if (typeof pieceOrKey === 'string') {
@@ -4064,7 +4017,7 @@ const isCheckRawFromPieceState = (state, color) => {
 };
 
 const isCheckRaw = (board, color) => {
-    const pieceState = SEARCH_NUMERIC_CHECK ? activePieceStateFor(board) : null;
+    const pieceState = activePieceStateFor(board);
     if (pieceState) return isCheckRawFromPieceState(pieceState, color);
     const generalPos = getGeneralPos(board, color);
     if (!generalPos) return true;
@@ -4478,18 +4431,6 @@ const snapshotPerfStats = () => {
     }
     return {
         elapsedMs: elapsed,
-        deferLegality: SEARCH_DEFER_LEGALITY,
-        incrementalZobrist: SEARCH_INCREMENTAL_ZOBRIST,
-        leafAttackBits: SEARCH_LEAF_ATTACK_BITS,
-        relationMasks: SEARCH_RELATION_MASKS,
-        fastLeafRelations: SEARCH_FAST_LEAF_RELATIONS,
-        numericLeafEval: SEARCH_NUMERIC_LEAF_EVAL,
-        packedLeafRelations: SEARCH_PACKED_LEAF_RELATIONS,
-        fastSort: SEARCH_FAST_SORT,
-        fastPseudoMoves: SEARCH_FAST_PSEUDO_MOVES,
-        numericCheck: SEARCH_NUMERIC_CHECK,
-        fastZobrist: SEARCH_FAST_ZOBRIST,
-        pieceList: SEARCH_PIECE_LIST,
         profile: SEARCH_PROFILE,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
@@ -4502,7 +4443,6 @@ const snapshotPerfStats = () => {
         fullHashCount: perfStats.fullHashCount,
         incrementalHashUpdates: perfStats.incrementalHashUpdates,
         hashMismatches: perfStats.hashMismatches,
-        fastLeafEval: SEARCH_FAST_LEAF_EVAL,
         fastLeafEvalCount: perfStats.fastLeafEvalCount,
         fastLeafEvalMs: perfStats.fastLeafEvalMs,
         prepareCheckMs: perfStats.prepareCheckMs,
@@ -4532,8 +4472,8 @@ const logPerfStats = (currentPlayer) => {
     console.log(`   calculateThreatValues: red=${snap.calculateThreatValues.red}, black=${snap.calculateThreatValues.black}`);
     console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
     console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
-    console.log(`   Zobrist: incremental=${snap.incrementalZobrist}, fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}, mismatches=${snap.hashMismatches}`);
-    console.log(`   leafAttackBits=${snap.leafAttackBits} relationMasks=${snap.relationMasks} fastLeafRelations=${snap.fastLeafRelations} numericLeafEval=${snap.numericLeafEval} packedLeafRelations=${snap.packedLeafRelations} pieceList=${snap.pieceList} fullEvalMs=${Math.round(snap.evaluateBoardMs)} fastLeafMs=${Math.round(snap.fastLeafEvalMs)} fastLeafCount=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
+    console.log(`   Zobrist: fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}`);
+    console.log(`   numeric leaf: ms=${Math.round(snap.fastLeafEvalMs)} count=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
     if (snap.profile) {
         console.log(`   Profile (overlapping scopes): prepCheck=${Math.round(snap.prepareCheckMs)}ms prepMoves=${Math.round(snap.prepareMoveGenMs)}ms sort=${Math.round(snap.sortMovesMs)}ms/${snap.sortMovesCount} legality=${Math.round(snap.legalityCheckMs)}ms captureGen=${Math.round(snap.captureGenMs)}ms/${snap.captureGenCount} qs=${snap.quiescenceCalls} captureMoves=${snap.quiescenceCaptureMoves} evalCache=${snap.staticEvalCacheHits}/${snap.staticEvalCacheMisses}`);
     }
@@ -4559,17 +4499,12 @@ const clearEvalCache = () => {
 };
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
-const SEARCH_ENABLE_NMP = false;
-const SEARCH_ENABLE_LMR = false;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
-let SEARCH_DEFER_LEGALITY = true;
 let SEARCH_COLLECT_MOVE_SEQUENCE = true;
 
 // Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
-let SEARCH_INCREMENTAL_ZOBRIST = true;
 // 调试：增量后与全盘 hash 比对（仅校验脚本开启，正式搜索关闭）
-let SEARCH_ZOBRIST_VERIFY = false;
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -4614,51 +4549,8 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, deferLegality: searchDeferLegality, incrementalZobrist: searchIncrementalZobrist, leafAttackBits: searchLeafAttackBits, relationMasks: searchRelationMasks, fastLeafEval: searchFastLeafEval, fastLeafRelations: searchFastLeafRelations, numericLeafEval: searchNumericLeafEval, packedLeafRelations: searchPackedLeafRelations, fastSort: searchFastSort, fastPseudoMoves: searchFastPseudoMoves, numericCheck: searchNumericCheck, fastZobrist: searchFastZobrist, pieceList: searchPieceList, ttEvictionBatch: searchTTEvictionBatch, profile: searchProfile, zobristVerify: searchZobristVerify, collectMoveSequence: searchCollectMoveSequence } = payload;
-            if (typeof searchDeferLegality === 'boolean') {
-                SEARCH_DEFER_LEGALITY = searchDeferLegality;
-            }
-            if (typeof searchIncrementalZobrist === 'boolean') {
-                SEARCH_INCREMENTAL_ZOBRIST = searchIncrementalZobrist;
-            }
-            if (typeof searchLeafAttackBits === 'boolean') {
-                SEARCH_LEAF_ATTACK_BITS = searchLeafAttackBits;
-            }
-            if (typeof searchRelationMasks === 'boolean') {
-                SEARCH_RELATION_MASKS = searchRelationMasks;
-            }
-            if (typeof searchFastLeafEval === 'boolean') {
-                SEARCH_FAST_LEAF_EVAL = searchFastLeafEval;
-            }
-            if (typeof searchFastLeafRelations === 'boolean') {
-                SEARCH_FAST_LEAF_RELATIONS = searchFastLeafRelations;
-            }
-            if (typeof searchNumericLeafEval === 'boolean') {
-                SEARCH_NUMERIC_LEAF_EVAL = searchNumericLeafEval;
-            }
-            if (typeof searchPackedLeafRelations === 'boolean') {
-                SEARCH_PACKED_LEAF_RELATIONS = searchPackedLeafRelations;
-            }
-            if (typeof searchFastSort === 'boolean') {
-                SEARCH_FAST_SORT = searchFastSort;
-            }
-            if (typeof searchFastPseudoMoves === 'boolean') {
-                SEARCH_FAST_PSEUDO_MOVES = searchFastPseudoMoves;
-            }
-            if (typeof searchNumericCheck === 'boolean') {
-                SEARCH_NUMERIC_CHECK = searchNumericCheck;
-            }
-            if (typeof searchFastZobrist === 'boolean') {
-                SEARCH_FAST_ZOBRIST = searchFastZobrist;
-            }
-            if (typeof searchPieceList === 'boolean') {
-                SEARCH_PIECE_LIST = searchPieceList;
-            }
-            if (typeof searchTTEvictionBatch === 'number') {
-                transpositionTable.setEvictionBatch(searchTTEvictionBatch);
-            }
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, collectMoveSequence: searchCollectMoveSequence } = payload;
             SEARCH_PROFILE = !!searchProfile;
-            SEARCH_ZOBRIST_VERIFY = !!searchZobristVerify;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
@@ -4949,16 +4841,11 @@ const canDoNullMove = (board, color) => {
 
 // 搜索用 TT key：增量模式为 number，旧模式为 `${hash}:${side}` 字符串
 const makeSearchTTKey = (board, currentPlayer, boardHash) => {
-    if (SEARCH_INCREMENTAL_ZOBRIST) {
-        return zobristHasher.ttKeyFromHash(boardHash, currentPlayer);
-    }
-    perfStats.fullHashCount++;
-    return `${zobristHasher.hash(board)}:${currentPlayer}`;
+    return zobristHasher.ttKeyFromHash(boardHash, currentPlayer);
 };
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, move, movingPiece, captured) => {
-    if (!SEARCH_INCREMENTAL_ZOBRIST) return boardHash;
     perfStats.incrementalHashUpdates++;
     if (isEncodedMove(move)) {
         let newHash = boardHash;
@@ -4980,31 +4867,16 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
     return zobristHasher.updateHash(boardHash, move, movingPiece, captured);
 };
 
-const verifyBoardHash = (board, expectedHash) => {
-    if (!SEARCH_ZOBRIST_VERIFY) return;
-    perfStats.fullHashCount++;
-    const full = zobristHasher.hash(board);
-    if (full !== expectedHash) {
-        perfStats.hashMismatches++;
-    }
-};
-
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
 const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
-    let cacheKey;
-    if (SEARCH_INCREMENTAL_ZOBRIST) {
-        cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
-    } else {
-        perfStats.fullHashCount++;
-        cacheKey = zobristHasher.evalCacheKey(board, searchInitiator, gameStage);
-    }
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
     if (evalCache.has(cacheKey)) {
         if (SEARCH_PROFILE) perfStats.staticEvalCacheHits++;
         return evalCache.get(cacheKey);
     }
     if (SEARCH_PROFILE) perfStats.staticEvalCacheMisses++;
     let net;
-    if (SEARCH_FAST_LEAF_EVAL && !SEARCH_COLLECT_MOVE_SEQUENCE) {
+    if (!SEARCH_COLLECT_MOVE_SEQUENCE) {
         net = evaluateSearchLeafFast(board, searchInitiator, gameStage);
     } else {
         const evalResult = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
@@ -5028,9 +4900,8 @@ const generateCapturesForSearch = (board, currentPlayer) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     if (SEARCH_PROFILE) perfStats.captureGenCount++;
     const captures = [];
-    const defer = SEARCH_DEFER_LEGALITY;
     const pieceState = activePieceStateFor(board);
-    if (pieceState && SEARCH_FAST_PSEUDO_MOVES && defer) {
+    if (pieceState) {
         const records = pieceState.records;
         const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
@@ -5054,9 +4925,8 @@ const generateCapturesForSearch = (board, currentPlayer) => {
             const from = { r, c };
             const pseudo = getPieceMoves(board, from, piece);
             perfStats.pseudoMovesGenerated += pseudo.length;
-            const useMoves = defer ? pseudo : filterLegalMoves(board, from, piece, pseudo);
-            for (let i = 0; i < useMoves.length; i++) {
-                const to = useMoves[i];
+            for (let i = 0; i < pseudo.length; i++) {
+                const to = pseudo[i];
                 if (board[to.r][to.c]) captures.push(encodeMoveFromCoords(r, c, to.r, to.c));
             }
         }
@@ -5112,19 +4982,17 @@ const quiescence = (
 
     let bestEval = standPat;
     let bestMoveSequence = [];
-    const defer = SEARCH_DEFER_LEGALITY;
 
     for (let i = 0; i < captures.length; i++) {
         const move = captures[i];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (defer && leavesOwnKingUnsafe(b, currentPlayer)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer)) {
             unmakeSearchMove(b, move, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
-        verifyBoardHash(b, nextHash);
         perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
@@ -5241,7 +5109,7 @@ const alphaBeta = (
 
     // 空着剪枝：仅 maximizing；完整评估下保守启用
     if (
-        SEARCH_ENABLE_NMP &&
+        false &&
         allowNull &&
         maximizing &&
         d >= 3 &&
@@ -5300,7 +5168,7 @@ const alphaBeta = (
         // moveIndex 含伪合法序；非法着跳过后略偏保守（少降深），不影响正确性
         let reduction = 0;
         if (
-            SEARCH_ENABLE_LMR &&
+            false &&
             d >= 4 &&
             moveIndex >= 4 &&
             !inCheck &&
@@ -5313,13 +5181,12 @@ const alphaBeta = (
 
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (SEARCH_DEFER_LEGALITY && leavesOwnKingUnsafe(b, currentPlayerColor)) {
+        if (leavesOwnKingUnsafe(b, currentPlayerColor)) {
             unmakeSearchMove(b, move, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
-        verifyBoardHash(b, nextHash);
         legalMovesFound++;
         perfStats.legalMovesSearched++;
 
@@ -5383,7 +5250,7 @@ const alphaBeta = (
     }
 
     // 延迟合法性：伪合法非空但无一合法 → 将死/困毙
-    if (SEARCH_DEFER_LEGALITY && legalMovesFound === 0) {
+    if (legalMovesFound === 0) {
         return terminalScore(inCheck);
     }
 
@@ -5392,7 +5259,7 @@ const alphaBeta = (
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, exactRootScores = false, collectMoveSequenceOverride = null) => {
+const getBestMoveInternal = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, exactRootScores = false, collectMoveSequenceOverride = null) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -5496,18 +5363,16 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
   };
 
   const workBoard = board.map((row) => [...row]);
-  activeSearchPieceState = SEARCH_PIECE_LIST ? createSearchPieceState(workBoard) : null;
+  activeSearchPieceState = createSearchPieceState(workBoard);
   const NULL_WINDOW_EPS = 1e-6;
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hash(board);
   perfStats.fullHashCount++;
-  const rootTTKey = SEARCH_INCREMENTAL_ZOBRIST
-    ? zobristHasher.ttKeyFromHash(rootHash, turn)
-    : `${rootHash}:${turn}`;
+  const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, turn);
 
   console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, incrZobrist: ${SEARCH_INCREMENTAL_ZOBRIST}, leafAttackBits: ${SEARCH_LEAF_ATTACK_BITS}, relationMasks: ${SEARCH_RELATION_MASKS}, collectMoveSequence: ${SEARCH_COLLECT_MOVE_SEQUENCE}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
+    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, collectMoveSequence: ${SEARCH_COLLECT_MOVE_SEQUENCE}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
   );
 
   let completedDepth = 0;
@@ -5538,7 +5403,6 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
       const movingPiece = workBoard[item.from.r][item.from.c];
       const captured = makeMove(workBoard, item.from, item.to);
       const childHash = childBoardHash(rootHash, item, movingPiece, captured);
-      verifyBoardHash(workBoard, childHash);
 
       let alphaBetaResult;
       let scoreIsExact = true;
@@ -5633,5 +5497,19 @@ const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, e
   activeSearchPieceState = null;
   return result;
 };
+
+// Play keeps root fail-low probes as bounds; analysis re-searches every final
+// root move and retains PV data. Keeping their entry points separate prevents
+// future play-path work from silently changing analysis semantics.
+const getBestMoveForPlay = (board, turn, depth, ply, enableTimeLimit) =>
+  getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, false, false);
+
+const getBestMoveForAnalysis = (board, turn, depth, ply, enableTimeLimit) =>
+  getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, true, true);
+
+const getBestMove = (board, turn, depth = 6, ply = 0, enableTimeLimit = false, exactRootScores = false) =>
+  exactRootScores
+    ? getBestMoveForAnalysis(board, turn, depth, ply, enableTimeLimit)
+    : getBestMoveForPlay(board, turn, depth, ply, enableTimeLimit);
 
 // --- WORKER LISTENER (统一消息处理) ---
