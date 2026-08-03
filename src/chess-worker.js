@@ -256,6 +256,7 @@ const scratchRelCtx = {
 };
 
 const scratchLeafPiecesInfo = [];
+const scratchLeafInfoByStateSlot = new Array(32);
 const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     piece: null,
     pieceCode: 0,
@@ -369,7 +370,8 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
         blackGeneralSq,
         moverStack: new Int8Array(32),
         capturedStack: new Int8Array(32),
-        stackDepth: 0
+        stackDepth: 0,
+        controlState: null
     };
 };
 
@@ -682,7 +684,9 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
             info.r = record.r;
             info.c = record.c;
             info.sq = record.sq;
+            info.stateSlot = i;
             info.pieceIndex = count - 1;
+            scratchLeafInfoByStateSlot[i] = info;
             info.materialValue = materialValue;
             info.positionValue = positionValue;
             piecesInfo[count - 1] = info;
@@ -730,9 +734,30 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
     piecesInfo.length = count;
 
     if (pieceState) {
-        calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
-        calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
-        calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
+        const incremental = pieceState.controlState;
+        if (incremental && incremental.needsRefresh) refreshIncrementalControlState(pieceState);
+        if (!incremental || SEARCH_VERIFY_INCREMENTAL_CONTROL) {
+            calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
+            if (SEARCH_VERIFY_INCREMENTAL_CONTROL) verifyIncrementalControlState(pieceState, piecesInfo);
+        }
+        if (incremental) {
+            for (let i = 0; i < count; i++) {
+                const info = piecesInfo[i];
+                info.threatValue = 0;
+                info.safetyValue = 0;
+                info.tacticValue = 0;
+                info.mobilityValue = incremental.pieceMobility[info.stateSlot];
+            }
+            calculateNumericSearchLeafThreatValues(
+                piecesInfo, searchInitiator, incremental.attackMasks, incremental.guardMasks, pieceState
+            );
+            calculateNumericSearchLeafSafetyValues(
+                piecesInfo, pieceState.squareCodes, incremental.redBits, incremental.blackBits
+            );
+        } else {
+            calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
+            calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
+        }
     } else {
         clearRelationMasks(true);
         clearAttackBits(scratchRedAttack);
@@ -823,9 +848,16 @@ const getGeneralPos = (board, color) => {
 const makeMove = (board, from, to) => {
     const piece = board[from.r][from.c];
     const captured = board[to.r][to.c];
+    const pieceState = activePieceStateFor(board);
+    const fromSq = from.r * 9 + from.c;
+    const toSq = to.r * 9 + to.c;
+    const moverSlot = pieceState ? pieceState.squareToSlot[fromSq] : -1;
+    const capturedSlot = pieceState ? pieceState.squareToSlot[toSq] : -1;
     board[to.r][to.c] = piece;
     board[from.r][from.c] = null;
-    updatePieceStateAfterMake(board, from.r * 9 + from.c, to.r * 9 + to.c);
+    beginIncrementalControlUpdate(pieceState, fromSq, toSq, moverSlot, capturedSlot);
+    updatePieceStateAfterMake(board, fromSq, toSq);
+    finishIncrementalControlUpdate(pieceState);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: to.r, c: to.c };
     }
@@ -837,9 +869,16 @@ const makeMove = (board, from, to) => {
 
 const unmakeMove = (board, from, to, captured) => {
     const piece = board[to.r][to.c];
+    const pieceState = activePieceStateFor(board);
+    const fromSq = from.r * 9 + from.c;
+    const toSq = to.r * 9 + to.c;
     board[from.r][from.c] = piece;
     board[to.r][to.c] = captured;
-    updatePieceStateAfterUnmake(board, from.r * 9 + from.c, to.r * 9 + to.c);
+    const moverSlot = pieceState ? pieceState.squareToSlot[toSq] : -1;
+    const capturedSlot = pieceState ? pieceState.capturedStack[pieceState.stackDepth - 1] : -1;
+    beginIncrementalControlUpdate(pieceState, fromSq, toSq, moverSlot, capturedSlot);
+    updatePieceStateAfterUnmake(board, fromSq, toSq);
+    finishIncrementalControlUpdate(pieceState);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: from.r, c: from.c };
     }
@@ -875,6 +914,340 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
         if (fromSq === legSq || toSq === legSq || fromSq === horseSq || toSq === horseSq) return false;
     }
     return true;
+};
+
+const createIncrementalControlState = () => ({
+    pieceMasks: new Uint32Array(32 * ATTACK_WORDS),
+    pieceAttackTargets: new Uint32Array(32 * ATTACK_WORDS),
+    pieceGuardTargets: new Uint32Array(32 * ATTACK_WORDS),
+    pieceDependencySquares: new Uint32Array(32 * ATTACK_WORDS),
+    pieceMobility: new Int16Array(32),
+    redCounts: new Uint8Array(REL_SQUARES),
+    blackCounts: new Uint8Array(REL_SQUARES),
+    redBits: new Uint32Array(ATTACK_WORDS),
+    blackBits: new Uint32Array(ATTACK_WORDS),
+    attackMasks: new Uint32Array(REL_SQUARES),
+    guardMasks: new Uint32Array(REL_SQUARES),
+    dependencySlots: new Uint32Array(REL_SQUARES),
+    needsRefresh: false,
+    dirtyMarks: new Uint8Array(32),
+    dirtySlots: []
+});
+
+const clearIncrementalControlForSlot = (state, slot) => {
+    const control = state.controlState;
+    const offset = slot * ATTACK_WORDS;
+    const counts = state.pieceCodes[slot] < 8 ? control.redCounts : control.blackCounts;
+    const bits = state.pieceCodes[slot] < 8 ? control.redBits : control.blackBits;
+    for (let word = 0; word < ATTACK_WORDS; word++) {
+        let mask = control.pieceMasks[offset + word] >>> 0;
+        while (mask !== 0) {
+            const bit = mask & -mask;
+            const sq = (word << 5) + 31 - Math.clz32(bit);
+            if (--counts[sq] === 0) bits[word] &= ~bit;
+            mask ^= bit;
+        }
+        control.pieceMasks[offset + word] = 0;
+    }
+    const slotBit = 1 << slot;
+    for (let word = 0; word < ATTACK_WORDS; word++) {
+        let attackTargets = control.pieceAttackTargets[offset + word] >>> 0;
+        while (attackTargets !== 0) {
+            const bit = attackTargets & -attackTargets;
+            const sq = (word << 5) + 31 - Math.clz32(bit);
+            control.attackMasks[sq] &= ~slotBit;
+            attackTargets ^= bit;
+        }
+        let guardTargets = control.pieceGuardTargets[offset + word] >>> 0;
+        while (guardTargets !== 0) {
+            const bit = guardTargets & -guardTargets;
+            const sq = (word << 5) + 31 - Math.clz32(bit);
+            control.guardMasks[sq] &= ~slotBit;
+            guardTargets ^= bit;
+        }
+        control.pieceAttackTargets[offset + word] = 0;
+        control.pieceGuardTargets[offset + word] = 0;
+    }
+    control.pieceMobility[slot] = 0;
+};
+
+const clearIncrementalDependenciesForSlot = (state, slot) => {
+    const control = state.controlState;
+    const offset = slot * ATTACK_WORDS;
+    const slotBit = 1 << slot;
+    for (let word = 0; word < ATTACK_WORDS; word++) {
+        let dependencies = control.pieceDependencySquares[offset + word] >>> 0;
+        while (dependencies !== 0) {
+            const bit = dependencies & -dependencies;
+            const sq = (word << 5) + 31 - Math.clz32(bit);
+            control.dependencySlots[sq] &= ~slotBit;
+            dependencies ^= bit;
+        }
+        control.pieceDependencySquares[offset + word] = 0;
+    }
+};
+
+const addIncrementalDependencySquare = (state, slot, sq) => {
+    const control = state.controlState;
+    const word = sq >>> 5;
+    const bit = 1 << (sq & 31);
+    const offset = slot * ATTACK_WORDS + word;
+    if ((control.pieceDependencySquares[offset] & bit) !== 0) return;
+    control.pieceDependencySquares[offset] |= bit;
+    control.dependencySlots[sq] |= 1 << slot;
+};
+
+const addIncrementalControlSquare = (state, slot, sq, addMobility) => {
+    const control = state.controlState;
+    const word = sq >>> 5;
+    const bit = 1 << (sq & 31);
+    const offset = slot * ATTACK_WORDS + word;
+    if ((control.pieceMasks[offset] & bit) === 0) {
+        control.pieceMasks[offset] |= bit;
+        const counts = state.pieceCodes[slot] < 8 ? control.redCounts : control.blackCounts;
+        const bits = state.pieceCodes[slot] < 8 ? control.redBits : control.blackBits;
+        if (counts[sq]++ === 0) bits[word] |= bit;
+    }
+    if (addMobility) control.pieceMobility[slot] += EVALUATION_PARAMETERS.mobility.baseMoveValue;
+};
+
+const addIncrementalOccupiedRelation = (state, slot, sq, targetCode) => {
+    const control = state.controlState;
+    const word = sq >>> 5;
+    const squareBit = 1 << (sq & 31);
+    const slotBit = 1 << slot;
+    const offset = slot * ATTACK_WORDS + word;
+    const isEnemy = (targetCode < 8) !== (state.pieceCodes[slot] < 8);
+    const targets = isEnemy ? control.pieceAttackTargets : control.pieceGuardTargets;
+    if ((targets[offset] & squareBit) !== 0) return;
+    targets[offset] |= squareBit;
+    if (isEnemy) control.attackMasks[sq] |= slotBit;
+    else if ((targetCode & 7) !== 1) control.guardMasks[sq] |= slotBit;
+};
+
+const addIncrementalRelationSquare = (state, slot, sq, addMobility) => {
+    const targetCode = state.squareCodes[sq];
+    if (targetCode === 0) addIncrementalControlSquare(state, slot, sq, addMobility);
+    else addIncrementalOccupiedRelation(state, slot, sq, targetCode);
+};
+
+const rebuildIncrementalDependenciesForSlot = (state, slot) => {
+    const record = state.records[slot];
+    if (!record || !record.alive) return;
+    const pieceCode = state.pieceCodes[slot];
+    const pieceType = pieceCode & 7;
+    const colorIdx = pieceCode < 8 ? 0 : 1;
+    if (pieceType === 2 || pieceType === 6) {
+        for (let dir = 0, rayIndex = record.sq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+            const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+            for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                addIncrementalDependencySquare(state, slot, SEARCH_RAY_SQUARES[rayPos]);
+            }
+        }
+        return;
+    }
+    if (pieceType === 1 || pieceType === 5 || pieceType === 7) {
+        const dests = pieceType === 1
+            ? SEARCH_GENERAL_DEST[colorIdx][record.sq]
+            : pieceType === 5
+                ? SEARCH_ADVISOR_DEST[colorIdx][record.sq]
+                : SEARCH_SOLDIER_DEST[colorIdx][record.sq];
+        for (let i = 0; i < dests.length; i++) addIncrementalDependencySquare(state, slot, dests[i]);
+        return;
+    }
+    const dests = pieceType === 3 ? SEARCH_HORSE_DEST[record.sq] : SEARCH_ELEPHANT_DEST[colorIdx][record.sq];
+    for (let i = 0; i < dests.length; i++) {
+        const packed = dests[i];
+        addIncrementalDependencySquare(state, slot, packed >>> 7);
+        addIncrementalDependencySquare(state, slot, packed & MOVE_TO_MASK);
+    }
+};
+
+const rebuildIncrementalControlForSlot = (state, slot) => {
+    const record = state.records[slot];
+    if (!record || !record.alive) return;
+    const squareCodes = state.squareCodes;
+    const pieceCode = state.pieceCodes[slot];
+    const pieceType = pieceCode & 7;
+    const colorIdx = pieceCode < 8 ? 0 : 1;
+    const fromSq = record.sq;
+    if (pieceType === 1 || pieceType === 5 || pieceType === 7) {
+        const dests = pieceType === 1
+            ? SEARCH_GENERAL_DEST[colorIdx][fromSq]
+            : pieceType === 5
+                ? SEARCH_ADVISOR_DEST[colorIdx][fromSq]
+                : SEARCH_SOLDIER_DEST[colorIdx][fromSq];
+        for (let i = 0; i < dests.length; i++) addIncrementalRelationSquare(state, slot, dests[i], true);
+        return;
+    }
+    if (pieceType === 3 || pieceType === 4) {
+        const dests = pieceType === 3 ? SEARCH_HORSE_DEST[fromSq] : SEARCH_ELEPHANT_DEST[colorIdx][fromSq];
+        for (let i = 0; i < dests.length; i++) {
+            const packed = dests[i];
+            if (squareCodes[packed >>> 7] === 0) addIncrementalRelationSquare(state, slot, packed & MOVE_TO_MASK, true);
+        }
+        return;
+    }
+    for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+        const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+        let screenFound = false;
+        for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+            const sq = SEARCH_RAY_SQUARES[rayPos];
+            const occupied = squareCodes[sq] !== 0;
+            if (pieceType === 2) {
+                if (occupied) {
+                    addIncrementalOccupiedRelation(state, slot, sq, squareCodes[sq]);
+                    break;
+                }
+                addIncrementalControlSquare(state, slot, sq, true);
+            } else if (!screenFound) {
+                if (occupied) screenFound = true;
+                else controlMobilityOnly(state, slot);
+            } else if (occupied) {
+                addIncrementalOccupiedRelation(state, slot, sq, squareCodes[sq]);
+                break;
+            } else {
+                addIncrementalControlSquare(state, slot, sq, false);
+            }
+        }
+    }
+};
+
+const controlMobilityOnly = (state, slot) => {
+    state.controlState.pieceMobility[slot] += EVALUATION_PARAMETERS.mobility.baseMoveValue;
+};
+
+const markIncrementalControlDirtySlots = (state, fromSq, toSq, moverSlot, capturedSlot) => {
+    const control = state.controlState;
+    const dirty = control.dirtySlots;
+    dirty.length = 0;
+    const mark = (slot) => {
+        if (slot < 0 || control.dirtyMarks[slot]) return;
+        control.dirtyMarks[slot] = 1;
+        dirty.push(slot);
+    };
+    mark(moverSlot);
+    mark(capturedSlot);
+    let dependencies = (control.dependencySlots[fromSq] | control.dependencySlots[toSq]) >>> 0;
+    while (dependencies !== 0) {
+        const bit = dependencies & -dependencies;
+        mark(31 - Math.clz32(bit));
+        dependencies ^= bit;
+    }
+};
+
+const beginIncrementalControlUpdate = (state, fromSq, toSq, moverSlot, capturedSlot) => {
+    if (!state || !state.controlState) return;
+    if (SEARCH_ENABLE_LAZY_INCREMENTAL_CONTROL) {
+        state.controlState.needsRefresh = true;
+        return;
+    }
+    markIncrementalControlDirtySlots(state, fromSq, toSq, moverSlot, capturedSlot);
+    const dirty = state.controlState.dirtySlots;
+    if (SEARCH_COLLECT_METRICS) {
+        perfStats.incrementalControlUpdates++;
+        perfStats.incrementalControlDirtySlots += dirty.length;
+    }
+    for (let i = 0; i < dirty.length; i++) {
+        clearIncrementalControlForSlot(state, dirty[i]);
+        clearIncrementalDependenciesForSlot(state, dirty[i]);
+    }
+};
+
+const finishIncrementalControlUpdate = (state) => {
+    if (!state || !state.controlState) return;
+    if (SEARCH_ENABLE_LAZY_INCREMENTAL_CONTROL) return;
+    const control = state.controlState;
+    const dirty = control.dirtySlots;
+    for (let i = 0; i < dirty.length; i++) {
+        const slot = dirty[i];
+        rebuildIncrementalControlForSlot(state, slot);
+        rebuildIncrementalDependenciesForSlot(state, slot);
+        control.dirtyMarks[slot] = 0;
+    }
+    dirty.length = 0;
+};
+
+const initializeIncrementalControlState = (state) => {
+    state.controlState = createIncrementalControlState();
+    for (let slot = 0; slot < state.records.length; slot++) {
+        rebuildIncrementalControlForSlot(state, slot);
+        rebuildIncrementalDependenciesForSlot(state, slot);
+    }
+};
+
+const refreshIncrementalControlState = (state) => {
+    const control = state.controlState;
+    control.pieceMasks.fill(0);
+    control.pieceAttackTargets.fill(0);
+    control.pieceGuardTargets.fill(0);
+    control.pieceDependencySquares.fill(0);
+    control.pieceMobility.fill(0);
+    control.redCounts.fill(0);
+    control.blackCounts.fill(0);
+    control.redBits.fill(0);
+    control.blackBits.fill(0);
+    control.attackMasks.fill(0);
+    control.guardMasks.fill(0);
+    control.dependencySlots.fill(0);
+    control.dirtyMarks.fill(0);
+    control.dirtySlots.length = 0;
+    for (let slot = 0; slot < state.records.length; slot++) {
+        rebuildIncrementalControlForSlot(state, slot);
+        rebuildIncrementalDependenciesForSlot(state, slot);
+    }
+    control.needsRefresh = false;
+    if (SEARCH_COLLECT_METRICS) perfStats.incrementalControlLazyRefreshes++;
+};
+
+// Benchmark-only oracle. It deliberately rebuilds a separate state so checking
+// the cache cannot reuse leaf-evaluation scratch buffers or affect search data.
+const verifyIncrementalControlState = (state, piecesInfo) => {
+    if (!state || !state.controlState) return;
+    const cached = state.controlState;
+    let mismatch = false;
+    for (let word = 0; word < ATTACK_WORDS; word++) {
+        if (cached.redBits[word] !== scratchRedAttack[word] || cached.blackBits[word] !== scratchBlackAttack[word]) {
+            mismatch = true;
+            break;
+        }
+    }
+    if (!mismatch) {
+        for (let i = 0; i < piecesInfo.length; i++) {
+            const info = piecesInfo[i];
+            if (cached.pieceMobility[info.stateSlot] !== info.mobilityValue) {
+                mismatch = true;
+                break;
+            }
+        }
+    }
+    if (!mismatch) {
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            let expectedAttack = 0;
+            let expectedGuard = 0;
+            let attack = scratchAttackMask[sq] >>> 0;
+            while (attack !== 0) {
+                const bit = attack & -attack;
+                expectedAttack |= 1 << piecesInfo[31 - Math.clz32(bit)].stateSlot;
+                attack ^= bit;
+            }
+            let guard = scratchGuardMask[sq] >>> 0;
+            while (guard !== 0) {
+                const bit = guard & -guard;
+                expectedGuard |= 1 << piecesInfo[31 - Math.clz32(bit)].stateSlot;
+                guard ^= bit;
+            }
+            if ((cached.attackMasks[sq] >>> 0) !== (expectedAttack >>> 0) ||
+                (cached.guardMasks[sq] >>> 0) !== (expectedGuard >>> 0)) {
+                mismatch = true;
+                break;
+            }
+        }
+    }
+    if (SEARCH_COLLECT_METRICS) {
+        perfStats.incrementalControlVerificationRuns++;
+        if (mismatch) perfStats.incrementalControlVerificationFailures++;
+    }
 };
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
@@ -949,9 +1322,14 @@ const makeSearchMove = (board, move) => {
     const tr = (to / 9) | 0, tc = to % 9;
     const piece = board[fr][fc];
     const captured = board[tr][tc];
+    const pieceState = activePieceStateFor(board);
+    const moverSlot = pieceState ? pieceState.squareToSlot[from] : -1;
+    const capturedSlot = pieceState ? pieceState.squareToSlot[to] : -1;
     board[tr][tc] = piece;
     board[fr][fc] = null;
+    beginIncrementalControlUpdate(pieceState, from, to, moverSlot, capturedSlot);
     updatePieceStateAfterMake(board, from, to);
+    finishIncrementalControlUpdate(pieceState);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: tr, c: tc };
     }
@@ -971,9 +1349,14 @@ const unmakeSearchMove = (board, move, captured) => {
     const fr = (from / 9) | 0, fc = from % 9;
     const tr = (to / 9) | 0, tc = to % 9;
     const piece = board[tr][tc];
+    const pieceState = activePieceStateFor(board);
     board[fr][fc] = piece;
     board[tr][tc] = captured;
+    const moverSlot = pieceState ? pieceState.squareToSlot[to] : -1;
+    const capturedSlot = pieceState ? pieceState.capturedStack[pieceState.stackDepth - 1] : -1;
+    beginIncrementalControlUpdate(pieceState, from, to, moverSlot, capturedSlot);
     updatePieceStateAfterUnmake(board, from, to);
+    finishIncrementalControlUpdate(pieceState);
     if (piece && piece.type === 'general') {
         generalPosCache[piece.color] = { r: fr, c: fc };
     }
@@ -2576,6 +2959,48 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
     return exchangeScore;
 };
 
+const calculateStaticExchangeScoreFromStableMasks = (threatenedPiece, state, attackMask, guardMask) => {
+    const attackerCounts = seeAttackerTypeCounts;
+    const guardCounts = seeGuardTypeCounts;
+    attackerCounts.fill(0);
+    guardCounts.fill(0);
+    seeMaterialByType.fill(0);
+    const sq = threatenedPiece.sq;
+    let am = attackMask[sq] >>> 0;
+    while (am !== 0) {
+        const bit = am & -am;
+        const slot = 31 - Math.clz32(bit);
+        const type = state.pieceCodes[slot] & 7;
+        attackerCounts[type]++;
+        seeMaterialByType[type] = state.materialValues[type];
+        am ^= bit;
+    }
+    let gm = guardMask[sq] >>> 0;
+    while (gm !== 0) {
+        const bit = gm & -gm;
+        const slot = 31 - Math.clz32(bit);
+        const type = state.pieceCodes[slot] & 7;
+        guardCounts[type]++;
+        seeMaterialByType[type] = state.materialValues[type];
+        gm ^= bit;
+    }
+    let exchangeScore = 0;
+    let isFirstExchange = true;
+    const targetValue = threatenedPiece.materialValue;
+    while (true) {
+        const attackerValue = takeLowestSeeMaterial(attackerCounts, seeMaterialByType);
+        const guardValue = takeLowestSeeMaterial(guardCounts, seeMaterialByType);
+        if (attackerValue === Infinity || guardValue === Infinity) break;
+        if (isFirstExchange) {
+            exchangeScore += targetValue;
+            isFirstExchange = false;
+        }
+        exchangeScore -= attackerValue;
+        if (hasAnySeeMaterial(attackerCounts)) exchangeScore += guardValue;
+    }
+    return exchangeScore;
+};
+
 // 计算威胁值（基于完整的威胁关系）
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
@@ -2691,7 +3116,9 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null, forS
 
 // Search leaves never construct UI relation lists. This path consumes only
 // pieceCode/sq and the masks emitted by the numeric relation builder.
-const calculateNumericSearchLeafThreatValues = (piecesInfo, currentPlayer) => {
+const calculateNumericSearchLeafThreatValues = (
+    piecesInfo, currentPlayer, attackMask = scratchAttackMask, guardMask = scratchGuardMask, stableState = null
+) => {
     if (currentPlayer) {
         perfStats.calculateThreatValuesCount[currentPlayer]++;
     }
@@ -2700,18 +3127,20 @@ const calculateNumericSearchLeafThreatValues = (piecesInfo, currentPlayer) => {
     for (let ti = 0; ti < piecesInfo.length; ti++) {
         const threatenedPiece = piecesInfo[ti];
         const sq = threatenedPiece.sq;
-        const attackers = scratchAttackMask[sq];
+        const attackers = attackMask[sq];
         if (attackers === 0) continue;
 
-        const firstAttacker = piecesInfo[lowestSetBitIndex(attackers)];
+        const firstAttacker = stableState
+            ? scratchLeafInfoByStateSlot[lowestSetBitIndex(attackers)]
+            : piecesInfo[lowestSetBitIndex(attackers)];
         if ((threatenedPiece.pieceCode & 7) === 1) {
             firstAttacker.threatValue += checkBonus;
-        } else if (scratchGuardMask[sq] === 0) {
+        } else if (guardMask[sq] === 0) {
             firstAttacker.threatValue += threatenedPiece.materialValue;
         } else {
-            const sseScore = calculateStaticExchangeScoreFromMasks(
-                threatenedPiece, piecesInfo, scratchAttackMask, scratchGuardMask
-            );
+            const sseScore = stableState
+                ? calculateStaticExchangeScoreFromStableMasks(threatenedPiece, stableState, attackMask, guardMask)
+                : calculateStaticExchangeScoreFromMasks(threatenedPiece, piecesInfo, attackMask, guardMask);
             if (sseScore > 0) {
                 firstAttacker.threatValue += sseScore * 0.5;
             }
@@ -2802,13 +3231,15 @@ const calculateSafetyValues = (piecesInfo, boardInfo, board = null, forSearchLea
     }
 };
 
-const calculateNumericSearchLeafSafetyValues = (piecesInfo, squareCodes) => {
+const calculateNumericSearchLeafSafetyValues = (
+    piecesInfo, squareCodes, redAttack = scratchRedAttack, blackAttack = scratchBlackAttack
+) => {
     for (let gi = 0; gi < piecesInfo.length; gi++) {
         const general = piecesInfo[gi];
         if ((general.pieceCode & 7) !== 1) continue;
 
         const isRed = general.pieceCode < 8;
-        const enemyBits = isRed ? scratchBlackAttack : scratchRedAttack;
+        const enemyBits = isRed ? blackAttack : redAttack;
         const destinations = SEARCH_GENERAL_DEST[isRed ? 0 : 1][general.sq];
         for (let i = 0; i < destinations.length; i++) {
             const sq = destinations[i];
@@ -4631,6 +5062,11 @@ let perfStats = {
     pvsResearches: 0,
     pvsProbeNodes: 0,
     pvsResearchNodes: 0,
+    incrementalControlUpdates: 0,
+    incrementalControlDirtySlots: 0,
+    incrementalControlVerificationRuns: 0,
+    incrementalControlVerificationFailures: 0,
+    incrementalControlLazyRefreshes: 0,
     evaluateBoardMs: 0,
     prepareSearchInfoMs: 0,
     startTime: Date.now()
@@ -4679,6 +5115,11 @@ const resetPerfStats = () => {
     perfStats.pvsResearches = 0;
     perfStats.pvsProbeNodes = 0;
     perfStats.pvsResearchNodes = 0;
+    perfStats.incrementalControlUpdates = 0;
+    perfStats.incrementalControlDirtySlots = 0;
+    perfStats.incrementalControlVerificationRuns = 0;
+    perfStats.incrementalControlVerificationFailures = 0;
+    perfStats.incrementalControlLazyRefreshes = 0;
     perfStats.evaluateBoardMs = 0;
     perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
@@ -4742,6 +5183,17 @@ const snapshotPerfStats = () => {
             probeNodes: perfStats.pvsProbeNodes,
             researchNodes: perfStats.pvsResearchNodes
         } : null,
+        incrementalControl: SEARCH_COLLECT_METRICS ? {
+            enabled: SEARCH_ENABLE_INCREMENTAL_CONTROL,
+            updates: perfStats.incrementalControlUpdates,
+            averageDirtySlots: perfStats.incrementalControlUpdates
+                ? Number((perfStats.incrementalControlDirtySlots / perfStats.incrementalControlUpdates).toFixed(2))
+                : 0,
+            verificationRuns: perfStats.incrementalControlVerificationRuns,
+            verificationFailures: perfStats.incrementalControlVerificationFailures,
+            lazy: SEARCH_ENABLE_LAZY_INCREMENTAL_CONTROL,
+            lazyRefreshes: perfStats.incrementalControlLazyRefreshes
+        } : null,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         moveOrdering: SEARCH_COLLECT_METRICS ? {
@@ -4789,6 +5241,9 @@ let SEARCH_COLLECT_METRICS = false;
 let SEARCH_ENABLE_NON_ROOT_PVS = false;
 let SEARCH_ENABLE_KING_SAFETY_FAST_PATH = true;
 let SEARCH_VERIFY_KING_SAFETY_FAST_PATH = false;
+let SEARCH_ENABLE_INCREMENTAL_CONTROL = false;
+let SEARCH_VERIFY_INCREMENTAL_CONTROL = false;
+let SEARCH_ENABLE_LAZY_INCREMENTAL_CONTROL = false;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 let SEARCH_COLLECT_MOVE_SEQUENCE = true;
@@ -4856,12 +5311,15 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, incrementalControl: searchIncrementalControl = false, verifyIncrementalControl: searchVerifyIncrementalControl = false, lazyIncrementalControl: searchLazyIncrementalControl = false, collectMoveSequence: searchCollectMoveSequence } = payload;
             SEARCH_PROFILE = !!searchProfile;
             SEARCH_COLLECT_METRICS = !!searchMetrics;
             SEARCH_ENABLE_NON_ROOT_PVS = !!searchNonRootPvs;
             SEARCH_ENABLE_KING_SAFETY_FAST_PATH = !!searchKingSafetyFastPath;
             SEARCH_VERIFY_KING_SAFETY_FAST_PATH = !!searchVerifyKingSafetyFastPath;
+            SEARCH_ENABLE_INCREMENTAL_CONTROL = !!searchIncrementalControl;
+            SEARCH_VERIFY_INCREMENTAL_CONTROL = !!searchVerifyIncrementalControl && SEARCH_ENABLE_INCREMENTAL_CONTROL;
+            SEARCH_ENABLE_LAZY_INCREMENTAL_CONTROL = !!searchLazyIncrementalControl && SEARCH_ENABLE_INCREMENTAL_CONTROL;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
@@ -5952,6 +6410,9 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
 
   const workBoard = board.map((row) => [...row]);
   activeSearchPieceState = createSearchPieceState(workBoard, gameStage);
+  if (SEARCH_ENABLE_INCREMENTAL_CONTROL && activeSearchPieceState) {
+    initializeIncrementalControlState(activeSearchPieceState);
+  }
   const NULL_WINDOW_EPS = 1e-6;
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
