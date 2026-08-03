@@ -685,10 +685,6 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
             info.pieceIndex = count - 1;
             info.materialValue = materialValue;
             info.positionValue = positionValue;
-            info.threatValue = 0;
-            info.safetyValue = 0;
-            info.tacticValue = 0;
-            info.mobilityValue = 0;
             piecesInfo[count - 1] = info;
         }
     } else {
@@ -2008,6 +2004,11 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
 
     for (let pi = 0; pi < piecesInfo.length; pi++) {
         const info = piecesInfo[pi];
+        // Slots are reused between leaves. Clear derived scores while already
+        // visiting each piece to build its packed attack and guard relations.
+        info.threatValue = 0;
+        info.safetyValue = 0;
+        info.tacticValue = 0;
         const fromSq = info.sq;
         const pieceCode = info.pieceCode;
         const pieceType = pieceCode & 7;
@@ -2427,8 +2428,29 @@ const isPositionAcceptable = (board, from, to, currentPlayer, boardInfo = null, 
 // SEE 排序复用缓冲，降低叶评估 GC
 const seeAttackerScratch = [];
 const seeGuardScratch = [];
-const seeAttackerMatScratch = [];
-const seeGuardMatScratch = [];
+const seeAttackerTypeCounts = new Uint8Array(8);
+const seeGuardTypeCounts = new Uint8Array(8);
+const seeMaterialByType = new Int32Array(8);
+
+const takeLowestSeeMaterial = (counts, materialByType) => {
+    let bestType = 0;
+    let bestValue = Infinity;
+    for (let type = 1; type < counts.length; type++) {
+        if (counts[type] !== 0 && materialByType[type] < bestValue) {
+            bestType = type;
+            bestValue = materialByType[type];
+        }
+    }
+    if (bestType !== 0) counts[bestType]--;
+    return bestValue;
+};
+
+const hasAnySeeMaterial = (counts) => {
+    for (let type = 1; type < counts.length; type++) {
+        if (counts[type] !== 0) return true;
+    }
+    return false;
+};
 
 // 有根子简化 SEE（与旧实现逐行等价）；每个目标只应调用一次
 const calculateStaticExchangeScore = (threatenedPiece) => {
@@ -2462,57 +2484,51 @@ const calculateStaticExchangeScore = (threatenedPiece) => {
     return exchangeScore;
 };
 
-// mask 路径 SEE：材料数组排序，语义与上式一致（bitscan 内联，无回调）
+// mask 路径 SEE：按棋子类别计数，按材料值消费；与材料数组排序语义一致。
 const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, attackMask, guardMask) => {
-    const atkMats = seeAttackerMatScratch;
-    const grdMats = seeGuardMatScratch;
-    atkMats.length = 0;
-    grdMats.length = 0;
+    const attackerCounts = seeAttackerTypeCounts;
+    const guardCounts = seeGuardTypeCounts;
+    attackerCounts.fill(0);
+    guardCounts.fill(0);
+    seeMaterialByType.fill(0);
     const sq = threatenedPiece.sq == null
         ? threatenedPiece.r * 9 + threatenedPiece.c
         : threatenedPiece.sq;
     let am = attackMask[sq] >>> 0;
     while (am !== 0) {
         const bit = am & -am;
-        const value = piecesInfo[31 - Math.clz32(bit)].materialValue;
-        let index = atkMats.length;
-        atkMats.push(value);
-        while (index > 0 && atkMats[index - 1] > value) {
-            atkMats[index] = atkMats[index - 1];
-            index--;
-        }
-        atkMats[index] = value;
+        const info = piecesInfo[31 - Math.clz32(bit)];
+        const type = info.pieceCode & 7;
+        attackerCounts[type]++;
+        seeMaterialByType[type] = info.materialValue;
         am ^= bit;
     }
     let gm = guardMask[sq] >>> 0;
     while (gm !== 0) {
         const bit = gm & -gm;
-        const value = piecesInfo[31 - Math.clz32(bit)].materialValue;
-        let index = grdMats.length;
-        grdMats.push(value);
-        while (index > 0 && grdMats[index - 1] > value) {
-            grdMats[index] = grdMats[index - 1];
-            index--;
-        }
-        grdMats[index] = value;
+        const info = piecesInfo[31 - Math.clz32(bit)];
+        const type = info.pieceCode & 7;
+        guardCounts[type]++;
+        seeMaterialByType[type] = info.materialValue;
         gm ^= bit;
     }
 
     let exchangeScore = 0;
-    let attackerIndex = 0;
-    let guardIndex = 0;
+    let isFirstExchange = true;
     const targetValue = threatenedPiece.materialValue;
 
-    while (attackerIndex < atkMats.length && guardIndex < grdMats.length) {
-        if (guardIndex === 0) {
+    while (true) {
+        const attackerValue = takeLowestSeeMaterial(attackerCounts, seeMaterialByType);
+        const guardValue = takeLowestSeeMaterial(guardCounts, seeMaterialByType);
+        if (attackerValue === Infinity || guardValue === Infinity) break;
+        if (isFirstExchange) {
             exchangeScore += targetValue;
+            isFirstExchange = false;
         }
-        exchangeScore -= atkMats[attackerIndex];
-        if (attackerIndex + 1 < atkMats.length) {
-            exchangeScore += grdMats[guardIndex];
+        exchangeScore -= attackerValue;
+        if (hasAnySeeMaterial(attackerCounts)) {
+            exchangeScore += guardValue;
         }
-        attackerIndex++;
-        guardIndex++;
     }
     return exchangeScore;
 };
@@ -4648,27 +4664,8 @@ const snapshotPerfStats = () => {
 // 打印统计信息
 const logPerfStats = (currentPlayer) => {
     const snap = snapshotPerfStats();
-    console.log(`📊 性能统计 (${currentPlayer}) - ${snap.elapsedMs}ms:`);
-    console.log(`   evaluateBoard: red=${snap.evaluateBoard.red}, black=${snap.evaluateBoard.black}`);
-    console.log(`   prepareSearchInfo: red=${snap.prepareSearchInfo.red}, black=${snap.prepareSearchInfo.black}`);
-    console.log(`   calculateThreatValues: red=${snap.calculateThreatValues.red}, black=${snap.calculateThreatValues.black}`);
-    console.log(`   alphaBeta调用次数: ${snap.alphaBetaCalls}`);
-    console.log(`   合法性: pseudo=${snap.pseudoMovesGenerated}, checks=${snap.legalityChecks}, illegalSkip=${snap.illegalMovesSkipped}, legalSearched=${snap.legalMovesSearched}`);
-    console.log(`   Zobrist: fullHash=${snap.fullHashCount}, incrUpdates=${snap.incrementalHashUpdates}`);
-    console.log(`   numeric leaf: ms=${Math.round(snap.fastLeafEvalMs)} count=${snap.fastLeafEvalCount} prepareMs=${Math.round(snap.prepareSearchInfoMs)}`);
-    if (snap.profile) {
-        console.log(`   Profile (overlapping scopes): prepCheck=${Math.round(snap.prepareCheckMs)}ms prepMoves=${Math.round(snap.prepareMoveGenMs)}ms sort=${Math.round(snap.sortMovesMs)}ms/${snap.sortMovesCount} legality=${Math.round(snap.legalityCheckMs)}ms captureGen=${Math.round(snap.captureGenMs)}ms/${snap.captureGenCount} qs=${snap.quiescenceCalls} captureMoves=${snap.quiescenceCaptureMoves} evalCache=${snap.staticEvalCacheHits}/${snap.staticEvalCacheMisses}`);
-    }
-    console.log(`   TT: hits=${snap.tt.hits}, misses=${snap.tt.misses}, hitRate=${snap.tt.hitRate}%, stores=${snap.tt.stores}, updates=${snap.tt.updatedStores}, evicted=${snap.tt.lruEvictions}/${snap.tt.evictionBatches} batches=${snap.tt.evictionBatch}, size=${snap.tt.currentSize}`);
-    
-    const depths = Object.keys(snap.byDepth);
-    if (depths.length > 0) {
-        console.log('   按深度统计:');
-        for (const d of depths) {
-            const row = snap.byDepth[d];
-            console.log(`     深度${d}: 节点=${row.nodes}, 走法=${row.moves}, 剪枝=${row.cutoffs}`);
-        }
-    }
+    console.log(`Search stats (${currentPlayer}): ${snap.elapsedMs}ms, nodes=${snap.alphaBetaCalls}, legal=${snap.legalMovesSearched}, leaves=${snap.fastLeafEvalCount}`);
+    console.log(`TT: ${snap.tt.hits}/${snap.tt.misses} (${snap.tt.hitRate}%), stores=${snap.tt.stores}, size=${snap.tt.currentSize}`);
 };
 
 const transpositionTable = new TranspositionTable();
@@ -4681,6 +4678,7 @@ const clearEvalCache = () => {
 };
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
+const SEARCH_QUIESCENCE_DEPTH = 2;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 let SEARCH_COLLECT_MOVE_SEQUENCE = true;
@@ -4748,7 +4746,10 @@ if (typeof self !== 'undefined') {
             logPerfStats(searchTurn);
             
             // 添加思考时间日志
-            console.log(`Search completed in ${Math.round(thinkingTime)}ms, gameId=${gameId}, bestMove=${JSON.stringify(bestSearchMove.bestMove)}, secondBestMove=${JSON.stringify(bestSearchMove.secondBestMove)}, fromBook=${fromBookSearch}`);
+            const formatMove = (move) => move?.from && move?.to
+                ? `(${move.from.r},${move.from.c})->(${move.to.r},${move.to.c})`
+                : 'none';
+            console.log(`Search complete: game=${gameId}, time=${Math.round(thinkingTime)}ms, best=${formatMove(bestSearchMove.bestMove)} score=${bestSearchMove.bestMoveScore}, second=${formatMove(bestSearchMove.secondBestMove)}, book=${fromBookSearch}`);
             // 发送搜索结果和思考时间
             self.postMessage({ 
                 type: 'SEARCH_COMPLETE', 
@@ -5223,7 +5224,7 @@ const alphaBetaPlay = (
     if (d === 0) {
         return quiescencePlay(
             b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, gameStage, 3, boardHash
+            searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash
         );
     }
 
@@ -5439,11 +5440,11 @@ const alphaBeta = (
     if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
     perfStats.nodesSearched[d]++;
 
-    // 叶节点：完整形势评估 + 吃子静默搜索（QS≤3）
+    // 叶节点：完整形势评估 + 吃子静默搜索
     if (d === 0) {
         return quiescence(
             b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, gameStage, 3, boardHash
+            searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash
         );
     }
 
@@ -5765,10 +5766,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   perfStats.fullHashCount++;
   const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, turn);
 
-  console.log(
-    `Starting iterative deepening | turn: ${turn}, maxDepth: ${maxDepth}, collectMoveSequence: ${SEARCH_COLLECT_MOVE_SEQUENCE}, timeLimit: ${timeLimit}ms, enableTimeLimit: ${enableTimeLimit}`
-  );
-
   let completedDepth = 0;
 
   for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
@@ -5886,9 +5883,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
       SEARCH_COLLECT_MOVE_SEQUENCE ? (rootMoves[0].moveSequence || []) : null
     );
 
-    console.log(
-      `ID depth ${currentDepth}/${maxDepth} done | best=${JSON.stringify(rootMoves[0].from)}->${JSON.stringify(rootMoves[0].to)} score=${rootMoves[0].score} elapsed=${Date.now() - startTime}ms`
-    );
   }
 
   const bestMove = rootMoves[0] || null;
