@@ -848,11 +848,54 @@ const unmakeMove = (board, from, to, captured) => {
     }
 };
 
+// 仅普通节点使用：父局面安全且起终点不影响将线或敌马依赖格时，走子后仍必然安全。
+const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
+    if (!SEARCH_ENABLE_KING_SAFETY_FAST_PATH || wasInCheck || !state || move == null) return false;
+    const fromSq = moveFromSq(move);
+    const toSq = moveToSq(move);
+    const generalSq = color === 'red' ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0 || generalSq === toSq) return false;
+
+    const generalRow = SEARCH_SQ_ROWS[generalSq];
+    const generalCol = SEARCH_SQ_COLS[generalSq];
+    if (
+        SEARCH_SQ_ROWS[fromSq] === generalRow ||
+        SEARCH_SQ_COLS[fromSq] === generalCol ||
+        SEARCH_SQ_ROWS[toSq] === generalRow ||
+        SEARCH_SQ_COLS[toSq] === generalCol
+    ) {
+        return false;
+    }
+
+    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+    for (let i = 0; i < horseCheckers.length; i++) {
+        const entry = horseCheckers[i];
+        const legSq = entry >>> 7;
+        const horseSq = entry & MOVE_TO_MASK;
+        if (fromSq === legSq || toSq === legSq || fromSq === horseSq || toSq === horseSq) return false;
+    }
+    return true;
+};
+
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
-const leavesOwnKingUnsafe = (board, color) => {
+const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     perfStats.legalityChecks++;
     const pieceState = activePieceStateFor(board);
+    if (kingSafetyIsUnchangedByMove(pieceState, color, move, wasInCheck)) {
+        if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyFastSkips++;
+        if (SEARCH_VERIFY_KING_SAFETY_FAST_PATH) {
+            const unsafe = pieceState
+                ? isCheckRawFromPieceState(pieceState, color)
+                : (isFlyingGeneral(board) || isCheckRaw(board, color));
+            if (unsafe) {
+                if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyVerificationFailures++;
+                return true;
+            }
+        }
+        return false;
+    }
+    if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyFullChecks++;
     const unsafe = pieceState ? isCheckRawFromPieceState(pieceState, color) : (isFlyingGeneral(board) || isCheckRaw(board, color));
     if (SEARCH_PROFILE) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
@@ -4553,9 +4596,18 @@ let perfStats = {
     nodesSearched: {}, // 按深度统计搜索的节点数
     movesGenerated: {}, // 按深度统计生成的走法数
     cutoffs: {}, // 按深度统计剪枝次数
+    moveOrdering: {
+        topMoveSources: { tt: 0, killer: 0, capture: 0, quiet: 0 },
+        firstLegalMovesByDepth: {},
+        firstLegalCutoffsByDepth: {},
+        firstLegalMoveIndexTotalByDepth: {}
+    },
     // 合法性路径：伪合法生成量、试走合法性检测、非法跳过、实际进入搜索的合法着
     pseudoMovesGenerated: 0,
     legalityChecks: 0,
+    kingSafetyFullChecks: 0,
+    kingSafetyFastSkips: 0,
+    kingSafetyVerificationFailures: 0,
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     // Zobrist：全盘重算次数 / 增量更新次数 / 校验不一致（仅 verify 模式）
@@ -4575,6 +4627,10 @@ let perfStats = {
     quiescenceCaptureMoves: 0,
     staticEvalCacheHits: 0,
     staticEvalCacheMisses: 0,
+    pvsProbes: 0,
+    pvsResearches: 0,
+    pvsProbeNodes: 0,
+    pvsResearchNodes: 0,
     evaluateBoardMs: 0,
     prepareSearchInfoMs: 0,
     startTime: Date.now()
@@ -4590,8 +4646,17 @@ const resetPerfStats = () => {
     perfStats.nodesSearched = {};
     perfStats.movesGenerated = {};
     perfStats.cutoffs = {};
+    perfStats.moveOrdering = {
+        topMoveSources: { tt: 0, killer: 0, capture: 0, quiet: 0 },
+        firstLegalMovesByDepth: {},
+        firstLegalCutoffsByDepth: {},
+        firstLegalMoveIndexTotalByDepth: {}
+    };
     perfStats.pseudoMovesGenerated = 0;
     perfStats.legalityChecks = 0;
+    perfStats.kingSafetyFullChecks = 0;
+    perfStats.kingSafetyFastSkips = 0;
+    perfStats.kingSafetyVerificationFailures = 0;
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.fullHashCount = 0;
@@ -4610,6 +4675,10 @@ const resetPerfStats = () => {
     perfStats.quiescenceCaptureMoves = 0;
     perfStats.staticEvalCacheHits = 0;
     perfStats.staticEvalCacheMisses = 0;
+    perfStats.pvsProbes = 0;
+    perfStats.pvsResearches = 0;
+    perfStats.pvsProbeNodes = 0;
+    perfStats.pvsResearchNodes = 0;
     perfStats.evaluateBoardMs = 0;
     perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
@@ -4636,6 +4705,15 @@ const snapshotPerfStats = () => {
         alphaBetaCalls: perfStats.alphaBetaCalls,
         pseudoMovesGenerated: perfStats.pseudoMovesGenerated,
         legalityChecks: perfStats.legalityChecks,
+        kingSafety: SEARCH_COLLECT_METRICS ? {
+            fastPathEnabled: SEARCH_ENABLE_KING_SAFETY_FAST_PATH,
+            fullChecks: perfStats.kingSafetyFullChecks,
+            fastSkips: perfStats.kingSafetyFastSkips,
+            verificationFailures: perfStats.kingSafetyVerificationFailures,
+            skipRate: perfStats.legalityChecks
+                ? Number((perfStats.kingSafetyFastSkips / perfStats.legalityChecks * 100).toFixed(2))
+                : 0
+        } : null,
         illegalMovesSkipped: perfStats.illegalMovesSkipped,
         legalMovesSearched: perfStats.legalMovesSearched,
         fullHashCount: perfStats.fullHashCount,
@@ -4654,8 +4732,35 @@ const snapshotPerfStats = () => {
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         staticEvalCacheHits: perfStats.staticEvalCacheHits,
         staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
+        pvs: SEARCH_COLLECT_METRICS ? {
+            enabled: SEARCH_ENABLE_NON_ROOT_PVS,
+            probes: perfStats.pvsProbes,
+            researches: perfStats.pvsResearches,
+            researchRate: perfStats.pvsProbes
+                ? Number((perfStats.pvsResearches / perfStats.pvsProbes * 100).toFixed(2))
+                : 0,
+            probeNodes: perfStats.pvsProbeNodes,
+            researchNodes: perfStats.pvsResearchNodes
+        } : null,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
+        moveOrdering: SEARCH_COLLECT_METRICS ? {
+            topMoveSources: { ...perfStats.moveOrdering.topMoveSources },
+            byDepth: Object.fromEntries(depths.map((d) => {
+                const firstLegalMoves = perfStats.moveOrdering.firstLegalMovesByDepth[d] || 0;
+                const firstLegalCutoffs = perfStats.moveOrdering.firstLegalCutoffsByDepth[d] || 0;
+                return [d, {
+                    firstLegalMoves,
+                    firstLegalCutoffs,
+                    firstLegalCutoffRate: firstLegalMoves
+                        ? Number((firstLegalCutoffs / firstLegalMoves * 100).toFixed(2))
+                        : 0,
+                    averageFirstLegalMoveIndex: firstLegalMoves
+                        ? Number((perfStats.moveOrdering.firstLegalMoveIndexTotalByDepth[d] / firstLegalMoves).toFixed(2))
+                        : 0
+                }];
+            }))
+        } : null,
         tt: ttStats,
         byDepth
     };
@@ -4679,6 +4784,11 @@ const clearEvalCache = () => {
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
+const SEARCH_NULL_WINDOW_EPS = 1e-6;
+let SEARCH_COLLECT_METRICS = false;
+let SEARCH_ENABLE_NON_ROOT_PVS = false;
+let SEARCH_ENABLE_KING_SAFETY_FAST_PATH = true;
+let SEARCH_VERIFY_KING_SAFETY_FAST_PATH = false;
 
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 let SEARCH_COLLECT_MOVE_SEQUENCE = true;
@@ -4719,6 +4829,26 @@ const getHistoryScore = (move) => {
     return historyTable[(moveFromSq(move) << 7) | moveToSq(move)];
 };
 
+const recordTopMoveSource = (depth, board, move, ttMove, killers) => {
+    const sources = perfStats.moveOrdering.topMoveSources;
+    if (isSameMove(move, ttMove)) sources.tt++;
+    else if (isSameMove(move, killers[0]) || isSameMove(move, killers[1])) sources.killer++;
+    else if (board[moveToR(move)][moveToC(move)]) sources.capture++;
+    else sources.quiet++;
+};
+
+const recordFirstLegalMove = (depth, moveIndex) => {
+    const ordering = perfStats.moveOrdering;
+    ordering.firstLegalMovesByDepth[depth] = (ordering.firstLegalMovesByDepth[depth] || 0) + 1;
+    ordering.firstLegalMoveIndexTotalByDepth[depth] =
+        (ordering.firstLegalMoveIndexTotalByDepth[depth] || 0) + moveIndex;
+};
+
+const recordFirstLegalCutoff = (depth) => {
+    const cutoffs = perfStats.moveOrdering.firstLegalCutoffsByDepth;
+    cutoffs[depth] = (cutoffs[depth] || 0) + 1;
+};
+
 // Worker message handling
 if (typeof self !== 'undefined') {
     self.onmessage = function(e) {
@@ -4726,8 +4856,12 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
             SEARCH_PROFILE = !!searchProfile;
+            SEARCH_COLLECT_METRICS = !!searchMetrics;
+            SEARCH_ENABLE_NON_ROOT_PVS = !!searchNonRootPvs;
+            SEARCH_ENABLE_KING_SAFETY_FAST_PATH = !!searchKingSafetyFastPath;
+            SEARCH_VERIFY_KING_SAFETY_FAST_PATH = !!searchVerifyKingSafetyFastPath;
             // Set opening book enabled status
             openingBook.setEnabled(searchOpeningBookEnabled);
             // 记录搜索开始时间
@@ -5271,6 +5405,9 @@ const alphaBetaPlay = (
         moves, b, currentPlayer, abPiecesInfo, gameStage, abBoardInfo,
         ttMove, killersAtDepth, inCheck
     );
+    if (SEARCH_COLLECT_METRICS && moves.length) {
+        recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
+    }
 
     let bestEval = maximizing ? -Infinity : Infinity;
     let bestMove = null;
@@ -5281,19 +5418,63 @@ const alphaBetaPlay = (
         const isCapture = !!b[moveToR(move)][moveToC(move)];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
+        if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+            recordFirstLegalMove(d, moveIndex);
+        }
         perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        const value = alphaBetaPlay(
-            b, d - 1, alpha, beta, nextPlayer === searchInitiator, nextPlayer,
-            searchDepth, searchInitiator, gameStage, nextHash
-        );
+        const nextMaximizing = nextPlayer === searchInitiator;
+        const canProbe = SEARCH_ENABLE_NON_ROOT_PVS &&
+            legalMovesFound > 1 &&
+            Number.isFinite(maximizing ? alpha : beta);
+        let value;
+        if (canProbe) {
+            if (SEARCH_COLLECT_METRICS) {
+                perfStats.pvsProbes++;
+            }
+            const probeStartNodes = SEARCH_COLLECT_METRICS ? perfStats.alphaBetaCalls : 0;
+            value = maximizing
+                ? alphaBetaPlay(
+                    b, d - 1, alpha, alpha + SEARCH_NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                )
+                : alphaBetaPlay(
+                    b, d - 1, beta - SEARCH_NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
+            if (SEARCH_COLLECT_METRICS) {
+                perfStats.pvsProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
+            }
+
+            const needsResearch = maximizing
+                ? value > alpha && value < beta
+                : value < beta && value > alpha;
+            if (needsResearch) {
+                if (SEARCH_COLLECT_METRICS) {
+                    perfStats.pvsResearches++;
+                }
+                const researchStartNodes = SEARCH_COLLECT_METRICS ? perfStats.alphaBetaCalls : 0;
+                value = alphaBetaPlay(
+                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
+                if (SEARCH_COLLECT_METRICS) {
+                    perfStats.pvsResearchNodes += perfStats.alphaBetaCalls - researchStartNodes;
+                }
+            }
+        } else {
+            value = alphaBetaPlay(
+                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, nextHash
+            );
+        }
         unmakeSearchMove(b, move, captured);
 
         if (maximizing) {
@@ -5313,6 +5494,9 @@ const alphaBetaPlay = (
         if (beta <= alpha) {
             if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
             perfStats.cutoffs[d]++;
+            if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+                recordFirstLegalCutoff(d);
+            }
             if (!isCapture) {
                 storeKillerMove(d, move);
                 addHistoryScore(move, d);
@@ -5537,6 +5721,9 @@ const alphaBeta = (
         ttMove,
         killers: killersAtDepth
     });
+    if (SEARCH_COLLECT_METRICS && moves.length) {
+        recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
+    }
 
     const storeTT = (value, bestMove, moveSequence) => {
         let flag;
@@ -5576,13 +5763,16 @@ const alphaBeta = (
 
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayerColor)) {
+        if (leavesOwnKingUnsafe(b, currentPlayerColor, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
             perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
+        if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+            recordFirstLegalMove(d, moveIndex);
+        }
         perfStats.legalMovesSearched++;
 
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
@@ -5636,6 +5826,9 @@ const alphaBeta = (
         if (beta <= alpha) {
             if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
             perfStats.cutoffs[d]++;
+            if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+                recordFirstLegalCutoff(d);
+            }
             if (!isCapture) {
                 storeKillerMove(d, move);
                 addHistoryScore(move, d);

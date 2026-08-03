@@ -60,7 +60,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile) {
+function runSearch(depth, exactRootScores, profile, nonRootPvs, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(wrappedWorker, { eval: true });
     const started = Date.now();
@@ -75,7 +75,7 @@ function runSearch(depth, exactRootScores, profile) {
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, nonRootPvs, kingSafetyFastPath, verifyKingSafetyFastPath
       }
     });
   });
@@ -93,6 +93,15 @@ function printSummary(label, run) {
   console.log(`  Zobrist: fullHash=${perf.fullHashCount} incrUpdates=${perf.incrementalHashUpdates}`);
   console.log(`  numericLeaf: count=${perf.fastLeafEvalCount} ms=${Math.round(perf.fastLeafEvalMs ?? 0)} prepare=${Math.round(perf.prepareSearchInfoMs ?? 0)}ms`);
   console.log(`  TT hits=${perf.tt?.hits} misses=${perf.tt?.misses} hitRate=${perf.tt?.hitRate}% stores=${perf.tt?.stores} updates=${perf.tt?.updatedStores ?? 0} evicted=${perf.tt?.lruEvictions}/${perf.tt?.evictionBatches ?? 0} depth/fallback=${perf.tt?.depthPreferredEvictions ?? 0}/${perf.tt?.fallbackEvictions ?? 0} size=${perf.tt?.currentSize}/${perf.tt?.maxSize} batch=${perf.tt?.evictionBatch}`);
+  if (perf.moveOrdering) {
+    console.log(`  ordering top=${JSON.stringify(perf.moveOrdering.topMoveSources)} depth=${JSON.stringify(perf.moveOrdering.byDepth)}`);
+  }
+  if (perf.pvs) {
+    console.log(`  PVS enabled=${perf.pvs.enabled} probes=${perf.pvs.probes} researches=${perf.pvs.researches} rate=${perf.pvs.researchRate}% probeNodes=${perf.pvs.probeNodes} researchNodes=${perf.pvs.researchNodes}`);
+  }
+  if (perf.kingSafety) {
+    console.log(`  kingSafety fastPath=${perf.kingSafety.fastPathEnabled} full=${perf.kingSafety.fullChecks} skips=${perf.kingSafety.fastSkips} skipRate=${perf.kingSafety.skipRate}% verifyFailures=${perf.kingSafety.verificationFailures}`);
+  }
   if (perf.profile) {
     console.log(`  profile: sort=${Math.round(perf.sortMovesMs)}ms/${perf.sortMovesCount} legality=${Math.round(perf.legalityCheckMs)}ms captureGen=${Math.round(perf.captureGenMs)}ms/${perf.captureGenCount} QS=${perf.quiescenceCalls}`);
   }
@@ -117,6 +126,10 @@ if (pathMode === 'cpuperf' && process.env.BENCH_CPU_PROF_CHILD !== '1') {
 }
 
 const profile = pathMode === 'profile';
+const nonRootPvs = process.env.BENCH_NON_ROOT_PVS === '1';
+const metrics = process.env.BENCH_METRICS !== '0';
+const kingSafetyFastPath = process.env.BENCH_KING_SAFETY_FAST_PATH !== '0';
+const verifyKingSafetyFastPath = process.env.BENCH_VERIFY_KING_SAFETY === '1';
 const jobs = [];
 if (mode === 'play' || mode === 'both') jobs.push({ label: 'play', exact: false });
 if (mode === 'analysis' || mode === 'both') jobs.push({ label: 'analysis', exact: true });
@@ -125,8 +138,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, nonRootPvs, metrics, kingSafetyFastPath, verifyKingSafetyFastPath)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, nonRootPvs, kingSafetyFastPath, verifyKingSafetyFastPath, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);
