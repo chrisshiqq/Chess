@@ -5702,8 +5702,8 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
 
   // 收集根节点走法（只做一次）；未被将时过滤送吃
   let rootMoves = [];
-  const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
-                      (turn === 'black' && rootBoardInfo.blackIsInCheck);
+  //const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
+  //                    (turn === 'black' && rootBoardInfo.blackIsInCheck);
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -5711,10 +5711,10 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
         const piece = board[r][c];
         const validDestinations = getValidMoves(board, { r, c });
         validDestinations.forEach(to => {
-          const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
-          if (isAcceptable) {
+          //const isAcceptable = rootInCheck || isPositionAcceptable(board, { r, c }, to, turn, rootBoardInfo, rootPiecesInfo, piece, gameStage);
+          //if (isAcceptable) {
             rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
-          }
+          //}
         });
       }
     }
