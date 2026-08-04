@@ -227,6 +227,13 @@ const makeEmptyControllerGrid = () =>
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
 const REL_SQUARES = 90;
+// 格号 → 行列：避免热路径反复 (sq/9)|0 与 sq%9
+const SQ_ROW = new Uint8Array(REL_SQUARES);
+const SQ_COL = new Uint8Array(REL_SQUARES);
+for (let __sq = 0; __sq < REL_SQUARES; __sq++) {
+    SQ_ROW[__sq] = (__sq / 9) | 0;
+    SQ_COL[__sq] = __sq % 9;
+}
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
 const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
@@ -418,8 +425,8 @@ const updatePieceStateAfterMake = (board, fromSq, toSq) => {
         }
     }
     mover.sq = toSq;
-    mover.r = (toSq / 9) | 0;
-    mover.c = toSq % 9;
+    mover.r = SQ_ROW[toSq];
+    mover.c = SQ_COL[toSq];
     state.squareToSlot[fromSq] = -1;
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
@@ -462,8 +469,8 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
         }
     }
     mover.sq = fromSq;
-    mover.r = (fromSq / 9) | 0;
-    mover.c = fromSq % 9;
+    mover.r = SQ_ROW[fromSq];
+    mover.c = SQ_COL[fromSq];
     state.squareToSlot[fromSq] = moverSlot;
     state.squareToSlot[toSq] = capturedSlot;
     state.squareCodes[fromSq] = state.pieceCodes[moverSlot];
@@ -493,7 +500,7 @@ const forEachSetBit = (mask, fn) => {
 // 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
-    const __t0 = performance.now();
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     // 统计
     if (currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
@@ -657,14 +664,14 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         gameStage: gameStage,
         boardInfo: boardInfo
     };
-    if (typeof perfStats !== 'undefined' && perfStats.evaluateBoardMs != null) {
+    if (SEARCH_PROFILE) {
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
 };
 
 const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
-    const __t0 = performance.now();
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     const piecesInfo = scratchLeafPiecesInfo;
     let count = 0;
     const pieceState = activePieceStateFor(board);
@@ -790,8 +797,12 @@ const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
         blackSafety * VALUE_WEIGHTS.safety +
         blackMobility * VALUE_WEIGHTS.mobility;
 
-    perfStats.fastLeafEvalCount++;
-    perfStats.fastLeafEvalMs += performance.now() - __t0;
+    if (SEARCH_PROFILE) {
+        perfStats.fastLeafEvalCount++;
+        perfStats.fastLeafEvalMs += performance.now() - __t0;
+    } else {
+        perfStats.fastLeafEvalCount++;
+    }
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
@@ -933,23 +944,17 @@ const encodeMoveFromCoords = (fr, fc, tr, tc) => ((fr * 9 + fc) << 7) | (tr * 9 
 const isEncodedMove = (move) => typeof move === 'number';
 const moveFromSq = (move) => isEncodedMove(move) ? (move >>> 7) : move.from.r * 9 + move.from.c;
 const moveToSq = (move) => isEncodedMove(move) ? (move & MOVE_TO_MASK) : move.to.r * 9 + move.to.c;
-const moveFromR = (move) => {
-    const sq = moveFromSq(move);
-    return (sq / 9) | 0;
-};
-const moveFromC = (move) => moveFromSq(move) % 9;
-const moveToR = (move) => {
-    const sq = moveToSq(move);
-    return (sq / 9) | 0;
-};
-const moveToC = (move) => moveToSq(move) % 9;
+const moveFromR = (move) => SQ_ROW[moveFromSq(move)];
+const moveFromC = (move) => SQ_COL[moveFromSq(move)];
+const moveToR = (move) => SQ_ROW[moveToSq(move)];
+const moveToC = (move) => SQ_COL[moveToSq(move)];
 const moveToObject = (move) => {
     if (!isEncodedMove(move)) return move;
     const from = moveFromSq(move);
     const to = moveToSq(move);
     return {
-        from: { r: (from / 9) | 0, c: from % 9 },
-        to: { r: (to / 9) | 0, c: to % 9 }
+        from: { r: SQ_ROW[from], c: SQ_COL[from] },
+        to: { r: SQ_ROW[to], c: SQ_COL[to] }
     };
 };
 
@@ -957,8 +962,8 @@ const makeSearchMove = (board, move) => {
     if (!isEncodedMove(move)) return makeMove(board, move.from, move.to);
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
-    const fr = (from / 9) | 0, fc = from % 9;
-    const tr = (to / 9) | 0, tc = to % 9;
+    const fr = SQ_ROW[from], fc = SQ_COL[from];
+    const tr = SQ_ROW[to], tc = SQ_COL[to];
     const piece = board[fr][fc];
     const captured = board[tr][tc];
     board[tr][tc] = piece;
@@ -980,8 +985,8 @@ const unmakeSearchMove = (board, move, captured) => {
     }
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
-    const fr = (from / 9) | 0, fc = from % 9;
-    const tr = (to / 9) | 0, tc = to % 9;
+    const fr = SQ_ROW[from], fc = SQ_COL[from];
+    const tr = SQ_ROW[to], tc = SQ_COL[to];
     const piece = board[tr][tc];
     board[fr][fc] = piece;
     board[tr][tc] = captured;
@@ -1290,7 +1295,7 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
 // SEARCH_DEFER_LEGALITY=false：预过滤合法着（旧路径，便于 A/B）
 // 点棋关系仍走完整 evaluateBoard，不受影响
 const prepareSearchInfo = (board, currentPlayer) => {
-    const __t0 = performance.now();
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     perfStats.prepareSearchInfoCount[currentPlayer]++;
 
     const inCheck = isCheckRaw(board, currentPlayer);
@@ -1351,7 +1356,7 @@ const prepareSearchInfo = (board, currentPlayer) => {
         boardInfo.gameState = { status: 'playing' };
     }
 
-    perfStats.prepareSearchInfoMs += performance.now() - __t0;
+    if (SEARCH_PROFILE) perfStats.prepareSearchInfoMs += performance.now() - __t0;
     return { piecesInfo, boardInfo, legalMoveList, inCheck };
 };
 
@@ -2868,6 +2873,12 @@ class ZobristHasher {
                     this.hashTable[r][c][p] = value;
                 }
             }
+        }
+
+        // 格号直索引：hashBySq[sq][pieceIdx]，避免热路径 (sq/9)|0 与 %9
+        this.hashBySq = new Array(90);
+        for (let sq = 0; sq < 90; sq++) {
+            this.hashBySq[sq] = this.hashTable[SQ_ROW[sq]][SQ_COL[sq]];
         }
 
         // 叶评估缓存键：boardHash ^ initiatorKey ^ stageKey
@@ -4439,20 +4450,41 @@ const getGamePhase = () => {
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
 
-// Keep the depth-8 iterative-deepening tree resident. Replacement only runs
-// for deeper searches that exceed this capacity.
-const TT_DEFAULT_SIZE = Math.pow(2, 21);
-const TT_DEFAULT_EVICTION_BATCH = 512;
-const TT_EVICTION_SCAN = TT_DEFAULT_EVICTION_BATCH * 4;
+// 定长槽位 TT：TypedArray 热字段 + generation O(1) clear。
+// 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
+const TT_DEFAULT_SIZE = 1 << 22; // 4194304
+const TT_DEFAULT_EVICTION_BATCH = 512; // API 兼容，定长 TT 不再批量淘汰
+const TT_FLAG_NAMES = ['exact', 'lowerbound', 'upperbound'];
 
 class TranspositionTable {
     constructor(size = TT_DEFAULT_SIZE, evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
-        this.table = new Map();
-        this.size = size;
+        let n = size | 0;
+        if (n < 1024) n = 1024;
+        // 强制 2 的幂，便于 key & mask
+        n = 1 << (32 - Math.clz32(n - 1));
+        this.size = n;
+        this.mask = n - 1;
         this.evictionBatch = evictionBatch;
-        this.evictionCandidates = [];
+        this.generation = 1;
+        this.occupiedApprox = 0;
         this.hasher = zobristHasher;
-        // 统计信息
+
+        this.keys = new Float64Array(n);
+        this.depths = new Int16Array(n);
+        this.values = new Int32Array(n);
+        this.flags = new Uint8Array(n);
+        this.gens = new Uint32Array(n);
+        this.bestMoves = new Array(n);
+        this.moveSequences = new Array(n);
+        // retrieve 复用，避免每次分配；调用方须在下一次 retrieve/递归前读完字段
+        this.entryScratch = {
+            depth: 0,
+            value: 0,
+            flag: 'exact',
+            bestMove: null,
+            moveSequence: null
+        };
+
         this.stats = {
             hits: 0,
             misses: 0,
@@ -4473,100 +4505,100 @@ class TranspositionTable {
     setEvictionBatch(batch) {
         this.evictionBatch = Math.max(1, batch | 0);
     }
-    
+
     store(key, depth, value, flag, bestMove = null, moveSequence = null) {
-        const existing = this.table.get(key);
-        if (existing) {
+        const i = (key >>> 0) & this.mask;
+        const gen = this.generation;
+        const live = this.gens[i] === gen;
+        const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
+
+        if (live && this.keys[i] === key) {
             this.stats.updatedStores++;
-            // A deeper exact entry dominates a shallow bound for replacement.
-            if (existing.depth > depth && existing.flag === 'exact' && flag !== 'exact') {
+            // 更深 exact 不被更浅 bound 覆盖
+            if (this.depths[i] > depth && this.flags[i] === 0 && flagCode !== 0) {
                 this.stats.retainedUpdates++;
                 return;
             }
-            this.table.set(key, { depth, value, flag, bestMove, moveSequence });
+            this.depths[i] = depth;
+            this.values[i] = value | 0;
+            this.flags[i] = flagCode;
+            this.bestMoves[i] = bestMove;
+            this.moveSequences[i] = moveSequence;
             this.stats.stores++;
             return;
         }
 
-        if (this.table.size >= this.size) {
-            const candidates = this.evictionCandidates;
-            candidates.length = 0;
-            let scanned = 0;
-            for (const candidateKey of this.table.keys()) {
-                candidates.push(candidateKey);
-                if (++scanned >= TT_EVICTION_SCAN) break;
+        if (live) {
+            // 哈希冲突：保留更深条目（不限 exact），降低有效命中损失
+            if (this.depths[i] > depth) {
+                this.stats.retainedUpdates++;
+                this.stats.depthPreferredEvictions++;
+                return;
             }
-
-            const dropCount = Math.min(this.evictionBatch, candidates.length);
-            let dropped = 0;
-            // Prefer preserving entries that searched deeper than the incoming node.
-            for (let i = 0; i < candidates.length && dropped < dropCount; i++) {
-                const candidateKey = candidates[i];
-                const candidate = this.table.get(candidateKey);
-                if (candidate && candidate.depth <= depth) {
-                    this.table.delete(candidateKey);
-                    dropped++;
-                    this.stats.depthPreferredEvictions++;
-                }
-            }
-            // The table may contain only deeper entries in the scan window.
-            for (let i = 0; i < candidates.length && dropped < dropCount; i++) {
-                const candidateKey = candidates[i];
-                if (this.table.delete(candidateKey)) {
-                    dropped++;
-                    this.stats.fallbackEvictions++;
-                }
-            }
-            this.stats.lruEvictions += dropped;
-            this.stats.evictionBatches++;
+            this.stats.lruEvictions++;
+            this.stats.fallbackEvictions++;
+        } else {
+            this.occupiedApprox++;
         }
-        this.table.set(key, { depth, value, flag, bestMove, moveSequence });
+
+        this.gens[i] = gen;
+        this.keys[i] = key;
+        this.depths[i] = depth;
+        this.values[i] = value | 0;
+        this.flags[i] = flagCode;
+        this.bestMoves[i] = bestMove;
+        this.moveSequences[i] = moveSequence;
         this.stats.stores++;
     }
-    
+
     retrieve(key) {
-        const entry = this.table.get(key) || null;
-        if (entry) {
-            this.stats.hits++;
-            // 统计不同类型的命中
-            switch (entry.flag) {
-                case 'exact':
-                    this.stats.exactHits++;
-                    break;
-                case 'lowerbound':
-                    this.stats.lowerboundHits++;
-                    break;
-                case 'upperbound':
-                    this.stats.upperboundHits++;
-                    break;
-            }
-        } else {
+        const i = (key >>> 0) & this.mask;
+        if (this.gens[i] !== this.generation || this.keys[i] !== key) {
             this.stats.misses++;
+            return null;
         }
-        return entry;
+        this.stats.hits++;
+        const flagCode = this.flags[i];
+        if (SEARCH_PROFILE) {
+            if (flagCode === 0) this.stats.exactHits++;
+            else if (flagCode === 1) this.stats.lowerboundHits++;
+            else this.stats.upperboundHits++;
+        }
+        const e = this.entryScratch;
+        e.depth = this.depths[i];
+        e.value = this.values[i];
+        e.flag = TT_FLAG_NAMES[flagCode];
+        e.bestMove = this.bestMoves[i];
+        e.moveSequence = this.moveSequences[i];
+        return e;
     }
-    
+
     clear() {
-        this.table.clear();
+        // O(1)：抬升 generation；槽位惰性失效
+        this.generation = (this.generation + 1) >>> 0;
+        if (this.generation === 0) {
+            this.generation = 1;
+            this.gens.fill(0);
+        }
+        this.occupiedApprox = 0;
         this.stats.clears++;
     }
-    
-    // 获取统计信息并计算命中率
+
     getStats() {
         const totalAccesses = this.stats.hits + this.stats.misses;
         const hitRate = totalAccesses > 0 ? (this.stats.hits / totalAccesses * 100).toFixed(2) : 0;
+        const currentSize = Math.min(this.occupiedApprox, this.size);
         return {
             ...this.stats,
             evictionBatch: this.evictionBatch,
             totalAccesses,
             hitRate,
-            currentSize: this.table.size,
+            currentSize,
             maxSize: this.size,
-            fillPercentage: (this.table.size / this.size * 100).toFixed(2)
+            fillPercentage: ((currentSize / this.size) * 100).toFixed(2)
         };
     }
-    
-    // 重置统计信息
+
     resetStats() {
         this.stats = {
             hits: 0,
@@ -5165,14 +5197,15 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
         const movingIdx = zobristHasher.pieceIndex(movingPiece);
         const from = move >>> 7;
         const to = move & MOVE_TO_MASK;
+        const hashBySq = zobristHasher.hashBySq;
         if (movingIdx !== undefined) {
-            newHash ^= zobristHasher.hashTable[(from / 9) | 0][from % 9][movingIdx];
-            newHash ^= zobristHasher.hashTable[(to / 9) | 0][to % 9][movingIdx];
+            newHash ^= hashBySq[from][movingIdx];
+            newHash ^= hashBySq[to][movingIdx];
         }
         if (captured) {
             const capturedIdx = zobristHasher.pieceIndex(captured);
             if (capturedIdx !== undefined) {
-                newHash ^= zobristHasher.hashTable[(to / 9) | 0][to % 9][capturedIdx];
+                newHash ^= hashBySq[to][capturedIdx];
             }
         }
         return newHash;
