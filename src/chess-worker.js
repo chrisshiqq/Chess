@@ -247,6 +247,7 @@ const clearPieceAtSq = () => {
 const scratchRelCtx = {
     useMasks: true,
     skipControlMask: false, // 搜索叶：不写空控 controlMask（仍写攻击位图+机动）
+    palaceControlOnly: false,
     pieceIndex: 0,
     attackMask: null,
     guardMask: null,
@@ -254,6 +255,16 @@ const scratchRelCtx = {
     redAttack: null,
     blackAttack: null
 };
+
+const isPalaceControlSquare = (sq) => {
+    const r = (sq / 9) | 0;
+    const c = sq % 9;
+    return c >= 3 && c <= 5 && (r <= 2 || r >= 7);
+};
+
+const shouldWriteControlMask = (relCtx, sq) => (
+    !relCtx.skipControlMask && (!relCtx.palaceControlOnly || isPalaceControlSquare(sq))
+);
 
 const scratchLeafPiecesInfo = [];
 const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
@@ -547,6 +558,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
             useRelationMasks: true,
             useAttackBits: true,
             skipControlMask: !!forSearchLeaf,
+            palaceControlOnly: !!(options && options.palaceControlOnly),
             attackMask: scratchAttackMask,
             guardMask: scratchGuardMask,
             controlMask: scratchControlMask,
@@ -1360,10 +1372,7 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
     calculatePieceRelations(board, piecesInfo, boardInfo);
     
     // 2. 计算威胁值（按被威胁子聚合，SEE 每目标一次）
-    calculateThreatValues(piecesInfo, currentPlayer, boardInfo, forSearchLeaf);
-    
-    // 3. 计算安全值
-    calculateSafetyValues(piecesInfo, boardInfo, board, forSearchLeaf);
+    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board, forSearchLeaf);
     
     // 4. 计算游戏状态并保存到boardInfo
     // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
@@ -1656,7 +1665,7 @@ const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relC
     if (!target) {
         if (useMasks) {
             const sq = tr * 9 + tc;
-            if (!relCtx.skipControlMask) relCtx.controlMask[sq] |= bit;
+            if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
             if (isRed) setAttackBit(relCtx.redAttack, sq);
             else setAttackBit(relCtx.blackAttack, sq);
         } else {
@@ -1702,7 +1711,6 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const isRed = piece.color === 'red';
     const pieceColor = piece.color;
     const useMasks = !!(relCtx && relCtx.useMasks);
-    const skipControl = useMasks && relCtx.skipControlMask;
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     const colorIdx = isRed ? 0 : 1;
     const fromSq = r * 9 + c;
@@ -1767,7 +1775,7 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                     if (target === null) {
                         if (useMasks) {
                             const sq = nr * 9 + nc;
-                            if (!skipControl) relCtx.controlMask[sq] |= bit;
+                            if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
                             if (isRed) setAttackBit(relCtx.redAttack, sq);
                             else setAttackBit(relCtx.blackAttack, sq);
                         } else {
@@ -1832,7 +1840,6 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const pieceColor = piece.color;
     const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     const useMasks = !!(relCtx && relCtx.useMasks);
-    const skipControl = useMasks && relCtx.skipControlMask;
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     if (!useMasks) {
         info.moves = [];
@@ -1878,7 +1885,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
             } else if (screenFoundCount === 1) {
                 if (useMasks) {
                     const sq = nr * 9 + nc;
-                    if (!skipControl) relCtx.controlMask[sq] |= bit;
+                    if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
                     if (isRed) setAttackBit(relCtx.redAttack, sq);
                     else setAttackBit(relCtx.blackAttack, sq);
                 } else {
@@ -2254,6 +2261,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         relCtx = scratchRelCtx;
         relCtx.useMasks = true;
         relCtx.skipControlMask = !!boardInfo.skipControlMask;
+        relCtx.palaceControlOnly = !!boardInfo.palaceControlOnly;
         relCtx.attackMask = boardInfo.attackMask;
         relCtx.guardMask = boardInfo.guardMask;
         relCtx.controlMask = boardInfo.controlMask;
@@ -2579,7 +2587,7 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
 // 计算威胁值（基于完整的威胁关系）
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
-const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null, forSearchLeaf = false) => {
+const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null, forSearchLeaf = false) => {
     // 统计
     if (currentPlayer) {
         perfStats.calculateThreatValuesCount[currentPlayer]++;
@@ -2687,6 +2695,80 @@ const calculateThreatValues = (piecesInfo, currentPlayer, boardInfo = null, forS
             }
         }
     }
+
+    // 安全值：将空控邻格是否被敌控（无 visit 回调）
+    if (forSearchLeaf && boardInfo && boardInfo.useAttackBits && board) {
+        for (let gi = 0; gi < piecesInfo.length; gi++) {
+            const general = piecesInfo[gi];
+            if (general.piece.type !== PIECE_TYPES.GENERAL) continue;
+
+            const generalColor = general.piece.color;
+            const enemyBits = generalColor === 'red' ? boardInfo.blackAttack : boardInfo.redAttack;
+            const isRed = generalColor === 'red';
+            const { r, c } = general;
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const nr = r + ORTH_DIRS[i][0];
+                const nc = c + ORTH_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
+                if (board[nr][nc] === null && hasAttackBit(enemyBits, nr * 9 + nc)) {
+                    general.safetyValue -= 50;
+                }
+            }
+        }
+        return;
+    }
+
+    const generalInfo = [];
+    for (let i = 0; i < piecesInfo.length; i++) {
+        if (piecesInfo[i].piece.type === PIECE_TYPES.GENERAL) generalInfo.push(piecesInfo[i]);
+    }
+
+    const safetyUseAttackBits = !!(boardInfo && boardInfo.useAttackBits);
+    const safetyUseMasks = !!(boardInfo && boardInfo.useRelationMasks);
+    for (let gi = 0; gi < generalInfo.length; gi++) {
+        const general = generalInfo[gi];
+        const generalColor = general.piece.color;
+        const enemyColor = generalColor === 'red' ? 'black' : 'red';
+        const enemyBits = safetyUseAttackBits
+            ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
+            : null;
+        const isRed = generalColor === 'red';
+        const { r, c } = general;
+
+        const penalizeIfEnemy = (nr, nc) => {
+            let hasEnemyControl;
+            if (safetyUseAttackBits) {
+                hasEnemyControl = hasAttackBit(enemyBits, nr * 9 + nc);
+            } else {
+                const positionControllers = boardInfo[nr][nc];
+                hasEnemyControl = false;
+                for (let ci = 0; ci < positionControllers.length; ci++) {
+                    const controller = positionControllers[ci];
+                    const color = controller.piece ? controller.piece.color : controller.color;
+                    if (color === enemyColor) {
+                        hasEnemyControl = true;
+                        break;
+                    }
+                }
+            }
+            if (hasEnemyControl) general.safetyValue -= 50;
+        };
+
+        if ((safetyUseMasks && board) || ((!general.control || general.control.length === 0) && board)) {
+            for (let i = 0; i < ORTH_DIRS.length; i++) {
+                const nr = r + ORTH_DIRS[i][0];
+                const nc = c + ORTH_DIRS[i][1];
+                if (nc < 3 || nc > 5) continue;
+                if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
+                if (board[nr][nc] === null) penalizeIfEnemy(nr, nc);
+            }
+        } else if (general.control && general.control.length) {
+            for (let i = 0; i < general.control.length; i++) {
+                penalizeIfEnemy(general.control[i].r, general.control[i].c);
+            }
+        }
+    }
 };
 
 // Search leaves never construct UI relation lists. This path consumes only
@@ -2714,89 +2796,6 @@ const calculateNumericSearchLeafThreatValues = (piecesInfo, currentPlayer) => {
             );
             if (sseScore > 0) {
                 firstAttacker.threatValue += sseScore * 0.5;
-            }
-        }
-    }
-};
-
-// 计算安全值：将空控邻格是否被敌控（无 visit 回调）
-const calculateSafetyValues = (piecesInfo, boardInfo, board = null, forSearchLeaf = false) => {
-    if (forSearchLeaf && boardInfo && boardInfo.useAttackBits && board) {
-        for (let gi = 0; gi < piecesInfo.length; gi++) {
-            const general = piecesInfo[gi];
-            if (general.piece.type !== PIECE_TYPES.GENERAL) continue;
-
-            const generalColor = general.piece.color;
-            const enemyBits = generalColor === 'red' ? boardInfo.blackAttack : boardInfo.redAttack;
-            const isRed = generalColor === 'red';
-            const { r, c } = general;
-            for (let i = 0; i < ORTH_DIRS.length; i++) {
-                const nr = r + ORTH_DIRS[i][0];
-                const nc = c + ORTH_DIRS[i][1];
-                if (nc < 3 || nc > 5) continue;
-                if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
-                if (board[nr][nc] === null && hasAttackBit(enemyBits, nr * 9 + nc)) {
-                    general.safetyValue -= 50;
-                }
-            }
-        }
-        return;
-    }
-
-    const generalInfo = [];
-    for (let i = 0; i < piecesInfo.length; i++) {
-        if (piecesInfo[i].piece.type === PIECE_TYPES.GENERAL) {
-            generalInfo.push(piecesInfo[i]);
-        }
-    }
-
-    const useAttackBits = !!(boardInfo && boardInfo.useAttackBits);
-    const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
-
-    for (let gi = 0; gi < generalInfo.length; gi++) {
-        const general = generalInfo[gi];
-        const generalColor = general.piece.color;
-        const enemyColor = generalColor === 'red' ? 'black' : 'red';
-        const enemyBits = useAttackBits
-            ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
-            : null;
-        const isRed = generalColor === 'red';
-        const { r, c } = general;
-
-        const penalizeIfEnemy = (nr, nc) => {
-            let hasEnemyControl;
-            if (useAttackBits) {
-                hasEnemyControl = hasAttackBit(enemyBits, nr * 9 + nc);
-            } else {
-                const positionControllers = boardInfo[nr][nc];
-                hasEnemyControl = false;
-                for (let ci = 0; ci < positionControllers.length; ci++) {
-                    const controller = positionControllers[ci];
-                    const color = controller.piece ? controller.piece.color : controller.color;
-                    if (color === enemyColor) {
-                        hasEnemyControl = true;
-                        break;
-                    }
-                }
-            }
-            if (hasEnemyControl) general.safetyValue -= 50;
-        };
-
-        if ((useMasks && board) || ((!general.control || general.control.length === 0) && board)) {
-            for (let i = 0; i < ORTH_DIRS.length; i++) {
-                const nr = r + ORTH_DIRS[i][0];
-                const nc = c + ORTH_DIRS[i][1];
-                if (nc < 3 || nc > 5) continue;
-                if (isRed) {
-                    if (nr < 0 || nr > 2) continue;
-                } else if (nr < 7 || nr > 9) {
-                    continue;
-                }
-                if (board[nr][nc] === null) penalizeIfEnemy(nr, nc);
-            }
-        } else if (general.control && general.control.length) {
-            for (let i = 0; i < general.control.length; i++) {
-                penalizeIfEnemy(general.control[i].r, general.control[i].c);
             }
         }
     }
@@ -5889,7 +5888,9 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   const phase = getGamePhase();
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
 
-  const rootEvalResult = evaluateBoard(board, turn, gameStage);
+  const rootEvalResult = evaluateBoard(board, turn, gameStage, {
+    palaceControlOnly: !exactRootScores
+  });
   const rootPiecesInfo = rootEvalResult.piecesInfo;
   const rootBoardInfo = rootEvalResult.boardInfo;
 
