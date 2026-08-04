@@ -297,17 +297,6 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     protect: []
 }));
 
-const scratchLeafBoardInfo = {
-    useRelationMasks: true,
-    useAttackBits: true,
-    skipControlMask: true,
-    attackMask: scratchAttackMask,
-    guardMask: scratchGuardMask,
-    controlMask: scratchControlMask,
-    redAttack: scratchRedAttack,
-    blackAttack: scratchBlackAttack
-};
-
 let activeSearchPieceState = null;
 
 const searchPieceTypeCode = (type) => {
@@ -668,142 +657,6 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
-};
-
-const evaluateSearchLeafFast = (board, searchInitiator, gameStage) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    const piecesInfo = scratchLeafPiecesInfo;
-    let count = 0;
-    const pieceState = activePieceStateFor(board);
-    const numericLeaf = !!pieceState;
-    const materialValues = numericLeaf ? pieceState.materialValues : null;
-    let redMaterial = numericLeaf ? pieceState.redMaterial : 0;
-    let redPosition = numericLeaf ? pieceState.redPosition : 0;
-    let blackMaterial = numericLeaf ? pieceState.blackMaterial : 0;
-    let blackPosition = numericLeaf ? pieceState.blackPosition : 0;
-    let overflow = false;
-    if (pieceState) {
-        const records = pieceState.records;
-        for (let i = 0; i < records.length; i++) {
-            const record = records[i];
-            if (!record.alive) continue;
-            const info = scratchLeafPieceSlots[count++];
-            const pieceCode = pieceState.pieceCodes[i];
-            const piece = numericLeaf ? null : record.piece;
-            const materialValue = numericLeaf
-                ? materialValues[pieceCode & 7]
-                : getMaterialValue(piece, gameStage);
-            // Numeric leaves read the aggregate PST score from pieceState;
-            // no downstream search calculation consumes a per-piece PST value.
-            const positionValue = numericLeaf ? 0 : getPositionValue(piece, record.r, record.c);
-            info.piece = piece;
-            info.pieceCode = pieceCode;
-            info.r = record.r;
-            info.c = record.c;
-            info.sq = record.sq;
-            info.pieceIndex = count - 1;
-            info.materialValue = materialValue;
-            info.positionValue = positionValue;
-            piecesInfo[count - 1] = info;
-        }
-    } else {
-        scanBoard: for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const piece = board[r][c];
-                if (!piece) continue;
-                if (count >= scratchLeafPieceSlots.length) {
-                    overflow = true;
-                    break scanBoard;
-                }
-                const info = scratchLeafPieceSlots[count++];
-                const materialValue = getMaterialValue(piece, gameStage);
-                const positionValue = getPositionValue(piece, r, c);
-                info.piece = piece;
-                info.pieceCode = searchPieceCode(piece);
-                info.r = r;
-                info.c = c;
-                info.sq = r * 9 + c;
-                info.pieceIndex = count - 1;
-                info.materialValue = materialValue;
-                info.positionValue = positionValue;
-                info.threatValue = 0;
-                info.safetyValue = 0;
-                info.tacticValue = 0;
-                info.mobilityValue = 0;
-                piecesInfo[count - 1] = info;
-                if (piece.color === 'red') {
-                    redMaterial += materialValue;
-                    redPosition += positionValue;
-                } else {
-                    blackMaterial += materialValue;
-                    blackPosition += positionValue;
-                }
-            }
-        }
-    }
-    if (overflow) {
-        const result = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
-        const opponent = searchInitiator === 'red' ? 'black' : 'red';
-        return result[searchInitiator].total - result[opponent].total;
-    }
-    piecesInfo.length = count;
-
-    if (pieceState) {
-        calculatePackedSearchLeafRelations(piecesInfo, pieceState.squareCodes);
-        calculateNumericSearchLeafThreatValues(piecesInfo, searchInitiator);
-        calculateNumericSearchLeafSafetyValues(piecesInfo, pieceState.squareCodes);
-    } else {
-        clearRelationMasks(true);
-        clearAttackBits(scratchRedAttack);
-        clearAttackBits(scratchBlackAttack);
-        calculateDerivedValues(board, piecesInfo, searchInitiator, scratchLeafBoardInfo, true);
-    }
-
-    let redThreat = 0;
-    let redTactic = 0;
-    let redSafety = 0;
-    let redMobility = 0;
-    let blackThreat = 0;
-    let blackTactic = 0;
-    let blackSafety = 0;
-    let blackMobility = 0;
-    for (let i = 0; i < count; i++) {
-        const info = piecesInfo[i];
-        if (numericLeaf ? info.pieceCode < 8 : info.piece.color === 'red') {
-            redThreat += info.threatValue;
-            redTactic += info.tacticValue;
-            redSafety += info.safetyValue;
-            redMobility += info.mobilityValue;
-        } else {
-            blackThreat += info.threatValue;
-            blackTactic += info.tacticValue;
-            blackSafety += info.safetyValue;
-            blackMobility += info.mobilityValue;
-        }
-    }
-
-    const redTotal =
-        redMaterial * VALUE_WEIGHTS.material +
-        redPosition * VALUE_WEIGHTS.position +
-        redThreat * VALUE_WEIGHTS.threat +
-        redTactic * VALUE_WEIGHTS.tactic +
-        redSafety * VALUE_WEIGHTS.safety +
-        redMobility * VALUE_WEIGHTS.mobility;
-    const blackTotal =
-        blackMaterial * VALUE_WEIGHTS.material +
-        blackPosition * VALUE_WEIGHTS.position +
-        blackThreat * VALUE_WEIGHTS.threat +
-        blackTactic * VALUE_WEIGHTS.tactic +
-        blackSafety * VALUE_WEIGHTS.safety +
-        blackMobility * VALUE_WEIGHTS.mobility;
-
-    if (SEARCH_PROFILE) {
-        perfStats.fastLeafEvalCount++;
-        perfStats.fastLeafEvalMs += performance.now() - __t0;
-    } else {
-        perfStats.fastLeafEvalCount++;
-    }
-    return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
 // 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
@@ -2778,51 +2631,6 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
 
 // Search leaves never construct UI relation lists. This path consumes only
 // pieceCode/sq and the masks emitted by the numeric relation builder.
-const calculateNumericSearchLeafThreatValues = (piecesInfo, currentPlayer) => {
-    if (currentPlayer) {
-        perfStats.calculateThreatValuesCount[currentPlayer]++;
-    }
-
-    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
-    for (let ti = 0; ti < piecesInfo.length; ti++) {
-        const threatenedPiece = piecesInfo[ti];
-        const sq = threatenedPiece.sq;
-        const attackers = scratchAttackMask[sq];
-        if (attackers === 0) continue;
-
-        const firstAttacker = piecesInfo[lowestSetBitIndex(attackers)];
-        if ((threatenedPiece.pieceCode & 7) === 1) {
-            firstAttacker.threatValue += checkBonus;
-        } else if (scratchGuardMask[sq] === 0) {
-            firstAttacker.threatValue += threatenedPiece.materialValue;
-        } else {
-            const sseScore = calculateStaticExchangeScoreFromMasks(
-                threatenedPiece, piecesInfo, scratchAttackMask, scratchGuardMask
-            );
-            if (sseScore > 0) {
-                firstAttacker.threatValue += sseScore * 0.5;
-            }
-        }
-    }
-};
-
-const calculateNumericSearchLeafSafetyValues = (piecesInfo, squareCodes) => {
-    for (let gi = 0; gi < piecesInfo.length; gi++) {
-        const general = piecesInfo[gi];
-        if ((general.pieceCode & 7) !== 1) continue;
-
-        const isRed = general.pieceCode < 8;
-        const enemyBits = isRed ? scratchBlackAttack : scratchRedAttack;
-        const destinations = SEARCH_GENERAL_DEST[isRed ? 0 : 1][general.sq];
-        for (let i = 0; i < destinations.length; i++) {
-            const sq = destinations[i];
-            if (squareCodes[sq] === 0 && hasAttackBit(enemyBits, sq)) {
-                general.safetyValue -= 50;
-            }
-        }
-    }
-};
-
 // --- Types (Inlined to avoid import issues in Worker) ---
 // // type Color - TypeScript type removed for JavaScript compatibility 'red' | 'black';
 // // type PieceType - TypeScript type removed for JavaScript compatibility 'general' | 'advisor' | 'elephant' | 'horse' | 'chariot' | 'cannon' | 'soldier';
@@ -5213,6 +5021,116 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
     return zobristHasher.updateHash(boardHash, move, movingPiece, captured);
 };
 
+// 对弈 numeric 叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
+const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage) => {
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    const pieceState = activePieceStateFor(board);
+    const piecesInfo = scratchLeafPiecesInfo;
+    const records = pieceState.records;
+    const materialValues = pieceState.materialValues;
+    const squareCodes = pieceState.squareCodes;
+    let count = 0;
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        if (!record.alive) continue;
+        const info = scratchLeafPieceSlots[count];
+        const pieceCode = pieceState.pieceCodes[i];
+        info.piece = null;
+        info.pieceCode = pieceCode;
+        info.r = record.r;
+        info.c = record.c;
+        info.sq = record.sq;
+        info.pieceIndex = count;
+        info.materialValue = materialValues[pieceCode & 7];
+        info.positionValue = 0;
+        piecesInfo[count++] = info;
+    }
+    piecesInfo.length = count;
+
+    calculatePackedSearchLeafRelations(piecesInfo, squareCodes);
+
+    perfStats.calculateThreatValuesCount[searchInitiator]++;
+    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    const attackMask = scratchAttackMask;
+    const guardMask = scratchGuardMask;
+    for (let ti = 0; ti < count; ti++) {
+        const threatenedPiece = piecesInfo[ti];
+        const sq = threatenedPiece.sq;
+        const attackers = attackMask[sq] >>> 0;
+        if (attackers === 0) continue;
+
+        const firstBit = attackers & -attackers;
+        const firstAttacker = piecesInfo[31 - Math.clz32(firstBit)];
+        if ((threatenedPiece.pieceCode & 7) === 1) {
+            firstAttacker.threatValue += checkBonus;
+        } else if (guardMask[sq] === 0) {
+            firstAttacker.threatValue += threatenedPiece.materialValue;
+        } else if (attackers === firstBit) {
+            const sseScore = threatenedPiece.materialValue - firstAttacker.materialValue;
+            if (sseScore > 0) firstAttacker.threatValue += sseScore * 0.5;
+        } else {
+            const sseScore = calculateStaticExchangeScoreFromMasks(
+                threatenedPiece, piecesInfo, attackMask, guardMask
+            );
+            if (sseScore > 0) firstAttacker.threatValue += sseScore * 0.5;
+        }
+    }
+
+    for (let gi = 0; gi < count; gi++) {
+        const general = piecesInfo[gi];
+        if ((general.pieceCode & 7) !== 1) continue;
+        const isRed = general.pieceCode < 8;
+        const enemyBits = isRed ? scratchBlackAttack : scratchRedAttack;
+        const destinations = SEARCH_GENERAL_DEST[isRed ? 0 : 1][general.sq];
+        for (let i = 0; i < destinations.length; i++) {
+            const sq = destinations[i];
+            if (squareCodes[sq] === 0 && hasAttackBit(enemyBits, sq)) {
+                general.safetyValue -= 50;
+            }
+        }
+    }
+
+    let redThreat = 0;
+    let redSafety = 0;
+    let redMobility = 0;
+    let blackThreat = 0;
+    let blackSafety = 0;
+    let blackMobility = 0;
+    for (let i = 0; i < count; i++) {
+        const info = piecesInfo[i];
+        if (info.pieceCode < 8) {
+            redThreat += info.threatValue;
+            redSafety += info.safetyValue;
+            redMobility += info.mobilityValue;
+        } else {
+            blackThreat += info.threatValue;
+            blackSafety += info.safetyValue;
+            blackMobility += info.mobilityValue;
+        }
+    }
+
+    const redTotal =
+        pieceState.redMaterial * VALUE_WEIGHTS.material +
+        pieceState.redPosition * VALUE_WEIGHTS.position +
+        redThreat * VALUE_WEIGHTS.threat +
+        redSafety * VALUE_WEIGHTS.safety +
+        redMobility * VALUE_WEIGHTS.mobility;
+    const blackTotal =
+        pieceState.blackMaterial * VALUE_WEIGHTS.material +
+        pieceState.blackPosition * VALUE_WEIGHTS.position +
+        blackThreat * VALUE_WEIGHTS.threat +
+        blackSafety * VALUE_WEIGHTS.safety +
+        blackMobility * VALUE_WEIGHTS.mobility;
+
+    if (SEARCH_PROFILE) {
+        perfStats.fastLeafEvalCount++;
+        perfStats.fastLeafEvalMs += performance.now() - __t0;
+    } else {
+        perfStats.fastLeafEvalCount++;
+    }
+    return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
+};
+
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
 const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
@@ -5223,7 +5141,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
     if (SEARCH_PROFILE) perfStats.staticEvalCacheMisses++;
     let net;
     if (!SEARCH_COLLECT_MOVE_SEQUENCE) {
-        net = evaluateSearchLeafFast(board, searchInitiator, gameStage);
+        net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage);
     } else {
         const evalResult = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
         const opponent = searchInitiator === 'red' ? 'black' : 'red';
