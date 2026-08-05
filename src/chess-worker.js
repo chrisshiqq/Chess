@@ -227,6 +227,16 @@ const makeEmptyControllerGrid = () =>
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
 const REL_SQUARES = 90;
+const PACKED_CAPTURE_STRIDE = 8;
+const scratchPackedCaptureCounts = new Uint8Array(REL_SQUARES);
+const scratchPackedCaptureMoves = new Uint16Array(REL_SQUARES * PACKED_CAPTURE_STRIDE);
+const scratchPackedCaptureSources = new Uint8Array(16);
+const scratchPackedCaptures = [];
+let scratchPackedCaptureSourceCount = 0;
+let packedCaptureCacheKey = 0;
+let packedCaptureVerificationKey = 0;
+let packedCaptureGeneration = 0;
+let packedCapturePlayer = null;
 // 格号 → 行列：避免热路径反复 (sq/9)|0 与 sq%9
 const SQ_ROW = new Uint8Array(REL_SQUARES);
 const SQ_COL = new Uint8Array(REL_SQUARES);
@@ -2027,11 +2037,19 @@ const calculateSearchLeafRelations = (piecesInfo, squareCodes) => {
 
 // Search-only relation builder. It is equivalent to calculateSearchLeafRelations,
 // but reuses the packed move tables and rays already used by pseudo move generation.
-const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
+const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlayer = null) => {
     scratchAttackMask.fill(0);
     scratchGuardMask.fill(0);
     clearAttackBits(scratchRedAttack);
     clearAttackBits(scratchBlackAttack);
+    const collectCaptures = SEARCH_REUSE_PACKED_QS_CAPTURES && capturePlayer != null;
+    const captureIsRed = capturePlayer === 'red';
+    if (collectCaptures) {
+        for (let i = 0; i < scratchPackedCaptureSourceCount; i++) {
+            scratchPackedCaptureCounts[scratchPackedCaptureSources[i]] = 0;
+        }
+        scratchPackedCaptureSourceCount = 0;
+    }
 
     const baseMoveValue = EVALUATION_PARAMETERS.mobility.baseMoveValue;
     const attackMask = scratchAttackMask;
@@ -2054,6 +2072,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
         const attackTargetBit = isRed ? 1 : 2;
         const bit = 1 << pi;
         const attackBits = isRed ? redAttack : blackAttack;
+        const recordCaptures = collectCaptures && isRed === captureIsRed;
         let mobilityValue = 0;
 
         switch (pieceType) {
@@ -2075,6 +2094,13 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
                         mobilityValue += baseMoveValue;
                     } else if ((targetCode < 8) !== isRed) {
                         attackMask[sq] |= bit;
+                        if (recordCaptures) {
+                            if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                            scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                        }
                     } else if ((targetCode & 7) !== 1) {
                         guardMask[sq] |= bit;
                     }
@@ -2098,6 +2124,13 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
                         mobilityValue += baseMoveValue;
                     } else if ((targetCode < 8) !== isRed) {
                         attackMask[sq] |= bit;
+                        if (recordCaptures) {
+                            if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                            scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                        }
                     } else if ((targetCode & 7) !== 1) {
                         guardMask[sq] |= bit;
                     }
@@ -2117,7 +2150,16 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
                             mobilityValue += baseMoveValue;
                             continue;
                         }
-                        if ((targetCode < 8) !== isRed) attackMask[sq] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackMask[sq] |= bit;
+                            if (recordCaptures) {
+                                if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                    scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                            }
+                        }
                         else if ((targetCode & 7) !== 1) guardMask[sq] |= bit;
                         break;
                     }
@@ -2141,7 +2183,16 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
                                 attackBits[sq >>> 5] |= 1 << (sq & 31);
                             }
                         } else {
-                            if ((targetCode < 8) !== isRed) attackMask[sq] |= bit;
+                            if ((targetCode < 8) !== isRed) {
+                                attackMask[sq] |= bit;
+                                if (recordCaptures) {
+                                    if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                        scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                    }
+                                    const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                    scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                                }
+                            }
                             else if ((targetCode & 7) !== 1) guardMask[sq] |= bit;
                             break;
                         }
@@ -2152,6 +2203,25 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes) => {
                 break;
         }
         info.mobilityValue = mobilityValue;
+    }
+
+    if (collectCaptures) {
+        scratchPackedCaptures.length = 0;
+        for (let i = 1; i < scratchPackedCaptureSourceCount; i++) {
+            const sq = scratchPackedCaptureSources[i];
+            let j = i - 1;
+            while (j >= 0 && scratchPackedCaptureSources[j] > sq) {
+                scratchPackedCaptureSources[j + 1] = scratchPackedCaptureSources[j];
+                j--;
+            }
+            scratchPackedCaptureSources[j + 1] = sq;
+        }
+        for (let sourceIndex = 0; sourceIndex < scratchPackedCaptureSourceCount; sourceIndex++) {
+            const fromSq = scratchPackedCaptureSources[sourceIndex];
+            const count = scratchPackedCaptureCounts[fromSq];
+            const offset = fromSq * PACKED_CAPTURE_STRIDE;
+            for (let i = 0; i < count; i++) scratchPackedCaptures.push(scratchPackedCaptureMoves[offset + i]);
+        }
     }
 };
 
@@ -4779,6 +4849,9 @@ const SEARCH_NULL_WINDOW_EPS = 1e-6;
 let SEARCH_COLLECT_METRICS = false;
 let SEARCH_ENABLE_NON_ROOT_PVS = false;
 let SEARCH_ENABLE_STAGED_MOVE_PICKER = true;
+let SEARCH_REUSE_QS_MOVE_BUFFERS = true;
+let SEARCH_REUSE_PACKED_QS_CAPTURES = true;
+let SEARCH_VERIFY_PACKED_QS_CAPTURES = false;
 let SEARCH_ENABLE_KING_SAFETY_FAST_PATH = true;
 let SEARCH_VERIFY_KING_SAFETY_FAST_PATH = false;
 
@@ -4848,11 +4921,14 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, stagedMovePicker: searchStagedMovePicker = true, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, stagedMovePicker: searchStagedMovePicker = true, reuseQsMoveBuffers: searchReuseQsMoveBuffers = true, reusePackedQsCaptures: searchReusePackedQsCaptures = true, verifyPackedQsCaptures: searchVerifyPackedQsCaptures = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
             SEARCH_PROFILE = !!searchProfile;
             SEARCH_COLLECT_METRICS = !!searchMetrics;
             SEARCH_ENABLE_NON_ROOT_PVS = !!searchNonRootPvs;
             SEARCH_ENABLE_STAGED_MOVE_PICKER = !!searchStagedMovePicker;
+            SEARCH_REUSE_QS_MOVE_BUFFERS = !!searchReuseQsMoveBuffers;
+            SEARCH_REUSE_PACKED_QS_CAPTURES = !!searchReusePackedQsCaptures;
+            SEARCH_VERIFY_PACKED_QS_CAPTURES = !!searchVerifyPackedQsCaptures;
             SEARCH_ENABLE_KING_SAFETY_FAST_PATH = !!searchKingSafetyFastPath;
             SEARCH_VERIFY_KING_SAFETY_FAST_PATH = !!searchVerifyKingSafetyFastPath;
             // Set opening book enabled status
@@ -5176,7 +5252,7 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
 };
 
 // 对弈 numeric 叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage) => {
+const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const piecesInfo = scratchLeafPiecesInfo;
@@ -5201,7 +5277,7 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage) => {
     }
     piecesInfo.length = count;
 
-    calculatePackedSearchLeafRelations(piecesInfo, squareCodes);
+    calculatePackedSearchLeafRelations(piecesInfo, squareCodes, capturePlayer);
 
     if (SEARCH_COLLECT_METRICS) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
@@ -5286,7 +5362,7 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage) => {
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
+const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capturePlayer = null) => {
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
     const pieceState = activePieceStateFor(board);
     const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
@@ -5300,7 +5376,13 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
     if (SEARCH_PROFILE) perfStats.staticEvalCacheMisses++;
     let net;
     if (!SEARCH_COLLECT_MOVE_SEQUENCE) {
-        net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage);
+        net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
+        if (SEARCH_REUSE_PACKED_QS_CAPTURES && capturePlayer != null) {
+            packedCaptureCacheKey = cacheKey;
+            packedCaptureVerificationKey = verificationKey;
+            packedCaptureGeneration = evalCacheGeneration;
+            packedCapturePlayer = capturePlayer;
+        }
     } else {
         const evalResult = evaluateBoard(board, searchInitiator, gameStage, { forSearchLeaf: true });
         const opponent = searchInitiator === 'red' ? 'black' : 'red';
@@ -5315,10 +5397,40 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
 
 // Generate captures for normal QS nodes, or every pseudo move when the side to
 // move is in check and must search all evasions.
-const generateQuiescenceMoves = (board, currentPlayer, capturesOnly) => {
+const quiescenceMoveBuffers = [];
+const verifyPackedCaptureScratch = [];
+
+const copyPackedRelationCaptures = (
+    moves, currentPlayer, boardHash, searchInitiator, gameStage, board
+) => {
+    if (!SEARCH_REUSE_PACKED_QS_CAPTURES || SEARCH_COLLECT_MOVE_SEQUENCE) return false;
+    const pieceState = activePieceStateFor(board);
+    if (!pieceState || packedCaptureGeneration !== evalCacheGeneration) return false;
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
+    if (packedCaptureCacheKey !== cacheKey ||
+        packedCaptureVerificationKey !== pieceState.evalVerificationHash) return false;
+    if (packedCapturePlayer !== currentPlayer) return false;
+    const captures = scratchPackedCaptures;
+    for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
+    if (SEARCH_VERIFY_PACKED_QS_CAPTURES) {
+        generateQuiescenceMoves(board, currentPlayer, true, verifyPackedCaptureScratch);
+        if (moves.length !== verifyPackedCaptureScratch.length) {
+            throw new Error(`Packed QS capture count mismatch: ${moves.length}/${verifyPackedCaptureScratch.length}`);
+        }
+        for (let i = 0; i < moves.length; i++) {
+            if (moves[i] !== verifyPackedCaptureScratch[i]) {
+                throw new Error(`Packed QS capture mismatch at ${i}: ${moves[i]}/${verifyPackedCaptureScratch[i]}`);
+            }
+        }
+    }
+    return true;
+};
+
+const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     if (SEARCH_PROFILE) perfStats.captureGenCount++;
-    const moves = [];
+    const moves = destination || [];
+    moves.length = 0;
     const pieceState = activePieceStateFor(board);
     if (pieceState) {
         const records = pieceState.records;
@@ -5406,13 +5518,16 @@ const sortCapturesPlay = (captures, board, gameStage) => {
 
 const quiescencePlay = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, gameStage, qsDepth, boardHash = 0
+    searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
     if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
     const inCheck = isCheckRaw(b, currentPlayer);
     let standPat;
     if (!inCheck) {
-        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
+        standPat = staticSearchEval(
+            b, searchInitiator, gameStage, boardHash,
+            qsDepth > 0 ? currentPlayer : null
+        );
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
             if (standPat >= beta) return standPat;
@@ -5423,7 +5538,18 @@ const quiescencePlay = (
         }
     }
 
-    const moves = generateQuiescenceMoves(b, currentPlayer, !inCheck);
+    let moves = SEARCH_REUSE_QS_MOVE_BUFFERS ? quiescenceMoveBuffers[qsPly] : null;
+    if (!moves) {
+        moves = [];
+        if (SEARCH_REUSE_QS_MOVE_BUFFERS) quiescenceMoveBuffers[qsPly] = moves;
+    } else {
+        moves.length = 0;
+    }
+    if (inCheck || !copyPackedRelationCaptures(
+        moves, currentPlayer, boardHash, searchInitiator, gameStage, b
+    )) {
+        generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
+    }
     if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) return inCheck
         ? quiescenceMateValue(currentPlayer, searchInitiator)
@@ -5452,7 +5578,7 @@ const quiescencePlay = (
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const value = quiescencePlay(
             b, alpha, beta, nextPlayer === searchInitiator, nextPlayer,
-            searchInitiator, gameStage, qsDepth - 1, nextHash
+            searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
         );
         unmakeSearchMove(b, move, captured);
 
@@ -5681,13 +5807,13 @@ const alphaBetaPlay = (
 
 const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, gameStage, qsDepth, boardHash = 0
+    searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
     if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
     const inCheck = isCheckRaw(b, currentPlayer);
     let standPat;
     if (!inCheck) {
-        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
+        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash, currentPlayer);
         if (qsDepth <= 0) return { value: standPat, moveSequence: [] };
         if (maximizing) {
             if (standPat >= beta) return { value: standPat, moveSequence: [] };
@@ -5698,7 +5824,14 @@ const quiescence = (
         }
     }
 
-    const moves = generateQuiescenceMoves(b, currentPlayer, !inCheck);
+    let moves = SEARCH_REUSE_QS_MOVE_BUFFERS ? quiescenceMoveBuffers[qsPly] : null;
+    if (!moves) {
+        moves = [];
+        if (SEARCH_REUSE_QS_MOVE_BUFFERS) quiescenceMoveBuffers[qsPly] = moves;
+    } else {
+        moves.length = 0;
+    }
+    generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
     if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) {
         return {
@@ -5738,7 +5871,7 @@ const quiescence = (
         const nextMaximizing = nextPlayer === searchInitiator;
         const result = quiescence(
             b, alpha, beta, nextMaximizing, nextPlayer,
-            searchInitiator, gameStage, qsDepth - 1, nextHash
+            searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
         );
         unmakeSearchMove(b, move, captured);
 
