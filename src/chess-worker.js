@@ -1170,6 +1170,98 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
     return moves;
 };
 
+// Non-check Play nodes consume moves in stages. Partitioning is stable, and a
+// stage is sorted only when search reaches it, so an early cutoff avoids work
+// on all later stages. Packed boundaries use one byte per stage end.
+const prepareStagedMovesPlay = (moves, board, ttMove, killers) => {
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    if (SEARCH_PROFILE) perfStats.sortMovesCount++;
+    const pieceState = activePieceStateFor(board);
+    if (!pieceState) return -1;
+    const squareToSlot = pieceState.squareToSlot;
+    let write = 0;
+
+    if (ttMove != null) {
+        for (let read = 0; read < moves.length; read++) {
+            if (moves[read] !== ttMove) continue;
+            const move = moves[read];
+            for (let i = read; i > write; i--) moves[i] = moves[i - 1];
+            moves[write++] = move;
+            break;
+        }
+    }
+    const ttEnd = write;
+
+    if (killers) {
+        while (write < moves.length) {
+            let read = write;
+            while (read < moves.length) {
+                const candidate = moves[read];
+                if (squareToSlot[candidate & MOVE_TO_MASK] < 0 &&
+                    (candidate === killers[0] || candidate === killers[1])) break;
+                read++;
+            }
+            if (read === moves.length) break;
+            const move = moves[read];
+            for (let i = read; i > write; i--) moves[i] = moves[i - 1];
+            moves[write++] = move;
+        }
+    }
+    const killerEnd = write;
+
+    while (write < moves.length) {
+        let read = write;
+        while (read < moves.length && squareToSlot[moves[read] & MOVE_TO_MASK] < 0) read++;
+        if (read === moves.length) break;
+        const move = moves[read];
+        for (let i = read; i > write; i--) moves[i] = moves[i - 1];
+        moves[write++] = move;
+    }
+    const captureEnd = write;
+    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+    return ttEnd | (killerEnd << 8) | (captureEnd << 16);
+};
+
+const sortStagedMoveRangePlay = (moves, start, end, board, killers) => {
+    if (end - start <= 1) return;
+    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    const pieceState = activePieceStateFor(board);
+    const squareToSlot = pieceState.squareToSlot;
+    const pieceCodes = pieceState.pieceCodes;
+    const materialValues = pieceState.materialValues;
+
+    for (let index = start; index < end; index++) {
+        const move = moves[index];
+        const fromSq = move >>> 7;
+        const toSq = move & MOVE_TO_MASK;
+        const targetSlot = squareToSlot[toSq];
+        let score = getHistoryScore(move);
+        if (targetSlot >= 0) {
+            score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
+                materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+        } else if (killers && move === killers[0]) {
+            score += 8000;
+        } else if (killers && move === killers[1]) {
+            score += 7000;
+        }
+        sortMoveScoreScratch[index] = score;
+    }
+
+    for (let i = start + 1; i < end; i++) {
+        const move = moves[i];
+        const score = sortMoveScoreScratch[i];
+        let j = i - 1;
+        while (j >= start && sortMoveScoreScratch[j] < score) {
+            moves[j + 1] = moves[j];
+            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
+            j--;
+        }
+        moves[j + 1] = move;
+        sortMoveScoreScratch[j + 1] = score;
+    }
+    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+};
+
 // 搜索用着法准备（轻量）：不建关系图/威胁/机动性
 // SEARCH_DEFER_LEGALITY=true：只生成伪合法，合法性在试走时检测
 // SEARCH_DEFER_LEGALITY=false：预过滤合法着（旧路径，便于 A/B）
@@ -4686,6 +4778,7 @@ const SEARCH_QUIESCENCE_DEPTH = 2;
 const SEARCH_NULL_WINDOW_EPS = 1e-6;
 let SEARCH_COLLECT_METRICS = false;
 let SEARCH_ENABLE_NON_ROOT_PVS = false;
+let SEARCH_ENABLE_STAGED_MOVE_PICKER = true;
 let SEARCH_ENABLE_KING_SAFETY_FAST_PATH = true;
 let SEARCH_VERIFY_KING_SAFETY_FAST_PATH = false;
 
@@ -4755,10 +4848,11 @@ if (typeof self !== 'undefined') {
     
     switch (type) {            
         case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
+            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, stagedMovePicker: searchStagedMovePicker = true, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
             SEARCH_PROFILE = !!searchProfile;
             SEARCH_COLLECT_METRICS = !!searchMetrics;
             SEARCH_ENABLE_NON_ROOT_PVS = !!searchNonRootPvs;
+            SEARCH_ENABLE_STAGED_MOVE_PICKER = !!searchStagedMovePicker;
             SEARCH_ENABLE_KING_SAFETY_FAST_PATH = !!searchKingSafetyFastPath;
             SEARCH_VERIFY_KING_SAFETY_FAST_PATH = !!searchVerifyKingSafetyFastPath;
             // Set opening book enabled status
@@ -5219,11 +5313,12 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
     return net;
 };
 
-// 生成当前方吃子着（供静默搜索）
-const generateCapturesForSearch = (board, currentPlayer) => {
+// Generate captures for normal QS nodes, or every pseudo move when the side to
+// move is in check and must search all evasions.
+const generateQuiescenceMoves = (board, currentPlayer, capturesOnly) => {
     const __t0 = SEARCH_PROFILE ? performance.now() : 0;
     if (SEARCH_PROFILE) perfStats.captureGenCount++;
-    const captures = [];
+    const moves = [];
     const pieceState = activePieceStateFor(board);
     if (pieceState) {
         const records = pieceState.records;
@@ -5236,12 +5331,12 @@ const generateCapturesForSearch = (board, currentPlayer) => {
             const record = records[slot];
             if (!record.alive || record.piece.color !== currentPlayer) continue;
             const generated = appendSearchPseudoMovesForPiece(
-                captures, sq, pieceCodes[slot], squareCodes, true
+                moves, sq, pieceCodes[slot], squareCodes, capturesOnly
             );
             if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += generated;
         }
         if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
-        return captures;
+        return moves;
     }
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -5252,13 +5347,21 @@ const generateCapturesForSearch = (board, currentPlayer) => {
             if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += pseudo.length;
             for (let i = 0; i < pseudo.length; i++) {
                 const to = pseudo[i];
-                if (board[to.r][to.c]) captures.push(encodeMoveFromCoords(r, c, to.r, to.c));
+                if (!capturesOnly || board[to.r][to.c]) {
+                    moves.push(encodeMoveFromCoords(r, c, to.r, to.c));
+                }
             }
         }
     }
     if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
-    return captures;
+    return moves;
 };
+
+const generateCapturesForSearch = (board, currentPlayer) =>
+    generateQuiescenceMoves(board, currentPlayer, true);
+
+const quiescenceMateValue = (currentPlayer, searchInitiator) =>
+    currentPlayer === searchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 // Play search has no PV to retain, so keep its recursive hot path primitive-only.
@@ -5306,27 +5409,36 @@ const quiescencePlay = (
     searchInitiator, gameStage, qsDepth, boardHash = 0
 ) => {
     if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
-    const standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
-
-    if (qsDepth <= 0) return standPat;
-
-    if (maximizing) {
-        if (standPat >= beta) return standPat;
-        if (standPat > alpha) alpha = standPat;
-    } else {
-        if (standPat <= alpha) return standPat;
-        if (standPat < beta) beta = standPat;
+    const inCheck = isCheckRaw(b, currentPlayer);
+    let standPat;
+    if (!inCheck) {
+        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
+        if (qsDepth <= 0) return standPat;
+        if (maximizing) {
+            if (standPat >= beta) return standPat;
+            if (standPat > alpha) alpha = standPat;
+        } else {
+            if (standPat <= alpha) return standPat;
+            if (standPat < beta) beta = standPat;
+        }
     }
 
-    const captures = generateCapturesForSearch(b, currentPlayer);
-    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += captures.length;
-    if (captures.length === 0) return standPat;
+    const moves = generateQuiescenceMoves(b, currentPlayer, !inCheck);
+    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
+    if (moves.length === 0) return inCheck
+        ? quiescenceMateValue(currentPlayer, searchInitiator)
+        : standPat;
 
-    sortCapturesPlay(captures, b, gameStage);
+    if (inCheck) {
+        sortMovesPlay(moves, b, currentPlayer, null, gameStage, null, null, null, false);
+    } else {
+        sortCapturesPlay(moves, b, gameStage);
+    }
 
-    let bestEval = standPat;
-    for (let i = 0; i < captures.length; i++) {
-        const move = captures[i];
+    let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
+    let legalMovesFound = 0;
+    for (let i = 0; i < moves.length; i++) {
+        const move = moves[i];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer)) {
@@ -5335,6 +5447,7 @@ const quiescencePlay = (
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
+        legalMovesFound++;
         if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const value = quiescencePlay(
@@ -5351,6 +5464,9 @@ const quiescencePlay = (
             if (value < beta) beta = value;
         }
         if (beta <= alpha) break;
+    }
+    if (inCheck && legalMovesFound === 0) {
+        return quiescenceMateValue(currentPlayer, searchInitiator);
     }
     return bestEval;
 };
@@ -5416,10 +5532,30 @@ const alphaBetaPlay = (
     }
 
     const killersAtDepth = killerMoves[d] || [null, null];
-    moves = sortMovesPlay(
-        moves, b, currentPlayer, abPiecesInfo, gameStage, abBoardInfo,
-        ttMove, killersAtDepth, inCheck
-    );
+    let stagedPlan = (!inCheck && SEARCH_ENABLE_STAGED_MOVE_PICKER)
+        ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
+        : -1;
+    let stagedStage = 0;
+    let stagedEnd = moves.length;
+    if (stagedPlan >= 0) {
+        stagedEnd = stagedPlan & 0xff;
+        while (stagedEnd === 0 && stagedStage < 3) {
+            stagedStage++;
+            stagedEnd = stagedStage === 1
+                ? (stagedPlan >>> 8) & 0xff
+                : stagedStage === 2
+                    ? (stagedPlan >>> 16) & 0xff
+                    : moves.length;
+        }
+        if (stagedStage > 0) {
+            sortStagedMoveRangePlay(moves, 0, stagedEnd, b, killersAtDepth);
+        }
+    } else {
+        moves = sortMovesPlay(
+            moves, b, currentPlayer, abPiecesInfo, gameStage, abBoardInfo,
+            ttMove, killersAtDepth, inCheck
+        );
+    }
     if (SEARCH_COLLECT_METRICS && moves.length) {
         recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
     }
@@ -5429,6 +5565,17 @@ const alphaBetaPlay = (
     let legalMovesFound = 0;
 
     for (let moveIndex = 0; moveIndex < moves.length; moveIndex++) {
+        if (stagedPlan >= 0 && moveIndex === stagedEnd) {
+            do {
+                stagedStage++;
+                stagedEnd = stagedStage === 1
+                    ? (stagedPlan >>> 8) & 0xff
+                    : stagedStage === 2
+                        ? (stagedPlan >>> 16) & 0xff
+                        : moves.length;
+            } while (stagedEnd === moveIndex && stagedStage < 3);
+            sortStagedMoveRangePlay(moves, moveIndex, stagedEnd, b, killersAtDepth);
+        }
         const move = moves[moveIndex];
         const isCapture = !!b[moveToR(move)][moveToC(move)];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
@@ -5537,50 +5684,46 @@ const quiescence = (
     searchInitiator, gameStage, qsDepth, boardHash = 0
 ) => {
     if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
-    const standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
-
-    if (qsDepth <= 0) {
-        return { value: standPat, moveSequence: [] };
-    }
-
-    if (maximizing) {
-        if (standPat >= beta) {
-            return { value: standPat, moveSequence: [] };
-        }
-        if (standPat > alpha) {
-            alpha = standPat;
-        }
-    } else {
-        if (standPat <= alpha) {
-            return { value: standPat, moveSequence: [] };
-        }
-        if (standPat < beta) {
-            beta = standPat;
+    const inCheck = isCheckRaw(b, currentPlayer);
+    let standPat;
+    if (!inCheck) {
+        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
+        if (qsDepth <= 0) return { value: standPat, moveSequence: [] };
+        if (maximizing) {
+            if (standPat >= beta) return { value: standPat, moveSequence: [] };
+            if (standPat > alpha) alpha = standPat;
+        } else {
+            if (standPat <= alpha) return { value: standPat, moveSequence: [] };
+            if (standPat < beta) beta = standPat;
         }
     }
 
-    let captures = generateCapturesForSearch(b, currentPlayer);
-    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += captures.length;
-    if (captures.length === 0) {
-        return { value: standPat, moveSequence: [] };
+    const moves = generateQuiescenceMoves(b, currentPlayer, !inCheck);
+    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
+    if (moves.length === 0) {
+        return {
+            value: inCheck ? quiescenceMateValue(currentPlayer, searchInitiator) : standPat,
+            moveSequence: []
+        };
     }
 
-    // MVV-LVA：先试吃大子
-    captures.sort((a, bMove) => {
+    // Captures use MVV-LVA; evasions also include quiet king moves and blocks.
+    moves.sort((a, bMove) => {
         const scoreA =
-            getMaterialValue(b[moveToR(a)][moveToC(a)], gameStage) * 16 -
+            (b[moveToR(a)][moveToC(a)] ? getMaterialValue(b[moveToR(a)][moveToC(a)], gameStage) * 16 : 0) -
             getMaterialValue(b[moveFromR(a)][moveFromC(a)], gameStage);
         const scoreB =
-            getMaterialValue(b[moveToR(bMove)][moveToC(bMove)], gameStage) * 16 -
+            (b[moveToR(bMove)][moveToC(bMove)] ? getMaterialValue(b[moveToR(bMove)][moveToC(bMove)], gameStage) * 16 : 0) -
             getMaterialValue(b[moveFromR(bMove)][moveFromC(bMove)], gameStage);
         return scoreB - scoreA;
     });
 
-    let bestEval = standPat;
+    let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
     let bestMoveSequence = [];
+    let legalMovesFound = 0;
 
-    for (let i = 0; i < captures.length; i++) {
-        const move = captures[i];
+    for (let i = 0; i < moves.length; i++) {
+        const move = moves[i];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer)) {
@@ -5589,6 +5732,7 @@ const quiescence = (
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
+        legalMovesFound++;
         if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
@@ -5622,6 +5766,11 @@ const quiescence = (
         if (beta <= alpha) {
             break;
         }
+    }
+
+    if (inCheck && legalMovesFound === 0) {
+        bestEval = quiescenceMateValue(currentPlayer, searchInitiator);
+        bestMoveSequence = [];
     }
 
     return { value: bestEval, moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE ? bestMoveSequence : [] };
