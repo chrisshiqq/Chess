@@ -34,6 +34,11 @@ import { ClockDisplay, FlyingPiece, formatTime } from './AppUI';
 import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
 import { PeerSession, generateRoomCode } from './net/PeerSession';
 import type { AppScreen, ConnectionStatus, NetMessage, OnlineSessionInfo } from './net/types';
+import {
+    isReplyingToOpponentCheck,
+    violatesRepeatedCheckCycle,
+    type PositionHistoryEntry
+} from './repetitionRules';
 
 /*
 import { 
@@ -415,13 +420,7 @@ const App: React.FC = () => {
 
     // 长将和长捉检测
     // 局面历史，存储哈希值和被捉棋子信息
-    const [positionHistory, setPositionHistory] = useState<Array<{ 
-        hash: string; 
-        capturedTarget?: { type: PieceType; position: Position };
-        initiator?: Color; // 主动发起方（将军或捉子的一方）
-        isCheck?: boolean; // 是否将军
-        isChase?: boolean; // 是否捉子
-    }>>([]);
+    const [positionHistory, setPositionHistory] = useState<PositionHistoryEntry[]>([]);
     const [repetitionWarning, setRepetitionWarning] = useState<string | null>(null); // 重复警告
 
     // 随机选择棋盘和棋子
@@ -1117,13 +1116,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
     // 检测长将或长捉
     const checkRepetition = async (
         newHash: string, 
-        history: Array<{ 
-            hash: string; 
-            capturedTarget?: { type: PieceType; position: Position };
-            initiator?: Color; // 主动发起方（将军或捉子的一方）
-            isCheck?: boolean; // 是否将军
-            isChase?: boolean; // 是否捉子
-        }>, 
+        history: PositionHistoryEntry[],
         lastMove: Move, 
         boardBeforeMove: Board,
         turn: Color
@@ -1144,6 +1137,12 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         
         // 确定发起方：如果构成将军或捉子，当前走棋方是发起方
         const initiator = (isCheck || isChase) ? turn : undefined;
+
+        // 三个完整循环后不立即判和；同一将军局面第4次出现时，发起方必须变招。
+        if (violatesRepeatedCheckCycle(history, newHash, isCheck)) {
+            console.log('⚠️ 长将检测：' + turn + '方试图第4次发起相同将军循环，必须变招');
+            return { violation: true, type: 'check' };
+        }
         
         // 计算相同局面且相同发起方的重复次数
         let initiatorRepeatCount = 0;
@@ -1489,6 +1488,21 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
                         await executeMoveWithDelay(payload.secondBestMove, currentTurn, isAutoMode, delay);
                         return;
                     }
+
+                    // 最优和次优都违规时，继续按引擎根着法排序寻找棋力最好的变招。
+                    const attemptedMoves = [payload.bestMove, payload.secondBestMove].filter(Boolean) as Move[];
+                    for (const moveData of payload.allMovesWithScores || []) {
+                        const candidate = moveData.move as Move | undefined;
+                        if (!candidate || attemptedMoves.some(move =>
+                            move.from.r === candidate.from.r && move.from.c === candidate.from.c &&
+                            move.to.r === candidate.to.r && move.to.c === candidate.to.c
+                        )) continue;
+                        attemptedMoves.push(candidate);
+                        if (await tryMove(candidate)) {
+                            await executeMoveWithDelay(candidate, currentTurn, isAutoMode, delay);
+                            return;
+                        }
+                    }
                     
                     // 尝试其他走法
                     const allMoves = await getAllMoves(currentBoard, currentTurn);
@@ -1501,7 +1515,7 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
                     }
                     
                     // 排除已经尝试过的最优和次优走法
-                    const excludeMoves = [payload.bestMove, payload.secondBestMove].filter(m => m);
+                    const excludeMoves = attemptedMoves;
                     const validMove = await findValidMove(allMoves, excludeMoves);
                     if (validMove) {
                         await executeMoveWithDelay(validMove, currentTurn, isAutoMode, delay);
@@ -1689,11 +1703,12 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
         // 检查是否构成将军（走棋后对手是否被将军）
         const isCheck = await isBoardInCheck(newBoard, nextTurn);
         const isChase = capturingResult.isThreat;
-        const initiator = (isCheck || isChase) ? turn : undefined;
+        const initiator = (isCheck || isChase) ? currentTurn : undefined;
         
         // 更新局面历史
         const updatedPositionHistory = [...positionHistory, { 
             hash: newHash, 
+            mover: currentTurn,
             capturedTarget: capturingResult.isThreat ? capturingResult.targetPiece : undefined,
             initiator,
             isCheck,
@@ -1707,10 +1722,13 @@ console.log("✅ Worker loaded successfully (Inline Worker)");
             // 检查是否不属于长将和长捉的情况
             const inCheck = await isBoardInCheck(newBoard, nextTurn);
             const isThreat = capturingResult.isThreat;
+            const completedLongCheckCycle = isReplyingToOpponentCheck(positionHistory, currentTurn);
             
-            if (!inCheck && !isThreat) {
+            if (!inCheck && !isThreat && !completedLongCheckCycle) {
                 // 调用游戏结束处理函数
                 handleGameOver('draw', null, '局面重复4次，判定和棋！');
+            } else if (completedLongCheckCycle) {
+                console.log('⚠️ 长将循环已完成3次，等待将军方下一回合变招');
             }
         }
 
