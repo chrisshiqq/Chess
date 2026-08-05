@@ -3,16 +3,16 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ========================================
-echo  Chinese Chess - Standalone Build
+echo  Chinese Chess - Web Build
 echo ========================================
 echo.
 
-if not exist "src\chess-worker.js" (
-  echo [ERROR] src\chess-worker.js not found
-  goto :fail
-)
 if not exist "src\App.tsx" (
   echo [ERROR] src\App.tsx not found
+  goto :fail
+)
+if not exist "src\worker\chess-worker.ts" (
+  echo [ERROR] src\worker\chess-worker.ts not found
   goto :fail
 )
 if not exist "package.json" (
@@ -46,31 +46,23 @@ if not exist "node_modules\" (
   echo.
 )
 
-echo [1/2] Inline chess-worker.js into App.tsx ...
-"%NODE_CMD%" "src\inline-worker.js"
-if errorlevel 1 (
-  echo [ERROR] inline worker failed
-  goto :fail
-)
-echo.
-
-echo [2/2] Building bundle ...
+echo [1/1] Building web bundle ...
 call npm.cmd run build
 if errorlevel 1 (
-  echo [ERROR] standalone build failed
+  echo [ERROR] web build failed
   goto :fail
 )
 
 echo.
 echo ========================================
 echo  Build OK
-echo  Output: dist-standalone\index.html
+echo  Output: docs\index.html
 echo ========================================
 pause
 exit /b 0
 
 :fail
 echo.
-echo Build failed.
+echo Web build failed.
 pause
 exit /b 1

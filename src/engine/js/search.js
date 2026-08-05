@@ -1,19 +1,22 @@
 /* eslint-disable no-restricted-globals */
 
-// 棋盘常量定义
-const ROWS = 10;
-const COLS = 9;
-
-// 棋子类型定义
-const PIECE_TYPES = {
-    GENERAL: 'general',
-    CHARIOT: 'chariot',
-    CANNON: 'cannon',
-    HORSE: 'horse',
-    ELEPHANT: 'elephant',
-    ADVISOR: 'advisor',
-    SOLDIER: 'soldier'
-};
+import { COLS, PIECE_TYPES, REL_SQUARES, ROWS, SQ_COL, SQ_ROW } from './board.js';
+import {
+    MOVE_TO_MASK,
+    encodeMove,
+    encodeMoveFromCoords,
+    isEncodedMove,
+    moveFromC,
+    moveFromR,
+    moveFromSq,
+    moveToC,
+    moveToObject,
+    moveToR,
+    moveToSq
+} from './movegen.js';
+import { searchContext } from './search-context.js';
+import { VALUE_WEIGHTS } from './evaluation.js';
+import { isValidPlacement } from './rules.js';
 
 // 材料值权重配置
 const MATERIAL_VALUES = {
@@ -36,23 +39,6 @@ const MATERIAL_VALUES = {
         mid: 200,      // 中局阶段
         late: 450      // 残局阶段
     }                  // 兵/卒
-};
-
-// 棋子价值权重配置
-let VALUE_WEIGHTS = {
-    //material: 0.4,   // 材料值权重
-    //position: 0.2,   // 位置值权重
-    //threat: 0.15,    // 威胁值权重
-    //tactic: 0.1,     // 战术值权重
-    //safety: 0.1,     // 安全值权重
-    //mobility: 0.05   // 机动值权重
-
-    material: 1,    // 材料值权重
-    position: 1,    // 位置值权重
-    threat: 1,     // 威胁值权重
-    tactic: 1,      // 战术值权重
-    safety: 1,      // 安全值权重
-    mobility: 1     // 机动值权重
 };
 
 // 评估算法参数配置 - 集中定义所有权重系数和加成数字
@@ -208,8 +194,6 @@ const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘（A/B 可关闭）
 // 静默搜索吃子生成复用搜索态棋子表；独立开关用于 A/B。
 // 仅基准诊断开启：额外 performance.now 会影响绝对耗时，正式对弈保持关闭。
-let SEARCH_PROFILE = false;
-
 const clearAttackBits = (bits) => {
     bits[0] = 0;
     bits[1] = 0;
@@ -226,7 +210,6 @@ const makeEmptyControllerGrid = () =>
     Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
-const REL_SQUARES = 90;
 const PACKED_CAPTURE_STRIDE = 8;
 const scratchPackedCaptureCounts = new Uint8Array(REL_SQUARES);
 const scratchPackedCaptureMoves = new Uint16Array(REL_SQUARES * PACKED_CAPTURE_STRIDE);
@@ -237,13 +220,6 @@ let packedCaptureCacheKey = 0;
 let packedCaptureVerificationKey = 0;
 let packedCaptureGeneration = 0;
 let packedCapturePlayer = null;
-// 格号 → 行列：避免热路径反复 (sq/9)|0 与 sq%9
-const SQ_ROW = new Uint8Array(REL_SQUARES);
-const SQ_COL = new Uint8Array(REL_SQUARES);
-for (let __sq = 0; __sq < REL_SQUARES; __sq++) {
-    SQ_ROW[__sq] = (__sq / 9) | 0;
-    SQ_COL[__sq] = __sq % 9;
-}
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
 const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
@@ -526,9 +502,9 @@ const forEachSetBit = (mask, fn) => {
 // 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    const __t0 = searchContext.profile ? performance.now() : 0;
     // 统计
-    if (SEARCH_COLLECT_METRICS && currentPlayer) {
+    if (searchContext.collectMetrics && currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
@@ -690,7 +666,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         gameStage: gameStage,
         boardInfo: boardInfo
     };
-    if (SEARCH_PROFILE) {
+    if (searchContext.profile) {
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
@@ -763,7 +739,7 @@ const unmakeMove = (board, from, to, captured) => {
 
 // 仅普通节点使用：父局面安全且起终点不影响将线或敌马依赖格时，走子后仍必然安全。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
-    if (!SEARCH_ENABLE_KING_SAFETY_FAST_PATH || wasInCheck || !state || move == null) return false;
+    if (!searchContext.kingSafetyFastPath || wasInCheck || !state || move == null) return false;
     const fromSq = moveFromSq(move);
     const toSq = moveToSq(move);
     const generalSq = color === 'red' ? state.redGeneralSq : state.blackGeneralSq;
@@ -792,25 +768,25 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
 const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_COLLECT_METRICS) perfStats.legalityChecks++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.collectMetrics) perfStats.legalityChecks++;
     const pieceState = activePieceStateFor(board);
     if (kingSafetyIsUnchangedByMove(pieceState, color, move, wasInCheck)) {
-        if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyFastSkips++;
-        if (SEARCH_VERIFY_KING_SAFETY_FAST_PATH) {
+        if (searchContext.collectMetrics) perfStats.kingSafetyFastSkips++;
+        if (searchContext.verifyKingSafetyFastPath) {
             const unsafe = pieceState
                 ? isCheckRawFromPieceState(pieceState, color)
                 : (isFlyingGeneral(board) || isCheckRaw(board, color));
             if (unsafe) {
-                if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyVerificationFailures++;
+                if (searchContext.collectMetrics) perfStats.kingSafetyVerificationFailures++;
                 return true;
             }
         }
         return false;
     }
-    if (SEARCH_COLLECT_METRICS) perfStats.kingSafetyFullChecks++;
+    if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
     const unsafe = pieceState ? isCheckRawFromPieceState(pieceState, color) : (isFlyingGeneral(board) || isCheckRaw(board, color));
-    if (SEARCH_PROFILE) perfStats.legalityCheckMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
 };
 
@@ -825,27 +801,6 @@ const filterLegalMoves = (board, from, piece, pseudoMoves) => {
         if (!illegal) validMoves.push(to);
     }
     return validMoves;
-};
-
-// Search hot path move encoding: move = (fromSq << 7) | toSq.
-const MOVE_TO_MASK = 0x7f;
-const encodeMove = (from, to) => ((from.r * 9 + from.c) << 7) | (to.r * 9 + to.c);
-const encodeMoveFromCoords = (fr, fc, tr, tc) => ((fr * 9 + fc) << 7) | (tr * 9 + tc);
-const isEncodedMove = (move) => typeof move === 'number';
-const moveFromSq = (move) => isEncodedMove(move) ? (move >>> 7) : move.from.r * 9 + move.from.c;
-const moveToSq = (move) => isEncodedMove(move) ? (move & MOVE_TO_MASK) : move.to.r * 9 + move.to.c;
-const moveFromR = (move) => SQ_ROW[moveFromSq(move)];
-const moveFromC = (move) => SQ_COL[moveFromSq(move)];
-const moveToR = (move) => SQ_ROW[moveToSq(move)];
-const moveToC = (move) => SQ_COL[moveToSq(move)];
-const moveToObject = (move) => {
-    if (!isEncodedMove(move)) return move;
-    const from = moveFromSq(move);
-    const to = moveToSq(move);
-    return {
-        from: { r: SQ_ROW[from], c: SQ_COL[from] },
-        to: { r: SQ_ROW[to], c: SQ_COL[to] }
-    };
 };
 
 const makeSearchMove = (board, move) => {
@@ -910,8 +865,8 @@ const clearSortSquareMarks = () => {
 };
 
 const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null, searchHeuristics = null) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_PROFILE) perfStats.sortMovesCount++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.profile) perfStats.sortMovesCount++;
     const currentIsInCheck = boardInfo
         ? ((currentPlayer === 'red' && boardInfo.redIsInCheck) ||
            (currentPlayer === 'black' && boardInfo.blackIsInCheck))
@@ -1102,7 +1057,7 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     }
 
     clearSortSquareMarks();
-    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
@@ -1118,8 +1073,8 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
         return sortMovesFast(moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, { ttMove, killers });
     }
 
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_PROFILE) perfStats.sortMovesCount++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.profile) perfStats.sortMovesCount++;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
@@ -1176,7 +1131,7 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
         sortMoveScoreScratch[j + 1] = score;
     }
 
-    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
@@ -1184,8 +1139,8 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
 // stage is sorted only when search reaches it, so an early cutoff avoids work
 // on all later stages. Packed boundaries use one byte per stage end.
 const prepareStagedMovesPlay = (moves, board, ttMove, killers) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_PROFILE) perfStats.sortMovesCount++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.profile) perfStats.sortMovesCount++;
     const pieceState = activePieceStateFor(board);
     if (!pieceState) return -1;
     const squareToSlot = pieceState.squareToSlot;
@@ -1228,13 +1183,13 @@ const prepareStagedMovesPlay = (moves, board, ttMove, killers) => {
         moves[write++] = move;
     }
     const captureEnd = write;
-    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
     return ttEnd | (killerEnd << 8) | (captureEnd << 16);
 };
 
 const sortStagedMoveRangePlay = (moves, start, end, board, killers) => {
     if (end - start <= 1) return;
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -1269,7 +1224,7 @@ const sortStagedMoveRangePlay = (moves, start, end, board, killers) => {
         moves[j + 1] = move;
         sortMoveScoreScratch[j + 1] = score;
     }
-    if (SEARCH_PROFILE) perfStats.sortMovesMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
 };
 
 // 搜索用着法准备（轻量）：不建关系图/威胁/机动性
@@ -1277,12 +1232,12 @@ const sortStagedMoveRangePlay = (moves, start, end, board, killers) => {
 // SEARCH_DEFER_LEGALITY=false：预过滤合法着（旧路径，便于 A/B）
 // 点棋关系仍走完整 evaluateBoard，不受影响
 const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_COLLECT_METRICS) perfStats.prepareSearchInfoCount[currentPlayer]++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.collectMetrics) perfStats.prepareSearchInfoCount[currentPlayer]++;
 
     const inCheck = isCheckRaw(board, currentPlayer);
-    if (SEARCH_PROFILE) perfStats.prepareCheckMs += performance.now() - __t0;
-    const __movesT0 = SEARCH_PROFILE ? performance.now() : 0;
+    if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - __t0;
+    const __movesT0 = searchContext.profile ? performance.now() : 0;
     // The Play non-check sorter only uses packed state. Avoid per-piece objects
     // unless the checked-position fallback actually needs relation metadata.
     const piecesInfo = (collectPiecesInfo || inCheck) ? [] : null;
@@ -1304,7 +1259,7 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
             const generated = appendSearchPseudoMovesForPiece(
                 legalMoveList, sq, pieceCodes[slot], squareCodes, false
             );
-            if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += generated;
+            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
         }
     } else {
         for (let r = 0; r < ROWS; r++) {
@@ -1319,11 +1274,11 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
                     const to = useMoves[i];
                     legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
                 }
-                if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += moves.length;
+                if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += moves.length;
             }
         }
     }
-    if (SEARCH_PROFILE) perfStats.prepareMoveGenMs += performance.now() - __movesT0;
+    if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - __movesT0;
 
     // 轻量 boardInfo：仅被将标志
     const boardInfo = {
@@ -1341,7 +1296,7 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
         boardInfo.gameState = { status: 'playing' };
     }
 
-    if (SEARCH_PROFILE) perfStats.prepareSearchInfoMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.prepareSearchInfoMs += performance.now() - __t0;
     return { piecesInfo, boardInfo, legalMoveList, inCheck };
 };
 
@@ -2042,7 +1997,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
     scratchGuardMask.fill(0);
     clearAttackBits(scratchRedAttack);
     clearAttackBits(scratchBlackAttack);
-    const collectCaptures = SEARCH_REUSE_PACKED_QS_CAPTURES && capturePlayer != null;
+    const collectCaptures = searchContext.reusePackedQsCaptures && capturePlayer != null;
     const captureIsRed = capturePlayer === 'red';
     if (collectCaptures) {
         for (let i = 0; i < scratchPackedCaptureSourceCount; i++) {
@@ -2655,7 +2610,7 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
 const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null, forSearchLeaf = false) => {
     // 统计
-    if (SEARCH_COLLECT_METRICS && currentPlayer) {
+    if (searchContext.collectMetrics && currentPlayer) {
         perfStats.calculateThreatValuesCount[currentPlayer]++;
     }
 
@@ -4357,74 +4312,6 @@ const getValidMoves = (board, pos) => {
   return filterLegalMoves(board, pos, piece, pseudoMoves);
 };
 
-const isValidPlacement = (type, color, r, c) => {
-    const isRed = color === 'red';
-    switch(type) {
-        case 'general':
-            // 帅将只能在九宫中心的一条线上
-            if (c < 3 || c > 5) return false;
-            if (isRed) return r >= 0 && r <= 2;
-            else return r >= 7 && r <= 9;
-        case 'advisor':
-            // 士只能在九宫的5个点之一
-            const validAdvisorPositions = {
-                red: [[0, 3], [0, 5], [1, 4], [2, 3], [2, 5]],
-                black: [[7, 3], [7, 5], [8, 4], [9, 3], [9, 5]]
-            };
-            return validAdvisorPositions[isRed ? 'red' : 'black'].some(pos => pos[0] === r && pos[1] === c);
-        case 'elephant':
-            // 相只能在己方半场的7个点之一
-            const validElephantPositions = {
-                red: [[0, 2], [0, 6], [2, 0], [2, 4], [2, 8], [4, 2], [4, 6]],
-                black: [[5, 2], [5, 6], [7, 0], [7, 4], [7, 8], [9, 2], [9, 6]]
-            };
-            return validElephantPositions[isRed ? 'red' : 'black'].some(pos => pos[0] === r && pos[1] === c);
-        case 'soldier':
-            // 兵的位置限制：过河前只能在偶数列，过河后可以在任何列
-            // 红方兵过河条件是r >= 5，黑方兵过河条件是r <= 4
-            const crossedRiver = isRed ? r >= 5 : r <= 4;
-            
-            if (!crossedRiver) {
-                // 过河前只能在偶数列（c=0,2,4,6,8）
-                if (![0, 2, 4, 6, 8].includes(c)) return false;
-            }
-            
-            // 兵的位置限制：过河前只能在兵位和兵位前方，过河后敌方半场都合法
-            const validSoldierPositions = {
-                red: {
-                    // 红方初始兵位：r=3, c=0,2,4,6,8
-                    initial: [[3, 0], [3, 2], [3, 4], [3, 6], [3, 8]],
-                    // 红方兵位前方：r=4, c=0,2,4,6,8
-                    forward: [[4, 0], [4, 2], [4, 4], [4, 6], [4, 8]],
-                    // 红方过河线：r>=5
-                    crossedRiver: r >= 5
-                },
-                black: {
-                    // 黑方初始兵位：r=6, c=0,2,4,6,8
-                    initial: [[6, 0], [6, 2], [6, 4], [6, 6], [6, 8]],
-                    // 黑方兵位前方：r=5, c=0,2,4,6,8
-                    forward: [[5, 0], [5, 2], [5, 4], [5, 6], [5, 8]],
-                    // 黑方过河线：r<=4
-                    crossedRiver: r <= 4
-                }
-            };
-            
-            const soldierInfo = validSoldierPositions[isRed ? 'red' : 'black'];
-            const isInitialPos = soldierInfo.initial.some(pos => pos[0] === r && pos[1] === c);
-            const isForwardPos = soldierInfo.forward.some(pos => pos[0] === r && pos[1] === c);
-            
-            if (soldierInfo.crossedRiver) {
-                // 过河后敌方半场都合法
-                return true;
-            } else {
-                // 过河前只能在兵位和兵位前方
-                return isInitialPos || isForwardPos;
-            }
-        default:
-            return true;
-    }
-};
-
 const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     // 优先使用预计算的gameState
     if (boardInfo && boardInfo.gameState) {
@@ -4529,10 +4416,10 @@ class TranspositionTable {
         const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
 
         if (live && this.keys[i] === key) {
-            if (SEARCH_COLLECT_METRICS) this.stats.updatedStores++;
+            if (searchContext.collectMetrics) this.stats.updatedStores++;
             // 更深 exact 不被更浅 bound 覆盖
             if (this.depths[i] > depth && this.flags[i] === 0 && flagCode !== 0) {
-                if (SEARCH_COLLECT_METRICS) this.stats.retainedUpdates++;
+                if (searchContext.collectMetrics) this.stats.retainedUpdates++;
                 return;
             }
             this.depths[i] = depth;
@@ -4540,24 +4427,24 @@ class TranspositionTable {
             this.flags[i] = flagCode;
             this.bestMoves[i] = bestMove;
             this.moveSequences[i] = moveSequence;
-            if (SEARCH_COLLECT_METRICS) this.stats.stores++;
+            if (searchContext.collectMetrics) this.stats.stores++;
             return;
         }
 
         if (live) {
             // 哈希冲突：保留更深条目（不限 exact），降低有效命中损失
             if (this.depths[i] > depth) {
-                if (SEARCH_COLLECT_METRICS) {
+                if (searchContext.collectMetrics) {
                     this.stats.retainedUpdates++;
                     this.stats.depthPreferredEvictions++;
                 }
                 return;
             }
-            if (SEARCH_COLLECT_METRICS) {
+            if (searchContext.collectMetrics) {
                 this.stats.lruEvictions++;
                 this.stats.fallbackEvictions++;
             }
-        } else if (SEARCH_COLLECT_METRICS) {
+        } else if (searchContext.collectMetrics) {
             this.occupiedApprox++;
         }
 
@@ -4568,18 +4455,18 @@ class TranspositionTable {
         this.flags[i] = flagCode;
         this.bestMoves[i] = bestMove;
         this.moveSequences[i] = moveSequence;
-        if (SEARCH_COLLECT_METRICS) this.stats.stores++;
+        if (searchContext.collectMetrics) this.stats.stores++;
     }
 
     retrieve(key) {
         const i = (key >>> 0) & this.mask;
         if (this.gens[i] !== this.generation || this.keys[i] !== key) {
-            if (SEARCH_COLLECT_METRICS) this.stats.misses++;
+            if (searchContext.collectMetrics) this.stats.misses++;
             return null;
         }
-        if (SEARCH_COLLECT_METRICS) this.stats.hits++;
+        if (searchContext.collectMetrics) this.stats.hits++;
         const flagCode = this.flags[i];
-        if (SEARCH_PROFILE) {
+        if (searchContext.profile) {
             if (flagCode === 0) this.stats.exactHits++;
             else if (flagCode === 1) this.stats.lowerboundHits++;
             else this.stats.upperboundHits++;
@@ -4601,7 +4488,7 @@ class TranspositionTable {
             this.gens.fill(0);
         }
         this.occupiedApprox = 0;
-        if (SEARCH_COLLECT_METRICS) this.stats.clears++;
+        if (searchContext.collectMetrics) this.stats.clears++;
     }
 
     getStats() {
@@ -4749,15 +4636,15 @@ const snapshotPerfStats = () => {
     }
     return {
         elapsedMs: elapsed,
-        profile: SEARCH_PROFILE,
+        profile: searchContext.profile,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
         alphaBetaCalls: perfStats.alphaBetaCalls,
         pseudoMovesGenerated: perfStats.pseudoMovesGenerated,
         legalityChecks: perfStats.legalityChecks,
-        kingSafety: SEARCH_COLLECT_METRICS ? {
-            fastPathEnabled: SEARCH_ENABLE_KING_SAFETY_FAST_PATH,
+        kingSafety: searchContext.collectMetrics ? {
+            fastPathEnabled: searchContext.kingSafetyFastPath,
             fullChecks: perfStats.kingSafetyFullChecks,
             fastSkips: perfStats.kingSafetyFastSkips,
             verificationFailures: perfStats.kingSafetyVerificationFailures,
@@ -4783,8 +4670,8 @@ const snapshotPerfStats = () => {
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         staticEvalCacheHits: perfStats.staticEvalCacheHits,
         staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
-        pvs: SEARCH_COLLECT_METRICS ? {
-            enabled: SEARCH_ENABLE_NON_ROOT_PVS,
+        pvs: searchContext.collectMetrics ? {
+            enabled: searchContext.nonRootPvs,
             probes: perfStats.pvsProbes,
             researches: perfStats.pvsResearches,
             researchRate: perfStats.pvsProbes
@@ -4795,7 +4682,7 @@ const snapshotPerfStats = () => {
         } : null,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
-        moveOrdering: SEARCH_COLLECT_METRICS ? {
+        moveOrdering: searchContext.collectMetrics ? {
             topMoveSources: { ...perfStats.moveOrdering.topMoveSources },
             byDepth: Object.fromEntries(depths.map((d) => {
                 const firstLegalMoves = perfStats.moveOrdering.firstLegalMovesByDepth[d] || 0;
@@ -4846,17 +4733,7 @@ const clearEvalCache = () => {
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
 const SEARCH_NULL_WINDOW_EPS = 1e-6;
-let SEARCH_COLLECT_METRICS = false;
-let SEARCH_ENABLE_NON_ROOT_PVS = false;
-let SEARCH_ENABLE_STAGED_MOVE_PICKER = true;
-let SEARCH_REUSE_QS_MOVE_BUFFERS = true;
-let SEARCH_REUSE_PACKED_QS_CAPTURES = true;
-let SEARCH_VERIFY_PACKED_QS_CAPTURES = false;
-let SEARCH_ENABLE_KING_SAFETY_FAST_PATH = true;
-let SEARCH_VERIFY_KING_SAFETY_FAST_PATH = false;
-
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
-let SEARCH_COLLECT_MOVE_SEQUENCE = true;
 
 // Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
 // 调试：增量后与全盘 hash 比对（仅校验脚本开启，正式搜索关闭）
@@ -4914,299 +4791,6 @@ const recordFirstLegalCutoff = (depth) => {
     cutoffs[depth] = (cutoffs[depth] || 0) + 1;
 };
 
-// Worker message handling
-if (typeof self !== 'undefined') {
-    self.onmessage = function(e) {
-    const { type, payload } = e.data;
-    
-    switch (type) {            
-        case 'SEARCH': {
-            const { board: searchBoard, turn: searchTurn, depth: searchDepth, gameId, openingBookEnabled: searchOpeningBookEnabled = true, ply: searchPly = 0, enableTimeLimit: searchEnableTimeLimit = false, exactRootScores: searchExactRootScores = false, profile: searchProfile, metrics: searchMetrics = false, nonRootPvs: searchNonRootPvs = false, stagedMovePicker: searchStagedMovePicker = true, reuseQsMoveBuffers: searchReuseQsMoveBuffers = true, reusePackedQsCaptures: searchReusePackedQsCaptures = true, verifyPackedQsCaptures: searchVerifyPackedQsCaptures = false, kingSafetyFastPath: searchKingSafetyFastPath = true, verifyKingSafetyFastPath: searchVerifyKingSafetyFastPath = false, collectMoveSequence: searchCollectMoveSequence } = payload;
-            SEARCH_PROFILE = !!searchProfile;
-            SEARCH_COLLECT_METRICS = !!searchMetrics;
-            SEARCH_ENABLE_NON_ROOT_PVS = !!searchNonRootPvs;
-            SEARCH_ENABLE_STAGED_MOVE_PICKER = !!searchStagedMovePicker;
-            SEARCH_REUSE_QS_MOVE_BUFFERS = !!searchReuseQsMoveBuffers;
-            SEARCH_REUSE_PACKED_QS_CAPTURES = !!searchReusePackedQsCaptures;
-            SEARCH_VERIFY_PACKED_QS_CAPTURES = !!searchVerifyPackedQsCaptures;
-            SEARCH_ENABLE_KING_SAFETY_FAST_PATH = !!searchKingSafetyFastPath;
-            SEARCH_VERIFY_KING_SAFETY_FAST_PATH = !!searchVerifyKingSafetyFastPath;
-            // Set opening book enabled status
-            openingBook.setEnabled(searchOpeningBookEnabled);
-            // 记录搜索开始时间
-            const startTime = performance.now();
-            // 执行搜索
-            const bestSearchMove = getBestMove(searchBoard, searchTurn, searchDepth, searchPly, searchEnableTimeLimit, searchExactRootScores, searchCollectMoveSequence);
-            // 记录搜索结束时间并计算思考时间
-            const endTime = performance.now();
-            const thinkingTime = endTime - startTime;
-            
-            // 检查是否来自开局库
-            const bookMoveSearch = openingBook.getBookMove(searchBoard, searchPly);
-            const fromBookSearch = !!bookMoveSearch && JSON.stringify(bookMoveSearch) === JSON.stringify(bestSearchMove.bestMove);
-            
-            // 添加性能统计日志
-            logPerfStats(searchTurn);
-            
-            // 添加思考时间日志
-            const formatMove = (move) => move?.from && move?.to
-                ? `(${move.from.r},${move.from.c})->(${move.to.r},${move.to.c})`
-                : 'none';
-            console.log(`Search complete: game=${gameId}, time=${Math.round(thinkingTime)}ms, best=${formatMove(bestSearchMove.bestMove)} score=${bestSearchMove.bestMoveScore}, second=${formatMove(bestSearchMove.secondBestMove)}, book=${fromBookSearch}`);
-            // 发送搜索结果和思考时间
-            self.postMessage({ 
-                type: 'SEARCH_COMPLETE', 
-                payload: { 
-                    bestMove: bestSearchMove.bestMove, 
-                    secondBestMove: bestSearchMove.secondBestMove, 
-                    gameId, 
-                    fromBook: fromBookSearch, 
-                    thinkingTime: Math.round(thinkingTime), // 四舍五入到毫秒
-                    moveSequence: bestSearchMove.moveSequence,
-                    secondMoveSequence: bestSearchMove.secondMoveSequence,
-                    bestMoveScore: bestSearchMove.bestMoveScore,
-                    secondBestMoveScore: bestSearchMove.secondBestMoveScore,
-                    allMovesWithScores: bestSearchMove.allMovesWithScores || [],
-                    completedDepth: bestSearchMove.completedDepth,
-                    perf: snapshotPerfStats()
-                } 
-            });
-            break;
-        }
-        case 'getValidMoves': {
-            const { board: vmBoard, pos: vmPos } = payload;
-            syncGeneralPosCache(vmBoard);
-            const validMoves = getValidMoves(vmBoard, vmPos);
-            self.postMessage({
-                type: 'validMoves',
-                moves: validMoves
-            });
-            break;
-        }
-            
-        case 'getPieceRelations': {
-            const { board: prBoard, pos: prPos } = payload;
-            const piece = prBoard[prPos.r][prPos.c];
-            
-            // 调用evaluateBoard获取完整的棋子信息和boardInfo
-            const phase = getGamePhase();
-            const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-            const boardEvaluation = evaluateBoard(prBoard, null, gameStage);
-            const piecesInfo = boardEvaluation.piecesInfo;
-            const boardInfo = boardEvaluation.boardInfo;
-
-            if (boardInfo.useRelationMasks) {
-                hydrateRelationsFromMasks(piecesInfo, boardInfo);
-            }
-
-            // boardInfo 格内可能是 piecesInfo 引用，统一映射为 {r,c} 供 UI 使用
-            const rawControllers = boardInfo.controllerGrid
-                ? (boardInfo.controllerGrid[prPos.r][prPos.c] || [])
-                : (boardInfo[prPos.r] && boardInfo[prPos.r][prPos.c]) || [];
-            const controllers = rawControllers.map((ctrl) => ({ r: ctrl.r, c: ctrl.c }));
-            
-            let relations = {
-                threat: [], 
-                threatenedBy: [], 
-                guard: [], 
-                guardedBy: [], 
-                control: [],
-                controllers
-            };
-            
-            // 如果点击的是棋子，返回该棋子的关系信息
-            if (piece) {
-                // Find the current piece info
-                const currentPieceInfo = piecesInfo.find(p => p.r === prPos.r && p.c === prPos.c);
-                
-                if (currentPieceInfo) {
-                    // Extract relations
-                    const threat = currentPieceInfo.threat.map(threatPiece => ({ r: threatPiece.r, c: threatPiece.c }));
-                    const threatenedBy = currentPieceInfo.threatenedBy.map(threatenedByPiece => ({ r: threatenedByPiece.r, c: threatenedByPiece.c }));
-                    const guard = currentPieceInfo.guard.map(guardPiece => ({ r: guardPiece.r, c: guardPiece.c }));
-                    const guardedBy = currentPieceInfo.guardedBy.map(guardedByPiece => ({ r: guardedByPiece.r, c: guardedByPiece.c }));
-                    const control = (currentPieceInfo.control || []).map(controlPos => ({ r: controlPos.r, c: controlPos.c }));
-                    
-                    relations = {
-                        threat, 
-                        threatenedBy, 
-                        guard, 
-                        guardedBy, 
-                        control,
-                        controllers
-                    };
-                }
-            }
-            
-            self.postMessage({
-                type: 'pieceRelations',
-                relations: relations
-            });
-            break;
-        }
-            
-        case 'checkGameState': {
-            const { board: cgsBoard, turn: cgsTurn, requestId } = payload;
-            const gameState = checkGameState(cgsBoard, cgsTurn);
-            self.postMessage({
-                type: 'gameState',
-                state: gameState,
-                requestId
-            });
-            break;
-        }
-            
-        case 'evaluateBoard': {
-            const { board: evalBoard, turn: evalTurn } = payload;
-            // 打印接收的参数
-            const phase = getGamePhase();
-            const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-            const detailedEval = evaluateBoard(evalBoard, evalTurn, gameStage);
-            self.postMessage({
-                type: 'detailedEvaluation',
-                evaluation: detailedEval
-            });
-            break;
-        }
-
-        case 'evaluatePiece': {
-            const { board: pieceEvalBoard, pos: pieceEvalPos, turn } = payload;
-            const piece = pieceEvalBoard[pieceEvalPos.r][pieceEvalPos.c];
-            
-            if (!piece) {
-                self.postMessage({
-                    type: 'pieceEvaluation',
-                    evaluation: {
-                        material: 0,
-                        position: 0,
-                        mobility: 0,
-                        threat: 0,
-                        safety: 0,
-                        tactic: 0
-                    }
-                });
-                return;
-            }
-            else {
-                // 主动调用evaluateBoard获取完整的评估信息
-                // 获取当前游戏阶段
-                const phase = getGamePhase();
-                const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-            const boardEvaluation = evaluateBoard(pieceEvalBoard, turn, gameStage);
-                
-                // 从evaluateBoard的返回值中找到当前棋子的信息
-                currentPieceInfo = boardEvaluation.piecesInfo.find(
-                    p => p.r === pieceEvalPos.r && p.c === pieceEvalPos.c
-                );
-                
-                if (currentPieceInfo) {
-                    // 应用权重并返回单个棋子的评估值
-                    const evaluation = {
-                        material: currentPieceInfo.materialValue * VALUE_WEIGHTS.material,
-                        position: currentPieceInfo.positionValue * VALUE_WEIGHTS.position,
-                        mobility: currentPieceInfo.mobilityValue * VALUE_WEIGHTS.mobility,
-                        threat: currentPieceInfo.threatValue * VALUE_WEIGHTS.threat,
-                        safety: currentPieceInfo.safetyValue * VALUE_WEIGHTS.safety,
-                        tactic: currentPieceInfo.tacticValue * VALUE_WEIGHTS.tactic
-                    };
-                    
-                    self.postMessage({
-                        type: 'pieceEvaluation',
-                        evaluation: evaluation
-                    });
-                } else {
-                    // 如果仍然找不到棋子信息，返回默认值
-                    self.postMessage({
-                        type: 'pieceEvaluation',
-                        evaluation: {
-                            material: 0,
-                            position: 0,
-                            mobility: 0,
-                            threat: 0,
-                            safety: 0,
-                            tactic: 0
-                        }
-                    });
-                }
-                return;
-            }
-        }
-            
-        case 'isCheck': {
-            const { board: cBoard, color: cColor, requestId } = payload;
-            syncGeneralPosCache(cBoard);
-            const inCheck = isCheck(cBoard, cColor);
-            self.postMessage({
-                type: 'check',
-                isCheck: inCheck,
-                requestId
-            });
-            break;
-        }
-            
-        case 'isValidPlacement': {
-            const { type: ipType, color: ipColor, r, c } = payload;
-            const validPlacement = isValidPlacement(ipType, ipColor, r, c);
-            self.postMessage({
-                type: 'validPlacement',
-                isValid: validPlacement
-            });
-            break;
-        }
-            
-        case 'addOpeningLineFromString': {
-            const { moves, weights } = payload;
-            // Add the opening line to the opening book
-            openingBook.addOpeningLineFromString([moves], weights);
-            // Send confirmation
-            self.postMessage({ 
-                type: 'openingLineAdded', 
-                success: true 
-            });
-            break;
-        }
-            
-        case 'movesToNotation': {
-            const { boardHistory, moveHistory } = payload;
-            const notation = openingBook.movesToNotation(boardHistory, moveHistory);
-            self.postMessage({ 
-                type: 'notation', 
-                notation: notation 
-            });
-            break;
-        }
-            
-        case 'notationToMoves': {
-            const { notation: notationString, initialBoard } = payload;
-            const movesFromNotation = openingBook.notationToMoves(notationString, initialBoard);
-            self.postMessage({ 
-                type: 'moves', 
-                moves: movesFromNotation 
-            });
-            break;
-        }
-            
-        case 'setValueWeights': {
-            VALUE_WEIGHTS = { ...VALUE_WEIGHTS, ...payload };
-            console.log('Updated VALUE_WEIGHTS:', VALUE_WEIGHTS);
-            break;
-        }
-    }
-};
-
-    // Override console.log to send messages back to main thread
-    const originalConsoleLog = console.log;
-    console.log = function(...args) {
-        // Send to main thread
-        self.postMessage({
-            type: 'log',
-            data: args.join(' ')
-        });
-        
-        // Also log to worker console
-        originalConsoleLog.apply(console, args);
-    };
-}
 
 // 空着剪枝：有进攻子力时才允许（避免将/士/象残局逼着误剪）
 const canDoNullMove = (board, color) => {
@@ -5229,7 +4813,7 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, move, movingPiece, captured) => {
-    if (SEARCH_COLLECT_METRICS) perfStats.incrementalHashUpdates++;
+    if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
     if (isEncodedMove(move)) {
         let newHash = boardHash;
         const movingIdx = zobristHasher.pieceIndex(movingPiece);
@@ -5253,7 +4837,7 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
 
 // 对弈 numeric 叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
 const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
+    const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const piecesInfo = scratchLeafPiecesInfo;
     const records = pieceState.records;
@@ -5279,7 +4863,7 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlaye
 
     calculatePackedSearchLeafRelations(piecesInfo, squareCodes, capturePlayer);
 
-    if (SEARCH_COLLECT_METRICS) perfStats.calculateThreatValuesCount[searchInitiator]++;
+    if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
     const attackMask = scratchAttackMask;
     const guardMask = scratchGuardMask;
@@ -5352,10 +4936,10 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlaye
         blackSafety * VALUE_WEIGHTS.safety +
         blackMobility * VALUE_WEIGHTS.mobility;
 
-    if (SEARCH_PROFILE) {
+    if (searchContext.profile) {
         perfStats.fastLeafEvalCount++;
         perfStats.fastLeafEvalMs += performance.now() - __t0;
-    } else if (SEARCH_COLLECT_METRICS) {
+    } else if (searchContext.collectMetrics) {
         perfStats.fastLeafEvalCount++;
     }
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
@@ -5370,14 +4954,14 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
         evalCacheKeys[cacheSlot] === cacheKey &&
         evalCacheVerificationKeys[cacheSlot] === verificationKey) {
-        if (SEARCH_PROFILE) perfStats.staticEvalCacheHits++;
+        if (searchContext.profile) perfStats.staticEvalCacheHits++;
         return evalCacheValues[cacheSlot];
     }
-    if (SEARCH_PROFILE) perfStats.staticEvalCacheMisses++;
+    if (searchContext.profile) perfStats.staticEvalCacheMisses++;
     let net;
-    if (!SEARCH_COLLECT_MOVE_SEQUENCE) {
+    if (!searchContext.collectMoveSequence) {
         net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
-        if (SEARCH_REUSE_PACKED_QS_CAPTURES && capturePlayer != null) {
+        if (searchContext.reusePackedQsCaptures && capturePlayer != null) {
             packedCaptureCacheKey = cacheKey;
             packedCaptureVerificationKey = verificationKey;
             packedCaptureGeneration = evalCacheGeneration;
@@ -5403,7 +4987,7 @@ const verifyPackedCaptureScratch = [];
 const copyPackedRelationCaptures = (
     moves, currentPlayer, boardHash, searchInitiator, gameStage, board
 ) => {
-    if (!SEARCH_REUSE_PACKED_QS_CAPTURES || SEARCH_COLLECT_MOVE_SEQUENCE) return false;
+    if (!searchContext.reusePackedQsCaptures || searchContext.collectMoveSequence) return false;
     const pieceState = activePieceStateFor(board);
     if (!pieceState || packedCaptureGeneration !== evalCacheGeneration) return false;
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
@@ -5412,7 +4996,7 @@ const copyPackedRelationCaptures = (
     if (packedCapturePlayer !== currentPlayer) return false;
     const captures = scratchPackedCaptures;
     for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
-    if (SEARCH_VERIFY_PACKED_QS_CAPTURES) {
+    if (searchContext.verifyPackedQsCaptures) {
         generateQuiescenceMoves(board, currentPlayer, true, verifyPackedCaptureScratch);
         if (moves.length !== verifyPackedCaptureScratch.length) {
             throw new Error(`Packed QS capture count mismatch: ${moves.length}/${verifyPackedCaptureScratch.length}`);
@@ -5427,8 +5011,8 @@ const copyPackedRelationCaptures = (
 };
 
 const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
-    const __t0 = SEARCH_PROFILE ? performance.now() : 0;
-    if (SEARCH_PROFILE) perfStats.captureGenCount++;
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.profile) perfStats.captureGenCount++;
     const moves = destination || [];
     moves.length = 0;
     const pieceState = activePieceStateFor(board);
@@ -5445,9 +5029,9 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             const generated = appendSearchPseudoMovesForPiece(
                 moves, sq, pieceCodes[slot], squareCodes, capturesOnly
             );
-            if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += generated;
+            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
         }
-        if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
+        if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
         return moves;
     }
     for (let r = 0; r < ROWS; r++) {
@@ -5456,7 +5040,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             if (!piece || piece.color !== currentPlayer) continue;
             const from = { r, c };
             const pseudo = getPieceMoves(board, from, piece);
-            if (SEARCH_COLLECT_METRICS) perfStats.pseudoMovesGenerated += pseudo.length;
+            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += pseudo.length;
             for (let i = 0; i < pseudo.length; i++) {
                 const to = pseudo[i];
                 if (!capturesOnly || board[to.r][to.c]) {
@@ -5465,7 +5049,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             }
         }
     }
-    if (SEARCH_PROFILE) perfStats.captureGenMs += performance.now() - __t0;
+    if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
     return moves;
 };
 
@@ -5520,7 +5104,7 @@ const quiescencePlay = (
     b, alpha, beta, maximizing, currentPlayer,
     searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
-    if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
+    if (searchContext.profile) perfStats.quiescenceCalls++;
     const inCheck = isCheckRaw(b, currentPlayer);
     let standPat;
     if (!inCheck) {
@@ -5538,10 +5122,10 @@ const quiescencePlay = (
         }
     }
 
-    let moves = SEARCH_REUSE_QS_MOVE_BUFFERS ? quiescenceMoveBuffers[qsPly] : null;
+    let moves = searchContext.reuseQsMoveBuffers ? quiescenceMoveBuffers[qsPly] : null;
     if (!moves) {
         moves = [];
-        if (SEARCH_REUSE_QS_MOVE_BUFFERS) quiescenceMoveBuffers[qsPly] = moves;
+        if (searchContext.reuseQsMoveBuffers) quiescenceMoveBuffers[qsPly] = moves;
     } else {
         moves.length = 0;
     }
@@ -5550,7 +5134,7 @@ const quiescencePlay = (
     )) {
         generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
     }
-    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
+    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) return inCheck
         ? quiescenceMateValue(currentPlayer, searchInitiator)
         : standPat;
@@ -5569,12 +5153,12 @@ const quiescencePlay = (
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer)) {
             unmakeSearchMove(b, move, captured);
-            if (SEARCH_COLLECT_METRICS) perfStats.illegalMovesSkipped++;
+            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
-        if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
+        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const value = quiescencePlay(
             b, alpha, beta, nextPlayer === searchInitiator, nextPlayer,
@@ -5604,7 +5188,7 @@ const alphaBetaPlay = (
     const originalAlpha = alpha;
     const originalBeta = beta;
 
-    if (SEARCH_COLLECT_METRICS) {
+    if (searchContext.collectMetrics) {
         perfStats.alphaBetaCalls++;
         if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
         perfStats.nodesSearched[d]++;
@@ -5652,13 +5236,13 @@ const alphaBetaPlay = (
     }
 
     let moves = searchInfo.legalMoveList;
-    if (SEARCH_COLLECT_METRICS) {
+    if (searchContext.collectMetrics) {
         if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
         perfStats.movesGenerated[d] += moves.length;
     }
 
     const killersAtDepth = killerMoves[d] || [null, null];
-    let stagedPlan = (!inCheck && SEARCH_ENABLE_STAGED_MOVE_PICKER)
+    let stagedPlan = (!inCheck && searchContext.stagedMovePicker)
         ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
         : -1;
     let stagedStage = 0;
@@ -5682,7 +5266,7 @@ const alphaBetaPlay = (
             ttMove, killersAtDepth, inCheck
         );
     }
-    if (SEARCH_COLLECT_METRICS && moves.length) {
+    if (searchContext.collectMetrics && moves.length) {
         recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
     }
 
@@ -5708,26 +5292,26 @@ const alphaBetaPlay = (
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
-            if (SEARCH_COLLECT_METRICS) perfStats.illegalMovesSkipped++;
+            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
-        if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+        if (searchContext.collectMetrics && legalMovesFound === 1) {
             recordFirstLegalMove(d, moveIndex);
         }
-        if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
+        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
-        const canProbe = SEARCH_ENABLE_NON_ROOT_PVS &&
+        const canProbe = searchContext.nonRootPvs &&
             legalMovesFound > 1 &&
             Number.isFinite(maximizing ? alpha : beta);
         let value;
         if (canProbe) {
-            if (SEARCH_COLLECT_METRICS) {
+            if (searchContext.collectMetrics) {
                 perfStats.pvsProbes++;
             }
-            const probeStartNodes = SEARCH_COLLECT_METRICS ? perfStats.alphaBetaCalls : 0;
+            const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
             value = maximizing
                 ? alphaBetaPlay(
                     b, d - 1, alpha, alpha + SEARCH_NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
@@ -5737,7 +5321,7 @@ const alphaBetaPlay = (
                     b, d - 1, beta - SEARCH_NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
-            if (SEARCH_COLLECT_METRICS) {
+            if (searchContext.collectMetrics) {
                 perfStats.pvsProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
             }
 
@@ -5745,15 +5329,15 @@ const alphaBetaPlay = (
                 ? value > alpha && value < beta
                 : value < beta && value > alpha;
             if (needsResearch) {
-                if (SEARCH_COLLECT_METRICS) {
+                if (searchContext.collectMetrics) {
                     perfStats.pvsResearches++;
                 }
-                const researchStartNodes = SEARCH_COLLECT_METRICS ? perfStats.alphaBetaCalls : 0;
+                const researchStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
                 value = alphaBetaPlay(
                     b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
-                if (SEARCH_COLLECT_METRICS) {
+                if (searchContext.collectMetrics) {
                     perfStats.pvsResearchNodes += perfStats.alphaBetaCalls - researchStartNodes;
                 }
             }
@@ -5780,11 +5364,11 @@ const alphaBetaPlay = (
         }
 
         if (beta <= alpha) {
-            if (SEARCH_COLLECT_METRICS) {
+            if (searchContext.collectMetrics) {
                 if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
                 perfStats.cutoffs[d]++;
             }
-            if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+            if (searchContext.collectMetrics && legalMovesFound === 1) {
                 recordFirstLegalCutoff(d);
             }
             if (!isCapture) {
@@ -5809,7 +5393,7 @@ const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
     searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
-    if (SEARCH_PROFILE) perfStats.quiescenceCalls++;
+    if (searchContext.profile) perfStats.quiescenceCalls++;
     const inCheck = isCheckRaw(b, currentPlayer);
     let standPat;
     if (!inCheck) {
@@ -5824,15 +5408,15 @@ const quiescence = (
         }
     }
 
-    let moves = SEARCH_REUSE_QS_MOVE_BUFFERS ? quiescenceMoveBuffers[qsPly] : null;
+    let moves = searchContext.reuseQsMoveBuffers ? quiescenceMoveBuffers[qsPly] : null;
     if (!moves) {
         moves = [];
-        if (SEARCH_REUSE_QS_MOVE_BUFFERS) quiescenceMoveBuffers[qsPly] = moves;
+        if (searchContext.reuseQsMoveBuffers) quiescenceMoveBuffers[qsPly] = moves;
     } else {
         moves.length = 0;
     }
     generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
-    if (SEARCH_PROFILE) perfStats.quiescenceCaptureMoves += moves.length;
+    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) {
         return {
             value: inCheck ? quiescenceMateValue(currentPlayer, searchInitiator) : standPat,
@@ -5861,12 +5445,12 @@ const quiescence = (
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer)) {
             unmakeSearchMove(b, move, captured);
-            if (SEARCH_COLLECT_METRICS) perfStats.illegalMovesSkipped++;
+            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
-        if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
+        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
         const result = quiescence(
@@ -5878,7 +5462,7 @@ const quiescence = (
         if (maximizing) {
             if (result.value > bestEval) {
                 bestEval = result.value;
-                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                if (searchContext.collectMoveSequence) {
                     bestMoveSequence = [moveToObject(move), ...(result.moveSequence || [])];
                 }
             }
@@ -5888,7 +5472,7 @@ const quiescence = (
         } else {
             if (result.value < bestEval) {
                 bestEval = result.value;
-                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                if (searchContext.collectMoveSequence) {
                     bestMoveSequence = [moveToObject(move), ...(result.moveSequence || [])];
                 }
             }
@@ -5906,7 +5490,7 @@ const quiescence = (
         bestMoveSequence = [];
     }
 
-    return { value: bestEval, moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE ? bestMoveSequence : [] };
+    return { value: bestEval, moveSequence: searchContext.collectMoveSequence ? bestMoveSequence : [] };
 };
 
 // alphaBeta：评估始终从 searchInitiator 角度；TT + killer/history + 空着剪枝 + LMR + QS
@@ -5919,7 +5503,7 @@ const alphaBeta = (
     const originalAlpha = alpha;
     const originalBeta = beta;
 
-    if (SEARCH_COLLECT_METRICS) {
+    if (searchContext.collectMetrics) {
         perfStats.alphaBetaCalls++;
         if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
         perfStats.nodesSearched[d]++;
@@ -5943,7 +5527,7 @@ const alphaBeta = (
             if (ttEntry.flag === 'exact') {
                 return {
                     value: ttEntry.value,
-                    moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE
+                    moveSequence: searchContext.collectMoveSequence
                         ? (ttEntry.moveSequence || (ttMove ? [moveToObject(ttMove)] : []))
                         : []
                 };
@@ -6014,7 +5598,7 @@ const alphaBeta = (
 
     let moves = searchInfo.legalMoveList;
 
-    if (SEARCH_COLLECT_METRICS) {
+    if (searchContext.collectMetrics) {
         if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
         perfStats.movesGenerated[d] += moves.length;
     }
@@ -6024,7 +5608,7 @@ const alphaBeta = (
         ttMove,
         killers: killersAtDepth
     });
-    if (SEARCH_COLLECT_METRICS && moves.length) {
+    if (searchContext.collectMetrics && moves.length) {
         recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
     }
 
@@ -6033,7 +5617,7 @@ const alphaBeta = (
         if (value <= originalAlpha) flag = 'upperbound';
         else if (value >= originalBeta) flag = 'lowerbound';
         else flag = 'exact';
-        transpositionTable.store(ttKey, d, value, flag, bestMove, SEARCH_COLLECT_MOVE_SEQUENCE ? moveSequence : null);
+        transpositionTable.store(ttKey, d, value, flag, bestMove, searchContext.collectMoveSequence ? moveSequence : null);
     };
 
     let bestEval = maximizing ? -Infinity : Infinity;
@@ -6068,15 +5652,15 @@ const alphaBeta = (
         const captured = makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayerColor, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
-            if (SEARCH_COLLECT_METRICS) perfStats.illegalMovesSkipped++;
+            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
-        if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+        if (searchContext.collectMetrics && legalMovesFound === 1) {
             recordFirstLegalMove(d, moveIndex);
         }
-        if (SEARCH_COLLECT_METRICS) perfStats.legalMovesSearched++;
+        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
 
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
@@ -6110,7 +5694,7 @@ const alphaBeta = (
             if (result.value > bestEval) {
                 bestEval = result.value;
                 bestMove = move;
-                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                if (searchContext.collectMoveSequence) {
                     bestMoveSequence = [moveToObject(move), ...result.moveSequence];
                 }
             }
@@ -6119,7 +5703,7 @@ const alphaBeta = (
             if (result.value < bestEval) {
                 bestEval = result.value;
                 bestMove = move;
-                if (SEARCH_COLLECT_MOVE_SEQUENCE) {
+                if (searchContext.collectMoveSequence) {
                     bestMoveSequence = [moveToObject(move), ...result.moveSequence];
                 }
             }
@@ -6127,11 +5711,11 @@ const alphaBeta = (
         }
 
         if (beta <= alpha) {
-            if (SEARCH_COLLECT_METRICS) {
+            if (searchContext.collectMetrics) {
                 if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
                 perfStats.cutoffs[d]++;
             }
-            if (SEARCH_COLLECT_METRICS && legalMovesFound === 1) {
+            if (searchContext.collectMetrics && legalMovesFound === 1) {
                 recordFirstLegalCutoff(d);
             }
             if (!isCapture) {
@@ -6148,7 +5732,7 @@ const alphaBeta = (
     }
 
     storeTT(bestEval, bestMove, bestMoveSequence);
-    return { value: bestEval, moveSequence: SEARCH_COLLECT_MOVE_SEQUENCE ? bestMoveSequence : [] };
+    return { value: bestEval, moveSequence: searchContext.collectMoveSequence ? bestMoveSequence : [] };
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
@@ -6187,7 +5771,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
   syncGeneralPosCache(board);
-  SEARCH_COLLECT_MOVE_SEQUENCE = typeof collectMoveSequenceOverride === 'boolean'
+  searchContext.collectMoveSequence = typeof collectMoveSequenceOverride === 'boolean'
     ? collectMoveSequenceOverride
     : !!exactRootScores;
 
@@ -6263,7 +5847,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hash(board);
-  if (SEARCH_COLLECT_METRICS) perfStats.fullHashCount++;
+  if (searchContext.collectMetrics) perfStats.fullHashCount++;
   const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, turn);
 
   let completedDepth = 0;
@@ -6358,7 +5942,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
 
       if (scoreIsExact) {
         item.score = score;
-        item.moveSequence = SEARCH_COLLECT_MOVE_SEQUENCE
+        item.moveSequence = searchContext.collectMoveSequence
           ? [{ from: item.from, to: item.to }, ...(alphaBetaResult.moveSequence || [])]
           : [];
         if (item.score > rootAlpha) {
@@ -6380,7 +5964,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
       rootMoves[0].score,
       'exact',
       rootMoves[0],
-      SEARCH_COLLECT_MOVE_SEQUENCE ? (rootMoves[0].moveSequence || []) : null
+      searchContext.collectMoveSequence ? (rootMoves[0].moveSequence || []) : null
     );
 
   }
@@ -6429,4 +6013,19 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
     ? getBestMoveForAnalysis(board, turn, depth, ply, enableTimeLimit)
     : getBestMoveForPlay(board, turn, depth, ply, enableTimeLimit);
 
-// --- WORKER LISTENER (统一消息处理) ---
+export {
+  checkGameState,
+  evaluateBoard,
+  getBestMove,
+  getGamePhase,
+  getValidMoves,
+  hydrateRelationsFromMasks,
+  isCheck,
+  isValidPlacement,
+  logPerfStats,
+  openingBook,
+  snapshotPerfStats,
+  syncGeneralPosCache
+};
+
+

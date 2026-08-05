@@ -6,19 +6,14 @@ import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const scriptPath = fileURLToPath(import.meta.url);
-const source = readFileSync(join(__dirname, '../src/chess-worker.js'), 'utf8');
-const wrappedWorker = `
-const { parentPort } = require('worker_threads');
-const self = { onmessage: null, postMessage: (msg) => parentPort.postMessage(msg) };
-const console = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
-parentPort.on('message', (data) => self.onmessage?.({ data }));
-${source}
-`;
+const workerPath = new URL('./bench-worker.mjs', import.meta.url);
 
 function printCpuProfile(profileDir, priorFiles) {
   const files = readdirSync(profileDir).filter((name) => name.endsWith('.cpuprofile') && !priorFiles.has(name));
   const profiles = files.map((file) => JSON.parse(readFileSync(join(profileDir, file), 'utf8')));
-  const workerProfiles = profiles.filter((profile) => profile.nodes.some((node) => node.callFrame?.url === '[worker eval]'));
+  const workerProfiles = profiles.filter((profile) => profile.nodes.some((node) =>
+    /[\\/]src[\\/]engine[\\/]js[\\/]/.test(node.callFrame?.url || '')
+  ));
   const selected = workerProfiles.length ? workerProfiles : profiles;
   const totals = new Map();
   for (const profile of selected) {
@@ -31,7 +26,7 @@ function printCpuProfile(profileDir, priorFiles) {
       totals.set(label, (totals.get(label) || 0) + (profile.timeDeltas[i] || 0));
     }
   }
-  const entries = [...totals.entries()].filter(([name]) => name.includes('@[worker eval]:'));
+  const entries = [...totals.entries()].filter(([name]) => /@(search|movegen|board)\.js:/.test(name));
   const display = entries.length ? entries : [...totals.entries()];
   const totalUs = display.reduce((sum, [, us]) => sum + us, 0);
   if (!totalUs) return;
@@ -62,7 +57,7 @@ function makeInitialBoard() {
 
 function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(wrappedWorker, { eval: true });
+    const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
     worker.on('message', (message) => {
       if (message.type === 'SEARCH_COMPLETE') {

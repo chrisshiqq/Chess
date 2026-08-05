@@ -1,0 +1,228 @@
+/// <reference lib="webworker" />
+
+import { decodeBoard, formatMove } from '../engine/codec.ts';
+import type { WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
+import {
+  evaluateBoard,
+  evaluatePieceInfo,
+  getGamePhase,
+  hydrateRelationsFromMasks,
+  setValueWeights
+} from '../engine/js/evaluation.js';
+import { getValidMoves } from '../engine/js/movegen.js';
+import {
+  checkGameState,
+  isCheck,
+  isValidPlacement,
+  syncGeneralPosCache
+} from '../engine/js/rules.js';
+import { configureSearch } from '../engine/js/search-context.js';
+import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
+
+type Emit = (message: WorkerResponse) => void;
+
+const gameStage = (): 'early' | 'mid' | 'late' => {
+  const phase = getGamePhase();
+  return phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
+};
+
+const emptyPieceEvaluation = () => ({
+  material: 0,
+  position: 0,
+  mobility: 0,
+  threat: 0,
+  safety: 0,
+  tactic: 0
+});
+
+export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void => {
+  try {
+    const { type, payload } = request;
+
+    switch (type) {
+      case 'SEARCH': {
+        const board = decodeBoard(payload.board);
+        configureSearch(payload);
+        openingBook.setEnabled(payload.openingBookEnabled ?? true);
+
+        const started = performance.now();
+        const result = getBestMove(
+          board,
+          payload.turn,
+          payload.depth,
+          payload.ply ?? 0,
+          payload.enableTimeLimit ?? false,
+          payload.exactRootScores ?? false
+        );
+        const thinkingTime = Math.round(performance.now() - started);
+        const bookMove = openingBook.getBookMove(board, payload.ply ?? 0);
+        const fromBook = !!bookMove && JSON.stringify(bookMove) === JSON.stringify(result.bestMove);
+
+        logPerfStats(payload.turn);
+        console.log(
+          `Search complete: game=${payload.gameId}, time=${thinkingTime}ms, ` +
+          `best=${formatMove(result.bestMove)} score=${result.bestMoveScore}, ` +
+          `second=${formatMove(result.secondBestMove)}, book=${fromBook}`
+        );
+
+        emit({
+          type: 'SEARCH_COMPLETE',
+          payload: {
+            bestMove: result.bestMove,
+            secondBestMove: result.secondBestMove,
+            gameId: payload.gameId,
+            fromBook,
+            thinkingTime,
+            moveSequence: result.moveSequence,
+            secondMoveSequence: result.secondMoveSequence,
+            bestMoveScore: result.bestMoveScore,
+            secondBestMoveScore: result.secondBestMoveScore,
+            allMovesWithScores: result.allMovesWithScores || [],
+            completedDepth: result.completedDepth,
+            perf: snapshotPerfStats()
+          }
+        });
+        return;
+      }
+
+      case 'getValidMoves': {
+        const board = decodeBoard(payload.board);
+        syncGeneralPosCache(board);
+        emit({ type: 'validMoves', moves: getValidMoves(board, payload.pos) });
+        return;
+      }
+
+      case 'getPieceRelations': {
+        const board = decodeBoard(payload.board);
+        const piece = board[payload.pos.r][payload.pos.c];
+        const boardEvaluation = evaluateBoard(board, null, gameStage());
+        const piecesInfo = boardEvaluation.piecesInfo;
+        const boardInfo = boardEvaluation.boardInfo as any;
+        if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);
+
+        const rawControllers = boardInfo.controllerGrid
+          ? (boardInfo.controllerGrid[payload.pos.r][payload.pos.c] || [])
+          : (boardInfo[payload.pos.r]?.[payload.pos.c] || []);
+        const controllers = rawControllers.map((controller: { r: number; c: number }) => ({
+          r: controller.r,
+          c: controller.c
+        }));
+        let relations: Record<string, unknown> = {
+          threat: [], threatenedBy: [], guard: [], guardedBy: [], control: [], controllers
+        };
+
+        if (piece) {
+          const info = piecesInfo.find((candidate: { r: number; c: number }) =>
+            candidate.r === payload.pos.r && candidate.c === payload.pos.c
+          );
+          if (info) {
+            const positions = (items: Array<{ r: number; c: number }> = []) =>
+              items.map(({ r, c }) => ({ r, c }));
+            relations = {
+              threat: positions(info.threat),
+              threatenedBy: positions(info.threatenedBy),
+              guard: positions(info.guard),
+              guardedBy: positions(info.guardedBy),
+              control: positions(info.control),
+              controllers
+            };
+          }
+        }
+        emit({ type: 'pieceRelations', relations });
+        return;
+      }
+
+      case 'checkGameState': {
+        const board = decodeBoard(payload.board);
+        emit({
+          type: 'gameState',
+          state: checkGameState(board, payload.turn),
+          requestId: payload.requestId
+        });
+        return;
+      }
+
+      case 'evaluateBoard': {
+        const board = decodeBoard(payload.board);
+        emit({ type: 'detailedEvaluation', evaluation: evaluateBoard(board, payload.turn, gameStage()) });
+        return;
+      }
+
+      case 'evaluatePiece': {
+        const board = decodeBoard(payload.board);
+        const piece = board[payload.pos.r][payload.pos.c];
+        if (!piece) {
+          emit({ type: 'pieceEvaluation', evaluation: emptyPieceEvaluation() });
+          return;
+        }
+        const boardEvaluation = evaluateBoard(board, payload.turn, gameStage());
+        const info = boardEvaluation.piecesInfo.find((candidate: { r: number; c: number }) =>
+          candidate.r === payload.pos.r && candidate.c === payload.pos.c
+        );
+        emit({
+          type: 'pieceEvaluation',
+          evaluation: info ? evaluatePieceInfo(info) : emptyPieceEvaluation()
+        });
+        return;
+      }
+
+      case 'isCheck': {
+        const board = decodeBoard(payload.board);
+        syncGeneralPosCache(board);
+        emit({ type: 'check', isCheck: isCheck(board, payload.color), requestId: payload.requestId });
+        return;
+      }
+
+      case 'isValidPlacement':
+        emit({
+          type: 'validPlacement',
+          isValid: isValidPlacement(payload.type, payload.color, payload.r, payload.c)
+        });
+        return;
+
+      case 'addOpeningLineFromString':
+        openingBook.addOpeningLineFromString([payload.moves], payload.weights);
+        emit({ type: 'openingLineAdded', success: true });
+        return;
+
+      case 'movesToNotation':
+        emit({
+          type: 'notation',
+          notation: openingBook.movesToNotation(payload.boardHistory, payload.moveHistory)
+        });
+        return;
+
+      case 'notationToMoves':
+        emit({
+          type: 'moves',
+          moves: openingBook.notationToMoves(payload.notation, decodeBoard(payload.initialBoard))
+        });
+        return;
+
+      case 'setValueWeights':
+        setValueWeights(payload);
+        return;
+    }
+  } catch (error) {
+    emit({
+      type: 'WORKER_ERROR',
+      error: error instanceof Error ? error.message : String(error),
+      requestType: request?.type
+    });
+  }
+};
+
+const workerScope = typeof self === 'undefined'
+  ? null
+  : self as unknown as DedicatedWorkerGlobalScope;
+
+if (workerScope && typeof document === 'undefined') {
+  const originalConsoleLog = console.log.bind(console);
+  console.log = (...args: unknown[]) => {
+    workerScope.postMessage({ type: 'log', data: args.join(' ') } satisfies WorkerResponse);
+    originalConsoleLog(...args);
+  };
+  workerScope.onmessage = (event: MessageEvent<WorkerRequest>) => {
+    handleWorkerRequest(event.data, (message) => workerScope.postMessage(message));
+  };
+}
