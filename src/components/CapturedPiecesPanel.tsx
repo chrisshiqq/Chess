@@ -1,6 +1,7 @@
 
 import React from 'react';
-import { PieceType, Color, Skin, PieceMaterial } from '../types';
+import { PieceType, Color } from '../domain/types';
+import { Skin, PieceMaterial } from '../ui/types';
 import { ChessPiece } from './ChessPiece';
 
 interface SidePanelProps {

@@ -1,4 +1,4 @@
-import type { Board, Color, CompactBoard, Move, PieceType, Position } from '../types';
+import type { Board, Color, CompactBoard, Move, PieceType, Position } from '../domain/types';
 
 export type WireBoard = Board | CompactBoard;
 
@@ -20,6 +20,8 @@ export interface SearchOptions {
   verifyPackedQsCaptures?: boolean;
   kingSafetyFastPath?: boolean;
   verifyKingSafetyFastPath?: boolean;
+  preserveTtAcrossSearches?: boolean;
+  ttMaxAge?: number;
   collectMoveSequence?: boolean;
 }
 

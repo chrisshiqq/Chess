@@ -7,8 +7,6 @@
     "dev": "vite",
     "build": "vite build",
     "build:standalone": "vite build --config vite.config.standalone.ts",
-    "test:repetition": "node --experimental-strip-types tests/repetition.test.mjs",
-    "test:engine-modules": "node --experimental-strip-types tests/engine-modules.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

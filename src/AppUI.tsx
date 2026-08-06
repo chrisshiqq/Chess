@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, Skin, DifficultyLevel, PieceMaterial } from './types';
+import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult } from './domain/types';
+import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 import { ChessPiece } from './components/ChessPiece';
 import { SKINS } from './components/ChessBoard';
 

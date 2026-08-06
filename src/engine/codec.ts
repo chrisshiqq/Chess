@@ -1,4 +1,4 @@
-import type { Board, CompactBoard, Piece, PieceType } from '../types';
+import type { Board, CompactBoard, Piece, PieceType } from '../domain/types';
 import type { WireBoard } from './protocol';
 
 const PIECE_TYPES: PieceType[] = [
@@ -49,4 +49,3 @@ export const formatMove = (move: { from?: { r: number; c: number }; to?: { r: nu
   move?.from && move?.to
     ? `(${move.from.r},${move.from.c})->(${move.to.r},${move.to.c})`
     : 'none';
-

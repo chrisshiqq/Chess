@@ -1,6 +1,7 @@
 
 import React, { useId } from 'react';
-import { PieceType, Color, PieceMaterial } from '../types';
+import { PieceType, Color } from '../domain/types';
+import { PieceMaterial } from '../ui/types';
 
 interface ChessPieceProps {
     type: PieceType;

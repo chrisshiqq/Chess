@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Board, Color, Move, Position, PieceType, Skin, PieceMaterial } from '../types';
+import { Board, Color, Move, Position, PieceType } from '../domain/types';
+import { Skin, PieceMaterial } from '../ui/types';
 import { ChessPiece } from './ChessPiece';
 
 interface ChessBoardProps {

@@ -38,7 +38,7 @@ import {
     isReplyingToOpponentCheck,
     violatesRepeatedCheckCycle,
     type PositionHistoryEntry
-} from './repetitionRules';
+} from './domain/repetition';
 import ChessWorker from './worker/chess-worker.ts?worker&inline';
 
 /*
@@ -48,7 +48,8 @@ import {
     DIFFICULTIES 
 } from './src/utils/chessEngine';
 */
-import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, Skin, DifficultyLevel, PieceMaterial, CompactBoard } from './types';
+import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, CompactBoard } from './domain/types';
+import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 
 const ROWS = 10;
 const COLS = 9;
@@ -56,23 +57,8 @@ const COLS = 9;
 type SearchBench = {
     thinkingTime: number;
     completedDepth?: number;
-    perf?: {
-        alphaBetaCalls?: number;
-        legalMovesSearched?: number;
-        evaluateBoardMs?: number;
-        fastLeafEvalCount?: number;
-        fastLeafEvalMs?: number;
-        pieceList?: boolean;
-        prepareSearchInfoMs?: number;
-        tt?: {
-            hits?: number;
-            hitRate?: string | number;
-            stores?: number;
-        };
-    };
 };
 
-const formatBenchNumber = (value?: number) => (value ?? 0).toLocaleString();
 const formatBenchTime = (value?: number) => `${((value ?? 0) / 1000).toFixed(2)}s`;
 
 // --- Board Initialization ---
@@ -1427,8 +1413,7 @@ const App: React.FC = () => {
                 if (payload.gameId === capturedGameId) {
                     setLastSearchBench({
                         thinkingTime: payload.thinkingTime ?? 0,
-                        completedDepth: payload.completedDepth,
-                        perf: payload.perf
+                        completedDepth: payload.completedDepth
                     });
                     // 首先尝试使用最优走法
                     const newBestMoveSequence = payload.moveSequence || [];
@@ -4859,12 +4844,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         <div className="mb-1 text-stone-400">AI Bench</div>
                                         {lastSearchBench ? (
                                             <div className="space-y-1">
+                                                <div>Depth: {lastSearchBench.completedDepth ?? 0}</div>
                                                 <div>Time: {formatBenchTime(lastSearchBench.thinkingTime)}</div>
-                                                <div>Depth: {lastSearchBench.completedDepth ?? 0} | Nodes: {formatBenchNumber(lastSearchBench.perf?.alphaBetaCalls)}</div>
-                                                <div>Legal: {formatBenchNumber(lastSearchBench.perf?.legalMovesSearched)}</div>
-                                                <div>Eval: {formatBenchTime(lastSearchBench.perf?.evaluateBoardMs)} | Prep: {formatBenchTime(lastSearchBench.perf?.prepareSearchInfoMs)}</div>
-                                                <div>Leaf: {formatBenchNumber(lastSearchBench.perf?.fastLeafEvalCount)} | {formatBenchTime(lastSearchBench.perf?.fastLeafEvalMs)} | List: {lastSearchBench.perf?.pieceList ? 'on' : 'off'}</div>
-                                                <div>TT: {formatBenchNumber(lastSearchBench.perf?.tt?.hits)} hits | {lastSearchBench.perf?.tt?.hitRate ?? 0}% | {formatBenchNumber(lastSearchBench.perf?.tt?.stores)} stores</div>
                                             </div>
                                         ) : (
                                             <div className="text-stone-500">Waiting for AI search...</div>

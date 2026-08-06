@@ -1,4 +1,4 @@
-import type { Color, Position } from '../types';
+import type { Color, Position } from '../domain/types';
 
 export type AppScreen = 'lobby' | 'waiting' | 'game';
 

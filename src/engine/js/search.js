@@ -4369,6 +4369,9 @@ class TranspositionTable {
         this.mask = n - 1;
         this.evictionBatch = evictionBatch;
         this.generation = 1;
+        this.retainedGenerations = 0;
+        this.reuseScope = null;
+        this.lastSearchPly = null;
         this.occupiedApprox = 0;
         this.hasher = zobristHasher;
 
@@ -4401,7 +4404,10 @@ class TranspositionTable {
             updatedStores: 0,
             retainedUpdates: 0,
             evictionBatches: 0,
-            clears: 0
+            clears: 0,
+            retainedSearches: 0,
+            retainedEntriesAtStart: 0,
+            historicalHits: 0
         };
     }
 
@@ -4412,7 +4418,10 @@ class TranspositionTable {
     store(key, depth, value, flag, bestMove = null, moveSequence = null) {
         const i = (key >>> 0) & this.mask;
         const gen = this.generation;
-        const live = this.gens[i] === gen;
+        const slotGen = this.gens[i];
+        const live = this.retainedGenerations === 0
+            ? slotGen === gen
+            : slotGen !== 0 && ((gen - slotGen) >>> 0) <= this.retainedGenerations;
         const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
 
         if (live && this.keys[i] === key) {
@@ -4427,6 +4436,7 @@ class TranspositionTable {
             this.flags[i] = flagCode;
             this.bestMoves[i] = bestMove;
             this.moveSequences[i] = moveSequence;
+            this.gens[i] = gen;
             if (searchContext.collectMetrics) this.stats.stores++;
             return;
         }
@@ -4460,11 +4470,18 @@ class TranspositionTable {
 
     retrieve(key) {
         const i = (key >>> 0) & this.mask;
-        if (this.gens[i] !== this.generation || this.keys[i] !== key) {
+        const slotGen = this.gens[i];
+        const age = this.retainedGenerations === 0
+            ? (slotGen === this.generation ? 0 : 0xffffffff)
+            : (slotGen === 0 ? 0xffffffff : ((this.generation - slotGen) >>> 0));
+        if (age > this.retainedGenerations || this.keys[i] !== key) {
             if (searchContext.collectMetrics) this.stats.misses++;
             return null;
         }
-        if (searchContext.collectMetrics) this.stats.hits++;
+        if (searchContext.collectMetrics) {
+            this.stats.hits++;
+            if (age > 0) this.stats.historicalHits++;
+        }
         const flagCode = this.flags[i];
         if (searchContext.profile) {
             if (flagCode === 0) this.stats.exactHits++;
@@ -4480,26 +4497,53 @@ class TranspositionTable {
         return e;
     }
 
-    clear() {
-        // O(1)：抬升 generation；槽位惰性失效
+    beginSearch(retainPrevious, maxAge = 1, reuseScope = null, searchPly = 0) {
+        const canRetain = !!retainPrevious &&
+            reuseScope != null &&
+            reuseScope === this.reuseScope &&
+            this.lastSearchPly != null &&
+            searchPly === this.lastSearchPly + 2;
         this.generation = (this.generation + 1) >>> 0;
         if (this.generation === 0) {
             this.generation = 1;
             this.gens.fill(0);
+            this.occupiedApprox = 0;
         }
-        this.occupiedApprox = 0;
-        if (searchContext.collectMetrics) this.stats.clears++;
+        this.retainedGenerations = canRetain ? Math.max(1, maxAge | 0) : 0;
+        this.reuseScope = reuseScope;
+        this.lastSearchPly = searchPly;
+        if (!canRetain) this.occupiedApprox = 0;
+        if (searchContext.collectMetrics) {
+            this.stats.clears++;
+            if (canRetain) {
+                this.stats.retainedSearches++;
+                this.stats.retainedEntriesAtStart = Math.min(this.occupiedApprox, this.size);
+            }
+        }
+    }
+
+    clear() {
+        this.beginSearch(false, 0, null, 0);
+        this.lastSearchPly = null;
     }
 
     getStats() {
         const totalAccesses = this.stats.hits + this.stats.misses;
         const hitRate = totalAccesses > 0 ? (this.stats.hits / totalAccesses * 100).toFixed(2) : 0;
+        const historicalHitRate = totalAccesses > 0
+            ? (this.stats.historicalHits / totalAccesses * 100).toFixed(2)
+            : 0;
+        const historicalHitShare = this.stats.hits > 0
+            ? (this.stats.historicalHits / this.stats.hits * 100).toFixed(2)
+            : 0;
         const currentSize = Math.min(this.occupiedApprox, this.size);
         return {
             ...this.stats,
             evictionBatch: this.evictionBatch,
             totalAccesses,
             hitRate,
+            historicalHitRate,
+            historicalHitShare,
             currentSize,
             maxSize: this.size,
             fillPercentage: ((currentSize / this.size) * 100).toFixed(2)
@@ -4520,7 +4564,10 @@ class TranspositionTable {
             updatedStores: 0,
             retainedUpdates: 0,
             evictionBatches: 0,
-            clears: 0
+            clears: 0,
+            retainedSearches: 0,
+            retainedEntriesAtStart: 0,
+            historicalHits: 0
         };
     }
 }
@@ -5766,7 +5813,28 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   resetPerfStats();
   const startTime = Date.now();
   transpositionTable.resetStats();
-  transpositionTable.clear();
+  const phase = getGamePhase();
+  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
+  const ttReuseScope = searchContext.ttReuseScope == null
+    ? null
+    : [
+        searchContext.ttReuseScope,
+        turn,
+        exactRootScores ? 'analysis' : 'play',
+        gameStage,
+        VALUE_WEIGHTS.material,
+        VALUE_WEIGHTS.position,
+        VALUE_WEIGHTS.threat,
+        VALUE_WEIGHTS.tactic,
+        VALUE_WEIGHTS.safety,
+        VALUE_WEIGHTS.mobility
+      ].join(':');
+  transpositionTable.beginSearch(
+    searchContext.preserveTtAcrossSearches,
+    searchContext.ttMaxAge,
+    ttReuseScope,
+    searchContext.ttSearchPly
+  );
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
@@ -5774,9 +5842,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   searchContext.collectMoveSequence = typeof collectMoveSequenceOverride === 'boolean'
     ? collectMoveSequenceOverride
     : !!exactRootScores;
-
-  const phase = getGamePhase();
-  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
 
   const rootEvalResult = evaluateBoard(board, turn, gameStage, {
     palaceControlOnly: !exactRootScores
