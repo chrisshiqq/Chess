@@ -6,6 +6,8 @@ export const searchContext = {
   reuseQsMoveBuffers: true,
   reusePackedQsCaptures: true,
   verifyPackedQsCaptures: false,
+  numericLeafSoA: true,
+  verifyNumericLeafSoA: false,
   kingSafetyFastPath: true,
   verifyKingSafetyFastPath: false,
   preserveTtAcrossSearches: true,
@@ -23,6 +25,8 @@ export const configureSearch = ({
   reuseQsMoveBuffers = true,
   reusePackedQsCaptures = true,
   verifyPackedQsCaptures = false,
+  numericLeafSoA = true,
+  verifyNumericLeafSoA = false,
   kingSafetyFastPath = true,
   verifyKingSafetyFastPath = false,
   preserveTtAcrossSearches = true,
@@ -37,6 +41,8 @@ export const configureSearch = ({
   searchContext.reuseQsMoveBuffers = !!reuseQsMoveBuffers;
   searchContext.reusePackedQsCaptures = !!reusePackedQsCaptures;
   searchContext.verifyPackedQsCaptures = !!verifyPackedQsCaptures;
+  searchContext.numericLeafSoA = !!numericLeafSoA;
+  searchContext.verifyNumericLeafSoA = !!verifyNumericLeafSoA;
   searchContext.kingSafetyFastPath = !!kingSafetyFastPath;
   searchContext.verifyKingSafetyFastPath = !!verifyKingSafetyFastPath;
   searchContext.preserveTtAcrossSearches = !!preserveTtAcrossSearches;

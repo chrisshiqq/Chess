@@ -282,6 +282,13 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     control: [],
     protect: []
 }));
+const scratchLeafCodes = new Uint8Array(32);
+const scratchLeafSquares = new Uint8Array(32);
+const scratchLeafMaterials = new Int16Array(32);
+const scratchLeafAttackBySlot = new Uint32Array(32);
+const scratchLeafGuardBySlot = new Uint32Array(32);
+const scratchLeafTotals = new Float64Array(6);
+const scratchLeafVerifyCaptures = [];
 
 let activeSearchPieceState = null;
 
@@ -2180,6 +2187,210 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
     }
 };
 
+// Play-only SoA relation builder. Occupied-target relations are indexed by the
+// target's stable piece-state slot (max 32), while attacker bits use compact
+// alive-piece indices so first-attacker and SEE ordering remain unchanged.
+const calculatePackedSearchLeafRelationsNumeric = (
+    pieceState, pieceCount, capturePlayer = null
+) => {
+    const records = pieceState.records;
+    const squareCodes = pieceState.squareCodes;
+    const squareToSlot = pieceState.squareToSlot;
+    const pieceCodes = scratchLeafCodes;
+    const pieceSquares = scratchLeafSquares;
+    const attackBySlot = scratchLeafAttackBySlot;
+    const guardBySlot = scratchLeafGuardBySlot;
+    attackBySlot.fill(0, 0, records.length);
+    guardBySlot.fill(0, 0, records.length);
+    clearAttackBits(scratchRedAttack);
+    clearAttackBits(scratchBlackAttack);
+    const collectCaptures = searchContext.reusePackedQsCaptures && capturePlayer != null;
+    const captureIsRed = capturePlayer === 'red';
+    if (collectCaptures) {
+        for (let i = 0; i < scratchPackedCaptureSourceCount; i++) {
+            scratchPackedCaptureCounts[scratchPackedCaptureSources[i]] = 0;
+        }
+        scratchPackedCaptureSourceCount = 0;
+    }
+
+    const baseMoveValue = EVALUATION_PARAMETERS.mobility.baseMoveValue;
+    const redAttack = scratchRedAttack;
+    const blackAttack = scratchBlackAttack;
+    let redMobility = 0;
+    let blackMobility = 0;
+
+    for (let pi = 0; pi < pieceCount; pi++) {
+        const fromSq = pieceSquares[pi];
+        const pieceCode = pieceCodes[pi];
+        const pieceType = pieceCode & 7;
+        const isRed = pieceCode < 8;
+        const colorIdx = isRed ? 0 : 1;
+        const attackTargetBit = isRed ? 1 : 2;
+        const bit = 1 << pi;
+        const attackBits = isRed ? redAttack : blackAttack;
+        const recordCaptures = collectCaptures && isRed === captureIsRed;
+        let mobilityValue = 0;
+
+        switch (pieceType) {
+            case 1:
+            case 5:
+            case 7: {
+                const dests = pieceType === 1
+                    ? SEARCH_GENERAL_DEST[colorIdx][fromSq]
+                    : pieceType === 5
+                        ? SEARCH_ADVISOR_DEST[colorIdx][fromSq]
+                        : SEARCH_SOLDIER_DEST[colorIdx][fromSq];
+                for (let i = 0; i < dests.length; i++) {
+                    const sq = dests[i];
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        mobilityValue += baseMoveValue;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                    scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                break;
+            }
+            case 4:
+            case 3: {
+                const dests = pieceType === 4
+                    ? SEARCH_ELEPHANT_DEST[colorIdx][fromSq]
+                    : SEARCH_HORSE_DEST[fromSq];
+                for (let i = 0; i < dests.length; i++) {
+                    const packed = dests[i];
+                    if (squareCodes[packed >>> 7] !== 0) continue;
+                    const sq = packed & 127;
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        mobilityValue += baseMoveValue;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                    scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                break;
+            }
+            case 2:
+                for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+                    const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+                    for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                        const sq = SEARCH_RAY_SQUARES[rayPos];
+                        const targetCode = squareCodes[sq];
+                        if (targetCode === 0) {
+                            if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                                attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            }
+                            mobilityValue += baseMoveValue;
+                            continue;
+                        }
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                    scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                        break;
+                    }
+                }
+                break;
+            case 6:
+                for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+                    let screenFound = false;
+                    const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+                    for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                        const sq = SEARCH_RAY_SQUARES[rayPos];
+                        const targetCode = squareCodes[sq];
+                        if (!screenFound) {
+                            if (targetCode === 0) mobilityValue += baseMoveValue;
+                            else screenFound = true;
+                        } else if (targetCode === 0) {
+                            if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                                attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            }
+                        } else {
+                            const targetSlot = squareToSlot[sq];
+                            if ((targetCode < 8) !== isRed) {
+                                attackBySlot[targetSlot] |= bit;
+                                if (recordCaptures) {
+                                    if (scratchPackedCaptureCounts[fromSq] === 0) {
+                                        scratchPackedCaptureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                    }
+                                    const captureIndex = fromSq * PACKED_CAPTURE_STRIDE + scratchPackedCaptureCounts[fromSq]++;
+                                    scratchPackedCaptureMoves[captureIndex] = (fromSq << 7) | sq;
+                                }
+                            } else if ((targetCode & 7) !== 1) {
+                                guardBySlot[targetSlot] |= bit;
+                            }
+                            break;
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+        if (isRed) redMobility += mobilityValue;
+        else blackMobility += mobilityValue;
+    }
+    scratchLeafTotals[2] = redMobility;
+    scratchLeafTotals[5] = blackMobility;
+
+    if (collectCaptures) {
+        scratchPackedCaptures.length = 0;
+        for (let i = 1; i < scratchPackedCaptureSourceCount; i++) {
+            const sq = scratchPackedCaptureSources[i];
+            let j = i - 1;
+            while (j >= 0 && scratchPackedCaptureSources[j] > sq) {
+                scratchPackedCaptureSources[j + 1] = scratchPackedCaptureSources[j];
+                j--;
+            }
+            scratchPackedCaptureSources[j + 1] = sq;
+        }
+        for (let sourceIndex = 0; sourceIndex < scratchPackedCaptureSourceCount; sourceIndex++) {
+            const fromSq = scratchPackedCaptureSources[sourceIndex];
+            const count = scratchPackedCaptureCounts[fromSq];
+            const offset = fromSq * PACKED_CAPTURE_STRIDE;
+            for (let i = 0; i < count; i++) scratchPackedCaptures.push(scratchPackedCaptureMoves[offset + i]);
+        }
+    }
+};
+
 const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
     const attackMask = boardInfo.attackMask;
     const guardMask = boardInfo.guardMask;
@@ -2601,6 +2812,43 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
         if (hasAnySeeMaterial(attackerCounts)) {
             exchangeScore += guardValue;
         }
+    }
+    return exchangeScore;
+};
+
+const calculateStaticExchangeScoreNumeric = (
+    targetValue, attackBits, guardBits, pieceCodes, materialValues
+) => {
+    const attackerCounts = seeAttackerTypeCounts;
+    const guardCounts = seeGuardTypeCounts;
+    attackerCounts.fill(0);
+    guardCounts.fill(0);
+
+    let mask = attackBits >>> 0;
+    while (mask !== 0) {
+        const bit = mask & -mask;
+        attackerCounts[pieceCodes[31 - Math.clz32(bit)] & 7]++;
+        mask ^= bit;
+    }
+    mask = guardBits >>> 0;
+    while (mask !== 0) {
+        const bit = mask & -mask;
+        guardCounts[pieceCodes[31 - Math.clz32(bit)] & 7]++;
+        mask ^= bit;
+    }
+
+    let exchangeScore = 0;
+    let isFirstExchange = true;
+    while (true) {
+        const attackerValue = takeLowestSeeMaterial(attackerCounts, materialValues);
+        const guardValue = takeLowestSeeMaterial(guardCounts, materialValues);
+        if (attackerValue === Infinity || guardValue === Infinity) break;
+        if (isFirstExchange) {
+            exchangeScore += targetValue;
+            isFirstExchange = false;
+        }
+        exchangeScore -= attackerValue;
+        if (hasAnySeeMaterial(attackerCounts)) exchangeScore += guardValue;
     }
     return exchangeScore;
 };
@@ -4883,7 +5131,9 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
 };
 
 // 对弈 numeric 叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
+const evaluatePlayLeafNumericLegacy = (
+    board, searchInitiator, gameStage, capturePlayer = null, recordStats = true
+) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const piecesInfo = scratchLeafPiecesInfo;
@@ -4910,7 +5160,7 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlaye
 
     calculatePackedSearchLeafRelations(piecesInfo, squareCodes, capturePlayer);
 
-    if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
+    if (recordStats && searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
     const attackMask = scratchAttackMask;
     const guardMask = scratchGuardMask;
@@ -4983,6 +5233,106 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlaye
         blackSafety * VALUE_WEIGHTS.safety +
         blackMobility * VALUE_WEIGHTS.mobility;
 
+    if (recordStats && searchContext.profile) {
+        perfStats.fastLeafEvalCount++;
+        perfStats.fastLeafEvalMs += performance.now() - __t0;
+    } else if (recordStats && searchContext.collectMetrics) {
+        perfStats.fastLeafEvalCount++;
+    }
+    return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
+};
+
+const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePlayer = null) => {
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    const pieceState = activePieceStateFor(board);
+    const records = pieceState.records;
+    const stateCodes = pieceState.pieceCodes;
+    const materialValues = pieceState.materialValues;
+    const squareCodes = pieceState.squareCodes;
+    let count = 0;
+    for (let slot = 0; slot < records.length; slot++) {
+        const record = records[slot];
+        if (!record.alive) continue;
+        const code = stateCodes[slot];
+        scratchLeafCodes[count] = code;
+        scratchLeafSquares[count] = record.sq;
+        scratchLeafMaterials[count] = materialValues[code & 7];
+        count++;
+    }
+
+    scratchLeafTotals[0] = 0;
+    scratchLeafTotals[1] = 0;
+    scratchLeafTotals[3] = 0;
+    scratchLeafTotals[4] = 0;
+    calculatePackedSearchLeafRelationsNumeric(pieceState, count, capturePlayer);
+
+    if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
+    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    const attackBySlot = scratchLeafAttackBySlot;
+    const guardBySlot = scratchLeafGuardBySlot;
+    let redThreat = 0;
+    let blackThreat = 0;
+    for (let targetSlot = 0; targetSlot < records.length; targetSlot++) {
+        if (!records[targetSlot].alive) continue;
+        const attackers = attackBySlot[targetSlot] >>> 0;
+        if (attackers === 0) continue;
+        const firstBit = attackers & -attackers;
+        const attackerIndex = 31 - Math.clz32(firstBit);
+        const targetCode = stateCodes[targetSlot];
+        let threatValue = 0;
+        if ((targetCode & 7) === 1) {
+            threatValue = checkBonus;
+        } else {
+            const targetValue = materialValues[targetCode & 7];
+            const guards = guardBySlot[targetSlot] >>> 0;
+            if (guards === 0) {
+                threatValue = targetValue;
+            } else if (attackers === (firstBit >>> 0)) {
+                const sseScore = targetValue - scratchLeafMaterials[attackerIndex];
+                if (sseScore > 0) threatValue = sseScore * 0.5;
+            } else {
+                const sseScore = calculateStaticExchangeScoreNumeric(
+                    targetValue, attackers, guards, scratchLeafCodes, materialValues
+                );
+                if (sseScore > 0) threatValue = sseScore * 0.5;
+            }
+        }
+        if (scratchLeafCodes[attackerIndex] < 8) redThreat += threatValue;
+        else blackThreat += threatValue;
+    }
+
+    let redSafety = 0;
+    let blackSafety = 0;
+    const redGeneralSq = pieceState.redGeneralSq;
+    if (redGeneralSq >= 0) {
+        const destinations = SEARCH_GENERAL_DEST[0][redGeneralSq];
+        for (let i = 0; i < destinations.length; i++) {
+            const sq = destinations[i];
+            if (squareCodes[sq] === 0 && hasAttackBit(scratchBlackAttack, sq)) redSafety -= 50;
+        }
+    }
+    const blackGeneralSq = pieceState.blackGeneralSq;
+    if (blackGeneralSq >= 0) {
+        const destinations = SEARCH_GENERAL_DEST[1][blackGeneralSq];
+        for (let i = 0; i < destinations.length; i++) {
+            const sq = destinations[i];
+            if (squareCodes[sq] === 0 && hasAttackBit(scratchRedAttack, sq)) blackSafety -= 50;
+        }
+    }
+
+    const redTotal =
+        pieceState.redMaterial * VALUE_WEIGHTS.material +
+        pieceState.redPosition * VALUE_WEIGHTS.position +
+        redThreat * VALUE_WEIGHTS.threat +
+        redSafety * VALUE_WEIGHTS.safety +
+        scratchLeafTotals[2] * VALUE_WEIGHTS.mobility;
+    const blackTotal =
+        pieceState.blackMaterial * VALUE_WEIGHTS.material +
+        pieceState.blackPosition * VALUE_WEIGHTS.position +
+        blackThreat * VALUE_WEIGHTS.threat +
+        blackSafety * VALUE_WEIGHTS.safety +
+        scratchLeafTotals[5] * VALUE_WEIGHTS.mobility;
+
     if (searchContext.profile) {
         perfStats.fastLeafEvalCount++;
         perfStats.fastLeafEvalMs += performance.now() - __t0;
@@ -4990,6 +5340,49 @@ const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlaye
         perfStats.fastLeafEvalCount++;
     }
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
+};
+
+const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
+    if (!searchContext.numericLeafSoA) {
+        return evaluatePlayLeafNumericLegacy(board, searchInitiator, gameStage, capturePlayer);
+    }
+    const result = evaluatePlayLeafNumericSoA(board, searchInitiator, gameStage, capturePlayer);
+    if (!searchContext.verifyNumericLeafSoA) return result;
+
+    const compareCaptures = searchContext.reusePackedQsCaptures && capturePlayer != null;
+    if (compareCaptures) {
+        scratchLeafVerifyCaptures.length = scratchPackedCaptures.length;
+        for (let i = 0; i < scratchPackedCaptures.length; i++) {
+            scratchLeafVerifyCaptures[i] = scratchPackedCaptures[i];
+        }
+    }
+    const legacyResult = evaluatePlayLeafNumericLegacy(
+        board, searchInitiator, gameStage, capturePlayer, false
+    );
+    if (result !== legacyResult) {
+        throw new Error(
+            `Numeric leaf SoA mismatch: score=${result}/${legacyResult} verify=${activeSearchPieceState.evalVerificationHash}`
+        );
+    }
+    if (compareCaptures) {
+        if (scratchPackedCaptures.length !== scratchLeafVerifyCaptures.length) {
+            throw new Error(
+                `Numeric leaf SoA capture count mismatch: ${scratchLeafVerifyCaptures.length}/${scratchPackedCaptures.length}`
+            );
+        }
+        for (let i = 0; i < scratchLeafVerifyCaptures.length; i++) {
+            if (scratchPackedCaptures[i] !== scratchLeafVerifyCaptures[i]) {
+                throw new Error(
+                    `Numeric leaf SoA capture mismatch at ${i}: ${scratchLeafVerifyCaptures[i]}/${scratchPackedCaptures[i]}`
+                );
+            }
+        }
+        scratchPackedCaptures.length = scratchLeafVerifyCaptures.length;
+        for (let i = 0; i < scratchLeafVerifyCaptures.length; i++) {
+            scratchPackedCaptures[i] = scratchLeafVerifyCaptures[i];
+        }
+    }
+    return result;
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存

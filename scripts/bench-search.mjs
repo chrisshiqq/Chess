@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
+function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, kingSafetyFastPath, verifyKingSafetyFastPath
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath
       }
     });
   });
@@ -126,6 +126,8 @@ const stagedMovePicker = process.env.BENCH_STAGED_MOVE_PICKER !== '0';
 const reuseQsMoveBuffers = process.env.BENCH_REUSE_QS_MOVE_BUFFERS !== '0';
 const reusePackedQsCaptures = process.env.BENCH_REUSE_PACKED_QS_CAPTURES !== '0';
 const verifyPackedQsCaptures = process.env.BENCH_VERIFY_PACKED_QS_CAPTURES === '1';
+const numericLeafSoA = process.env.BENCH_NUMERIC_LEAF_SOA !== '0';
+const verifyNumericLeafSoA = process.env.BENCH_VERIFY_NUMERIC_LEAF_SOA === '1';
 const metrics = process.env.BENCH_METRICS !== '0';
 const kingSafetyFastPath = process.env.BENCH_KING_SAFETY_FAST_PATH !== '0';
 const verifyKingSafetyFastPath = process.env.BENCH_VERIFY_KING_SAFETY === '1';
@@ -137,8 +139,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, metrics, kingSafetyFastPath, verifyKingSafetyFastPath)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, kingSafetyFastPath, verifyKingSafetyFastPath, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);
