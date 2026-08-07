@@ -4073,7 +4073,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
                     {isReplaying && (
                         <div
-                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-600/70 bg-stone-900/85 p-1 shadow-lg backdrop-blur-sm"
+                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-700/30 bg-stone-950/25 p-1 shadow-md"
                             role="group"
                             aria-label="Replay navigation"
                         >
@@ -4081,7 +4081,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={() => setReplayIndex(0)}
                                 disabled={replayIndex === 0}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="First move"
                                 title="First move"
                             >
@@ -4091,7 +4091,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={prevReplay}
                                 disabled={replayIndex === 0}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="Previous move"
                                 title="Previous move"
                             >
@@ -4101,7 +4101,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={nextReplay}
                                 disabled={replayIndex === allReplayBoards.length - 1}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="Next move"
                                 title="Next move"
                             >
@@ -4111,7 +4111,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={() => setReplayIndex(allReplayBoards.length - 1)}
                                 disabled={replayIndex === allReplayBoards.length - 1}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="Last move"
                                 title="Last move"
                             >

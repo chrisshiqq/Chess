@@ -13,16 +13,14 @@ export interface SearchOptions {
   exactRootScores?: boolean;
   profile?: boolean;
   metrics?: boolean;
-  nonRootPvs?: boolean;
   stagedMovePicker?: boolean;
   trueStagedGeneration?: boolean;
-  verifyTrueStagedGeneration?: boolean;
+  playerRelativeMoveScan?: boolean;
   reuseQsMoveBuffers?: boolean;
   reusePackedQsCaptures?: boolean;
-  verifyPackedQsCaptures?: boolean;
   kingSafetyFastPath?: boolean;
-  verifyKingSafetyFastPath?: boolean;
   preserveTtAcrossSearches?: boolean;
+  currentGenerationTtPriority?: boolean;
   ttMaxAge?: number;
   collectMoveSequence?: boolean;
 }
