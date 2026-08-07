@@ -5681,7 +5681,8 @@ const alphaBetaPlay = (
         perfStats.movesGenerated[d] += moves.length;
     }
 
-    const killersAtDepth = killerMoves[d] || [null, null];
+    const plyFromRoot = searchDepth - d;
+    const killersAtDepth = killerMoves[plyFromRoot] || [null, null];
     let stagedPlan = (!inCheck && searchContext.stagedMovePicker)
         ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
         : -1;
@@ -5812,7 +5813,7 @@ const alphaBetaPlay = (
                 recordFirstLegalCutoff(d);
             }
             if (!isCapture) {
-                storeKillerMove(d, move);
+                storeKillerMove(plyFromRoot, move);
                 addHistoryScore(move, d);
             }
             break;
@@ -6043,7 +6044,8 @@ const alphaBeta = (
         perfStats.movesGenerated[d] += moves.length;
     }
 
-    const killersAtDepth = (killerMoves[d] || [null, null]);
+    const plyFromRoot = searchDepth - d;
+    const killersAtDepth = (killerMoves[plyFromRoot] || [null, null]);
     moves = sortMovesFast(moves, b, currentPlayerColor, abPiecesInfo, gameStage, abBoardInfo, {
         ttMove,
         killers: killersAtDepth
@@ -6159,7 +6161,7 @@ const alphaBeta = (
                 recordFirstLegalCutoff(d);
             }
             if (!isCapture) {
-                storeKillerMove(d, move);
+                storeKillerMove(plyFromRoot, move);
                 addHistoryScore(move, d);
             }
             break;
@@ -6322,7 +6324,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
     const prevBest = rootMoves[0];
     sortMovesFast(rootMoves, board, turn, rootPiecesInfo, gameStage, rootBoardInfo, {
       ttMove,
-      killers: killerMoves[Math.max(0, currentDepth - 1)] || [null, null]
+      killers: null
     });
     // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
     promoteRootMove(rootMoves, ttMove);

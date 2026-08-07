@@ -4070,7 +4070,56 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         hiddenBestMove={isSetupMode ? null : hiddenBestMove}
                         suboptimalMove={isSetupMode ? null : suboptimalMove}
                     />
-                    
+
+                    {isReplaying && (
+                        <div
+                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-600/70 bg-stone-900/85 p-1 shadow-lg backdrop-blur-sm"
+                            role="group"
+                            aria-label="Replay navigation"
+                        >
+                            <button
+                                type="button"
+                                onClick={() => setReplayIndex(0)}
+                                disabled={replayIndex === 0}
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                aria-label="First move"
+                                title="First move"
+                            >
+                                <FirstPageIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={prevReplay}
+                                disabled={replayIndex === 0}
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                aria-label="Previous move"
+                                title="Previous move"
+                            >
+                                <ChevronLeftIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={nextReplay}
+                                disabled={replayIndex === allReplayBoards.length - 1}
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                aria-label="Next move"
+                                title="Next move"
+                            >
+                                <ChevronRightIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setReplayIndex(allReplayBoards.length - 1)}
+                                disabled={replayIndex === allReplayBoards.length - 1}
+                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-700 text-white transition-colors hover:bg-stone-600 disabled:opacity-30"
+                                aria-label="Last move"
+                                title="Last move"
+                            >
+                                <LastPageIcon className="h-5 w-5" />
+                            </button>
+                        </div>
+                    )}
+
                     {isThinking && !isReplaying && (
                         <div className="absolute z-40 pointer-events-none" style={{
                             top: '50%',
@@ -5074,15 +5123,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                              <div className="text-center mb-2">
                                 <div className="text-lg font-mono text-white">{replayIndex} <span className="text-stone-500 text-xs">/ {allReplayBoards.length - 1}</span></div>
                             </div>
-                            
-                            <div className="flex gap-1 justify-center mb-3">
-                                <button onClick={() => setReplayIndex(0)} disabled={replayIndex===0} className="p-2 bg-stone-700 rounded-lg disabled:opacity-30 hover:bg-stone-600 transition-colors"><FirstPageIcon className="w-4 h-4" /></button>
-                                <button onClick={prevReplay} disabled={replayIndex===0} className="p-2 bg-stone-700 rounded-lg disabled:opacity-30 hover:bg-stone-600 transition-colors"><ChevronLeftIcon className="w-4 h-4" /></button>
-                                <button onClick={nextReplay} disabled={replayIndex===allReplayBoards.length-1} className="p-2 bg-stone-700 rounded-lg disabled:opacity-30 hover:bg-stone-600 transition-colors"><ChevronRightIcon className="w-4 h-4" /></button>
-                                <button onClick={() => setReplayIndex(allReplayBoards.length-1)} disabled={replayIndex===allReplayBoards.length-1} className="p-2 bg-stone-700 rounded-lg disabled:opacity-30 hover:bg-stone-600 transition-colors"><LastPageIcon className="w-4 h-4" /></button>
-                            </div>
-                            
-
                             
                             {/* 棋谱着法和分析结果并排显示 */}
                             <div className="flex gap-4 mb-3" style={{ height: '300px', width: '100%' }}>
