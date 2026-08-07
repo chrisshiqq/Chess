@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
+function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker, trueStagedGeneration, verifyTrueStagedGeneration, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, nonRootPvs, stagedMovePicker
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, nonRootPvs, stagedMovePicker, trueStagedGeneration, verifyTrueStagedGeneration, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath
       }
     });
   });
@@ -90,6 +90,9 @@ function printSummary(label, run) {
   console.log(`  TT hits=${perf.tt?.hits} misses=${perf.tt?.misses} hitRate=${perf.tt?.hitRate}% stores=${perf.tt?.stores} updates=${perf.tt?.updatedStores ?? 0} evicted=${perf.tt?.lruEvictions}/${perf.tt?.evictionBatches ?? 0} depth/fallback=${perf.tt?.depthPreferredEvictions ?? 0}/${perf.tt?.fallbackEvictions ?? 0} size=${perf.tt?.currentSize}/${perf.tt?.maxSize} batch=${perf.tt?.evictionBatch}`);
   if (perf.moveOrdering) {
     console.log(`  ordering top=${JSON.stringify(perf.moveOrdering.topMoveSources)} depth=${JSON.stringify(perf.moveOrdering.byDepth)}`);
+  }
+  if (perf.stagedGeneration) {
+    console.log(`  stagedGen enabled=${perf.stagedGeneration.enabled} nodes=${perf.stagedGeneration.nodes} stages=${JSON.stringify(perf.stagedGeneration.stages)} generated=${JSON.stringify(perf.stagedGeneration.generated)} quietSkipped=${perf.stagedGeneration.quietSkipped} rate=${perf.stagedGeneration.quietSkipRate}% verifyFailures=${perf.stagedGeneration.verificationFailures}`);
   }
   if (perf.pvs) {
     console.log(`  PVS enabled=${perf.pvs.enabled} probes=${perf.pvs.probes} researches=${perf.pvs.researches} rate=${perf.pvs.researchRate}% probeNodes=${perf.pvs.probeNodes} researchNodes=${perf.pvs.researchNodes}`);
@@ -123,6 +126,8 @@ if (pathMode === 'cpuperf' && process.env.BENCH_CPU_PROF_CHILD !== '1') {
 const profile = pathMode === 'profile';
 const nonRootPvs = process.env.BENCH_NON_ROOT_PVS === '1';
 const stagedMovePicker = process.env.BENCH_STAGED_MOVE_PICKER !== '0';
+const trueStagedGeneration = process.env.BENCH_TRUE_STAGED_GENERATION !== '0';
+const verifyTrueStagedGeneration = process.env.BENCH_VERIFY_TRUE_STAGED_GENERATION === '1';
 const reuseQsMoveBuffers = process.env.BENCH_REUSE_QS_MOVE_BUFFERS !== '0';
 const reusePackedQsCaptures = process.env.BENCH_REUSE_PACKED_QS_CAPTURES !== '0';
 const verifyPackedQsCaptures = process.env.BENCH_VERIFY_PACKED_QS_CAPTURES === '1';
@@ -139,8 +144,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, nonRootPvs, stagedMovePicker, trueStagedGeneration, verifyTrueStagedGeneration, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, metrics, kingSafetyFastPath, verifyKingSafetyFastPath)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, nonRootPvs, stagedMovePicker, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, nonRootPvs, stagedMovePicker, trueStagedGeneration, verifyTrueStagedGeneration, reuseQsMoveBuffers, reusePackedQsCaptures, verifyPackedQsCaptures, numericLeafSoA, verifyNumericLeafSoA, kingSafetyFastPath, verifyKingSafetyFastPath, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);

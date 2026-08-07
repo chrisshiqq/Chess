@@ -3,6 +3,8 @@ export const searchContext = {
   collectMetrics: false,
   nonRootPvs: false,
   stagedMovePicker: true,
+  trueStagedGeneration: true,
+  verifyTrueStagedGeneration: false,
   reuseQsMoveBuffers: true,
   reusePackedQsCaptures: true,
   verifyPackedQsCaptures: false,
@@ -22,6 +24,8 @@ export const configureSearch = ({
   metrics = false,
   nonRootPvs = false,
   stagedMovePicker = true,
+  trueStagedGeneration = true,
+  verifyTrueStagedGeneration = false,
   reuseQsMoveBuffers = true,
   reusePackedQsCaptures = true,
   verifyPackedQsCaptures = false,
@@ -38,6 +42,8 @@ export const configureSearch = ({
   searchContext.collectMetrics = !!metrics;
   searchContext.nonRootPvs = !!nonRootPvs;
   searchContext.stagedMovePicker = !!stagedMovePicker;
+  searchContext.trueStagedGeneration = !!trueStagedGeneration;
+  searchContext.verifyTrueStagedGeneration = !!verifyTrueStagedGeneration;
   searchContext.reuseQsMoveBuffers = !!reuseQsMoveBuffers;
   searchContext.reusePackedQsCaptures = !!reusePackedQsCaptures;
   searchContext.verifyPackedQsCaptures = !!verifyPackedQsCaptures;

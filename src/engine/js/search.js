@@ -1616,6 +1616,153 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
     }
 };
 
+const stagedGenerationScratch = [];
+
+const containsEncodedMoveBefore = (moves, end, move) => {
+    for (let i = 0; i < end; i++) {
+        if (moves[i] === move) return true;
+    }
+    return false;
+};
+
+const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, quietOnly) => {
+    if (!isEncodedMove(move) || containsEncodedMoveBefore(moves, moves.length, move)) return false;
+    const fromSq = move >>> 7;
+    const toSq = move & MOVE_TO_MASK;
+    if (fromSq >= REL_SQUARES || toSq >= REL_SQUARES) return false;
+    const slot = pieceState.squareToSlot[fromSq];
+    if (slot < 0) return false;
+    const record = pieceState.records[slot];
+    if (!record.alive || record.piece.color !== currentPlayer) return false;
+    const targetCode = pieceState.squareCodes[toSq];
+    if (quietOnly && targetCode !== 0) return false;
+
+    stagedGenerationScratch.length = 0;
+    appendSearchPseudoMovesForPiece(
+        stagedGenerationScratch, fromSq, pieceState.pieceCodes[slot], pieceState.squareCodes, false
+    );
+    for (let i = 0; i < stagedGenerationScratch.length; i++) {
+        if (stagedGenerationScratch[i] === move) {
+            moves.push(move);
+            return true;
+        }
+    }
+    return false;
+};
+
+// Appends exactly one stage: TT, quiet killers, captures, then quiets.
+// Later stages exclude only specials that were actually validated and appended.
+const appendTrueStagedMovesPlay = (
+    moves, stage, board, currentPlayer, pieceState, ttMove, killers
+) => {
+    const start = moves.length;
+    if (stage === 0) {
+        appendValidatedStagedSpecial(moves, ttMove, pieceState, currentPlayer, false);
+        return moves.length - start;
+    }
+    if (stage === 1) {
+        if (killers) {
+            appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
+            appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
+        }
+    } else if (stage === 2) {
+        const records = pieceState.records;
+        const squareToSlot = pieceState.squareToSlot;
+        const squareCodes = pieceState.squareCodes;
+        const pieceCodes = pieceState.pieceCodes;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            const slot = squareToSlot[sq];
+            if (slot < 0) continue;
+            const record = records[slot];
+            if (!record.alive || record.piece.color !== currentPlayer) continue;
+            const pieceStart = moves.length;
+            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, true);
+            let write = pieceStart;
+            for (let read = pieceStart; read < moves.length; read++) {
+                const move = moves[read];
+                if (!containsEncodedMoveBefore(moves, start, move)) moves[write++] = move;
+            }
+            moves.length = write;
+        }
+    } else if (stage === 3) {
+        const records = pieceState.records;
+        const squareToSlot = pieceState.squareToSlot;
+        const squareCodes = pieceState.squareCodes;
+        const pieceCodes = pieceState.pieceCodes;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            const slot = squareToSlot[sq];
+            if (slot < 0) continue;
+            const record = records[slot];
+            if (!record.alive || record.piece.color !== currentPlayer) continue;
+            stagedGenerationScratch.length = 0;
+            appendSearchPseudoMovesForPiece(
+                stagedGenerationScratch, sq, pieceCodes[slot], squareCodes, false
+            );
+            for (let i = 0; i < stagedGenerationScratch.length; i++) {
+                const move = stagedGenerationScratch[i];
+                if (squareCodes[move & MOVE_TO_MASK] === 0 &&
+                    !containsEncodedMoveBefore(moves, start, move)) {
+                    moves.push(move);
+                }
+            }
+        }
+    }
+
+    sortStagedMoveRangePlay(moves, start, moves.length, board, killers);
+    return moves.length - start;
+};
+
+const verifyTrueStagedMovesPlay = (board, currentPlayer, pieceState, ttMove, killers) => {
+    const expected = [];
+    const records = pieceState.records;
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        const slot = pieceState.squareToSlot[sq];
+        if (slot < 0) continue;
+        const record = records[slot];
+        if (!record.alive || record.piece.color !== currentPlayer) continue;
+        appendSearchPseudoMovesForPiece(
+            expected, sq, pieceState.pieceCodes[slot], pieceState.squareCodes, false
+        );
+    }
+    const actual = [];
+    for (let stage = 0; stage < 4; stage++) {
+        appendTrueStagedMovesPlay(actual, stage, board, currentPlayer, pieceState, ttMove, killers);
+    }
+    expected.sort((a, b) => a - b);
+    actual.sort((a, b) => a - b);
+    if (expected.length !== actual.length) {
+        if (searchContext.collectMetrics) perfStats.stagedGeneration.verificationFailures++;
+        throw new Error(`True staged generation count mismatch: ${actual.length}/${expected.length}`);
+    }
+    for (let i = 0; i < expected.length; i++) {
+        if (expected[i] !== actual[i]) {
+            if (searchContext.collectMetrics) perfStats.stagedGeneration.verificationFailures++;
+            throw new Error(`True staged generation mismatch at ${i}: ${actual[i]}/${expected[i]}`);
+        }
+    }
+};
+
+const advanceTrueStagedMovesPlay = (
+    moves, nextStage, board, currentPlayer, pieceState, ttMove, killers, depth
+) => {
+    while (nextStage < 4) {
+        const stage = nextStage++;
+        const started = searchContext.profile ? performance.now() : 0;
+        const added = appendTrueStagedMovesPlay(
+            moves, stage, board, currentPlayer, pieceState, ttMove, killers
+        );
+        if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - started;
+        if (searchContext.collectMetrics) {
+            perfStats.stagedGeneration.stages[stage]++;
+            perfStats.stagedGeneration.generated[stage] += added;
+            perfStats.pseudoMovesGenerated += added;
+            perfStats.movesGenerated[depth] = (perfStats.movesGenerated[depth] || 0) + added;
+        }
+        if (added > 0) break;
+    }
+    return nextStage;
+};
+
 // 模块级落点处理（非每子新建闭包）；返回机动增量
 // pieceAtSq: 90 格 → piecesInfo；relCtx.useMasks 时写 mask
 const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relCtx, isRed, pieceColor) => {
@@ -4835,6 +4982,13 @@ let perfStats = {
         firstLegalCutoffsByDepth: {},
         firstLegalMoveIndexTotalByDepth: {}
     },
+    stagedGeneration: {
+        nodes: 0,
+        stages: [0, 0, 0, 0],
+        generated: [0, 0, 0, 0],
+        quietSkipped: 0,
+        verificationFailures: 0
+    },
     // 合法性路径：伪合法生成量、试走合法性检测、非法跳过、实际进入搜索的合法着
     pseudoMovesGenerated: 0,
     legalityChecks: 0,
@@ -4884,6 +5038,13 @@ const resetPerfStats = () => {
         firstLegalMovesByDepth: {},
         firstLegalCutoffsByDepth: {},
         firstLegalMoveIndexTotalByDepth: {}
+    };
+    perfStats.stagedGeneration = {
+        nodes: 0,
+        stages: [0, 0, 0, 0],
+        generated: [0, 0, 0, 0],
+        quietSkipped: 0,
+        verificationFailures: 0
     };
     perfStats.pseudoMovesGenerated = 0;
     perfStats.legalityChecks = 0;
@@ -4993,6 +5154,18 @@ const snapshotPerfStats = () => {
                         : 0
                 }];
             }))
+        } : null,
+        stagedGeneration: searchContext.collectMetrics ? {
+            enabled: searchContext.trueStagedGeneration,
+            nodes: perfStats.stagedGeneration.nodes,
+            stages: [...perfStats.stagedGeneration.stages],
+            generated: [...perfStats.stagedGeneration.generated],
+            quietSkipped: perfStats.stagedGeneration.quietSkipped,
+            quietSkipRate: perfStats.stagedGeneration.nodes
+                ? Number((perfStats.stagedGeneration.quietSkipped /
+                    perfStats.stagedGeneration.nodes * 100).toFixed(2))
+                : 0,
+            verificationFailures: perfStats.stagedGeneration.verificationFailures
         } : null,
         tt: ttStats,
         byDepth
@@ -5653,19 +5826,41 @@ const alphaBetaPlay = (
         }
     }
 
-    const searchInfo = prepareSearchInfo(b, currentPlayer, false);
-    const abPiecesInfo = searchInfo.piecesInfo;
-    const abBoardInfo = searchInfo.boardInfo;
-    const inCheck = searchInfo.inCheck ||
-        (currentPlayer === 'red' && abBoardInfo.redIsInCheck) ||
-        (currentPlayer === 'black' && abBoardInfo.blackIsInCheck);
+    const stagedPieceState = activePieceStateFor(b);
+    let useTrueStagedGeneration = !!(
+        searchContext.stagedMovePicker &&
+        searchContext.trueStagedGeneration &&
+        stagedPieceState
+    );
+    let searchInfo = null;
+    let inCheck;
+    if (useTrueStagedGeneration) {
+        const checkStarted = searchContext.profile ? performance.now() : 0;
+        inCheck = isCheckRaw(b, currentPlayer);
+        if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
+        if (inCheck) {
+            useTrueStagedGeneration = false;
+            searchInfo = prepareSearchInfo(b, currentPlayer, false);
+        }
+    } else {
+        searchInfo = prepareSearchInfo(b, currentPlayer, false);
+        inCheck = searchInfo.inCheck;
+    }
+    const abPiecesInfo = searchInfo ? searchInfo.piecesInfo : null;
+    const abBoardInfo = searchInfo ? searchInfo.boardInfo : null;
+    if (searchInfo) {
+        inCheck = inCheck ||
+            (currentPlayer === 'red' && abBoardInfo.redIsInCheck) ||
+            (currentPlayer === 'black' && abBoardInfo.blackIsInCheck);
+    }
     const terminalScore = () => {
         const isInitiatorWinner = currentPlayer !== searchInitiator;
         const baseScore = isInitiatorWinner ? 100000 : -100000;
         return baseScore + (isInitiatorWinner ? d : (searchDepth - d));
     };
 
-    if (!searchInfo.legalMoveList || searchInfo.legalMoveList.length === 0) {
+    if (!useTrueStagedGeneration &&
+        (!searchInfo.legalMoveList || searchInfo.legalMoveList.length === 0)) {
         const gameState = abBoardInfo.gameState;
         if (gameState && (gameState.status === 'checkmate' || gameState.status === 'stalemate')) {
             const isInitiatorWinner = gameState.winner === searchInitiator;
@@ -5675,20 +5870,32 @@ const alphaBetaPlay = (
         return terminalScore();
     }
 
-    let moves = searchInfo.legalMoveList;
-    if (searchContext.collectMetrics) {
+    let moves = useTrueStagedGeneration ? [] : searchInfo.legalMoveList;
+    if (searchContext.collectMetrics && !useTrueStagedGeneration) {
         if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
         perfStats.movesGenerated[d] += moves.length;
     }
 
     const plyFromRoot = searchDepth - d;
     const killersAtDepth = killerMoves[plyFromRoot] || [null, null];
-    let stagedPlan = (!inCheck && searchContext.stagedMovePicker)
+    let stagedPlan = (!useTrueStagedGeneration && !inCheck && searchContext.stagedMovePicker)
         ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
         : -1;
     let stagedStage = 0;
     let stagedEnd = moves.length;
-    if (stagedPlan >= 0) {
+    let nextTrueStagedStage = 0;
+    if (useTrueStagedGeneration) {
+        if (searchContext.collectMetrics) perfStats.stagedGeneration.nodes++;
+        if (searchContext.verifyTrueStagedGeneration) {
+            verifyTrueStagedMovesPlay(
+                b, currentPlayer, stagedPieceState, ttMove, killersAtDepth
+            );
+        }
+        nextTrueStagedStage = advanceTrueStagedMovesPlay(
+            moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
+            ttMove, killersAtDepth, d
+        );
+    } else if (stagedPlan >= 0) {
         stagedEnd = stagedPlan & 0xff;
         while (stagedEnd === 0 && stagedStage < 3) {
             stagedStage++;
@@ -5715,8 +5922,18 @@ const alphaBetaPlay = (
     let bestMove = null;
     let legalMovesFound = 0;
 
-    for (let moveIndex = 0; moveIndex < moves.length; moveIndex++) {
-        if (stagedPlan >= 0 && moveIndex === stagedEnd) {
+    let cutoffFound = false;
+    for (let moveIndex = 0; ; moveIndex++) {
+        if (moveIndex >= moves.length) {
+            if (!useTrueStagedGeneration) break;
+            const before = moves.length;
+            nextTrueStagedStage = advanceTrueStagedMovesPlay(
+                moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
+                ttMove, killersAtDepth, d
+            );
+            if (moves.length === before) break;
+        }
+        if (!useTrueStagedGeneration && stagedPlan >= 0 && moveIndex === stagedEnd) {
             do {
                 stagedStage++;
                 stagedEnd = stagedStage === 1
@@ -5805,6 +6022,7 @@ const alphaBetaPlay = (
         }
 
         if (beta <= alpha) {
+            cutoffFound = true;
             if (searchContext.collectMetrics) {
                 if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
                 perfStats.cutoffs[d]++;
@@ -5818,6 +6036,11 @@ const alphaBetaPlay = (
             }
             break;
         }
+    }
+
+    if (useTrueStagedGeneration && cutoffFound && nextTrueStagedStage < 4 &&
+        searchContext.collectMetrics) {
+        perfStats.stagedGeneration.quietSkipped++;
     }
 
     if (legalMovesFound === 0) return terminalScore();

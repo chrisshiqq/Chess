@@ -15,6 +15,8 @@ export interface SearchOptions {
   metrics?: boolean;
   nonRootPvs?: boolean;
   stagedMovePicker?: boolean;
+  trueStagedGeneration?: boolean;
+  verifyTrueStagedGeneration?: boolean;
   reuseQsMoveBuffers?: boolean;
   reusePackedQsCaptures?: boolean;
   verifyPackedQsCaptures?: boolean;
