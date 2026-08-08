@@ -45,19 +45,19 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     localStorage.setItem(NICK_KEY, value.trim());
   };
 
-  const trimmedNick = nick.trim() || '棋友';
+  const trimmedNick = nick.trim() || 'Player';
 
   if (screen === 'waiting') {
     const waitingLabel =
       connectionStatus === 'connecting'
-        ? '正在连接信令…'
+        ? 'Connecting to signaling…'
         : connectionStatus === 'waiting'
-          ? '等待对手加入…'
+          ? 'Waiting for opponent…'
           : connectionStatus === 'connected'
-            ? '已连接，进入对局…'
+            ? 'Connected — starting game…'
             : connectionStatus === 'error'
-              ? '连接失败'
-              : '处理中…';
+              ? 'Connection failed'
+              : 'Working…';
 
     return (
       <div className="min-h-screen w-full bg-stone-900 text-stone-200 flex items-center justify-center p-4 relative overflow-hidden">
@@ -70,18 +70,18 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         />
         <div className="relative z-10 w-full max-w-md animate-fadeIn">
           <h1 className="text-3xl sm:text-4xl font-black tracking-wide text-amber-500 text-center mb-2">
-            中国象棋
+            Chinese Chess
           </h1>
-          <p className="text-center text-stone-400 text-sm mb-8">联机房间</p>
+          <p className="text-center text-stone-400 text-sm mb-8">Online Room</p>
 
           <div className="rounded-2xl bg-stone-800/80 border border-stone-700 px-6 py-8 text-center shadow-xl">
-            <p className="text-stone-400 text-xs uppercase tracking-widest mb-2">房间码</p>
+            <p className="text-stone-400 text-xs uppercase tracking-widest mb-2">Room Code</p>
             <p className="text-4xl font-mono font-bold tracking-[0.35em] text-amber-400 mb-4">
               {roomCode?.toUpperCase() ?? '——'}
             </p>
             <p className="text-stone-300 mb-1">{waitingLabel}</p>
             {peerNick && (
-              <p className="text-amber-200/90 text-sm mb-2">对手：{peerNick}</p>
+              <p className="text-amber-200/90 text-sm mb-2">Opponent: {peerNick}</p>
             )}
             {statusMessage && (
               <p className="text-rose-300 text-sm mt-2">{statusMessage}</p>
@@ -97,14 +97,14 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-semibold text-sm transition-colors"
               >
-                {copied ? '已复制链接' : '复制邀请链接'}
+                {copied ? 'Link copied' : 'Copy invite link'}
               </button>
               <button
                 type="button"
                 onClick={onCancelWaiting}
                 className="flex-1 py-2.5 rounded-xl bg-stone-900 border border-stone-600 hover:border-rose-500/60 font-semibold text-sm transition-colors"
               >
-                取消
+                Cancel
               </button>
             </div>
           </div>
@@ -126,16 +126,19 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <h1 className="text-4xl sm:text-5xl font-black tracking-wide text-amber-500 text-center mb-2">
           中国象棋
         </h1>
-        <p className="text-center text-stone-400 text-sm mb-8">本地对弈 · WebRTC 联机</p>
-
-        <label className="block text-xs text-stone-400 mb-1.5 ml-1">昵称</label>
+        
+        <label className="block text-xs text-stone-400 mb-1.5 ml-1">Nickname</label>
         <input
           value={nick}
           onChange={(e) => persistNick(e.target.value)}
-          placeholder="棋友"
+          placeholder="Player"
           maxLength={16}
           className="w-full mb-6 px-4 py-3 rounded-xl bg-stone-800 border border-stone-600 focus:border-amber-500 outline-none text-stone-100"
         />
+
+        <div className="h-px bg-stone-700 mb-6" />
+
+        <p className="text-xs text-stone-500 mb-1 ml-1">Local</p>
 
         <div className="space-y-3 mb-8">
           <button
@@ -143,36 +146,33 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             onClick={() => onStartLocal('ai')}
             className="w-full py-3.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-base transition-colors shadow-lg shadow-amber-900/30"
           >
-            人机对弈
+            Player vs Computer
           </button>
           <button
             type="button"
             onClick={() => onStartLocal('local')}
             className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
           >
-            本地双人
+            Player vs Player
           </button>
         </div>
 
         <div className="h-px bg-stone-700 mb-6" />
 
-        <p className="text-xs text-stone-500 mb-1 ml-1">联机对战（WebRTC P2P）</p>
-        <p className="text-[11px] text-stone-500 mb-3 ml-1 leading-relaxed">
-          手机与电脑互联时，请尽量连同一 Wi‑Fi。跨运营商/手机流量常需中继，连接可能更慢或失败。
-        </p>
+        <p className="text-xs text-stone-500 mb-1 ml-1">Online</p>
         <button
           type="button"
           onClick={() => onCreateRoom(trimmedNick)}
           className="w-full py-3.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-base transition-colors mb-3"
         >
-          开房
+          Create Room
         </button>
 
         <div className="flex gap-2">
           <input
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value.trim().toLowerCase())}
-            placeholder="输入房间码"
+            placeholder="Enter room code"
             maxLength={8}
             className="flex-1 px-4 py-3 rounded-xl bg-stone-800 border border-stone-600 focus:border-amber-500 outline-none font-mono tracking-wider uppercase"
           />
@@ -182,7 +182,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             onClick={() => onJoinRoom(trimmedNick, joinCode)}
             className="px-5 py-3 rounded-xl bg-stone-100 text-stone-900 font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white transition-colors"
           >
-            加入
+            Join
           </button>
         </div>
 

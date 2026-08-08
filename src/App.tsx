@@ -321,7 +321,7 @@ const App: React.FC = () => {
     const [board, setBoard] = useState<Board>(createInitialBoard());
     const [turn, setTurn] = useState<Color>('red');
     const [playerColor, setPlayerColor] = useState<Color>('red');
-    const [coordinateStyle, setCoordinateStyle] = useState<'chinese' | 'western'>('western');
+    const [coordinateStyle, setCoordinateStyle] = useState<'chinese' | 'western'>('chinese');
     
     const [selectedPos, setSelectedPos] = useState<Position | null>(null);
     const [validMoves, setValidMoves] = useState<Position[]>([]);
@@ -1644,11 +1644,11 @@ const App: React.FC = () => {
             const repetitionCheck = await checkRepetition(newHash, positionHistory, move, board, turn);
             
             if (repetitionCheck.violation) {
-                const violationType = repetitionCheck.type === 'check' ? '长将' : '长捉';
+                const violationType = repetitionCheck.type === 'check' ? 'Perpetual check' : 'Perpetual chase';
                 console.log('👤 玩家手动走棋违规，判负');
                 const violationWinner = turn === 'red' ? 'black' : 'red';
                 // 调用游戏结束处理函数
-                handleGameOver('checkmate', violationWinner, `${violationType}违规！${turn === 'red' ? '红方' : '黑方'}判负`);
+                handleGameOver('checkmate', violationWinner, `${violationType} violation! ${turn === 'red' ? 'Red' : 'Black'} loses`);
                 return false; // 不执行这步棋，也不更新历史记录
             }
         }
@@ -1694,7 +1694,7 @@ const App: React.FC = () => {
             
             if (!inCheck && !isThreat && !completedLongCheckCycle) {
                 // 调用游戏结束处理函数
-                handleGameOver('draw', null, '局面重复4次，判定和棋！');
+                handleGameOver('draw', null, 'Position repeated 4 times — draw!');
             } else if (completedLongCheckCycle) {
                 console.log('⚠️ 长将循环已完成3次，等待将军方下一回合变招');
             }
@@ -1727,7 +1727,7 @@ const App: React.FC = () => {
         const newCounter = targetPiece ? 0 : drawMoveCounter + 1;
         if (newCounter >= 60) {
             // 调用游戏结束处理函数
-            handleGameOver('draw', null, '连续30回合无吃子，判定和棋！');
+            handleGameOver('draw', null, '30 moves without capture — draw!');
         }
         
         // Increment step count for the player who just moved
@@ -2081,7 +2081,7 @@ const App: React.FC = () => {
         if (msg.type === 'resign') {
             const info = onlineInfoRef.current;
             if (!info) return;
-            handleGameOver('checkmate', info.myColor, '对方认输');
+            handleGameOver('checkmate', info.myColor, 'Opponent resigned');
         }
     };
     onNetMessageRef.current = handleNetMessage;
@@ -2158,7 +2158,7 @@ const App: React.FC = () => {
             },
             onDisconnected: (reason) => {
                 if (joinTimer) clearTimeout(joinTimer);
-                leaveToLobby(reason || '连接已断开');
+                leaveToLobby(reason || 'Disconnected');
             },
             onError: (message) => {
                 if (joinTimer) clearTimeout(joinTimer);
@@ -2177,14 +2177,14 @@ const App: React.FC = () => {
                 joinTimer = setTimeout(() => {
                     if (!session.isConnected) {
                         leaveToLobby(
-                            '加入超时。请确认房间码；若双方不在同一 Wi‑Fi（尤其手机流量），网络可能阻止了 P2P，请改连同一局域网后重试。',
+                            'Join timed out. Check the room code; if not on the same Wi‑Fi (especially mobile data), P2P may be blocked — retry on the same LAN.',
                         );
                     }
                 }, 35000);
             }
         } catch (err) {
             if (joinTimer) clearTimeout(joinTimer);
-            const message = err instanceof Error ? err.message : '无法建立联机';
+            const message = err instanceof Error ? err.message : 'Could not start online session';
             leaveToLobby(message);
         }
     };
@@ -2196,7 +2196,7 @@ const App: React.FC = () => {
     const handleJoinRoom = (nick: string, roomCode: string) => {
         const code = roomCode.trim().toLowerCase();
         if (code.length < 4) {
-            setLobbyStatusMessage('请输入有效房间码');
+            setLobbyStatusMessage('Please enter a valid room code');
             return;
         }
         void startOnlineSession('guest', nick, code);
@@ -2211,7 +2211,7 @@ const App: React.FC = () => {
             await navigator.clipboard.writeText(url.toString());
         } catch {
             // fallback
-            window.prompt('复制邀请链接', url.toString());
+            window.prompt('Copy invite link', url.toString());
         }
     };
 
@@ -2219,7 +2219,7 @@ const App: React.FC = () => {
         if (!onlineInfo) return;
         peerSessionRef.current?.send({ type: 'resign' });
         const winner: Color = onlineInfo.myColor === 'red' ? 'black' : 'red';
-        handleGameOver('checkmate', winner, '你已认输');
+        handleGameOver('checkmate', winner, 'You resigned');
     };
 
     useEffect(() => {
@@ -2604,10 +2604,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 });
                 setSetupSupply(supply);
                 
-                alert('棋局加载成功！');
+                alert('Position loaded successfully!');
             } catch (error) {
                 console.error('Failed to load game:', error);
-                alert('加载棋局失败，请检查文件格式。');
+                alert('Failed to load position. Check the file format.');
             }
         };
         reader.readAsText(file);
@@ -3168,7 +3168,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             
         } catch (error) {
             console.error('分析棋局失败:', error);
-            alert('分析棋局失败，请重试');
+            alert('Analysis failed. Please try again.');
         }
         
         setIsAnalyzing(false);
@@ -3531,7 +3531,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     // 保存棋谱到文件（支持特定初始局面）
     const saveGameRecord = async () => {
         if (moveHistory.length === 0) {
-            alert("没有棋谱可以保存");
+            alert("No game record to save");
             return;
         }
 
@@ -3606,7 +3606,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             URL.revokeObjectURL(url);
         } catch (error) {
             console.error('保存棋谱失败:', error);
-            alert('保存棋谱失败');
+            alert('Failed to save game record');
         }
     };
 
@@ -3754,10 +3754,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 setGameOver(null);
                 setHasStarted(false);
                 
-                alert("文件加载成功！");
+                alert("File loaded successfully!");
             } catch (error) {
                 console.error("加载文件失败:", error);
-                alert("加载文件失败，文件格式可能不正确");
+                alert("Failed to load file. Format may be invalid");
             }
         };
         
@@ -3875,25 +3875,23 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     <span>
                         {onlineInfo ? (
                             <>
-                                联机 · 房间{' '}
+                                Online · Room{' '}
                                 <span className="font-mono text-amber-400 tracking-wider">
                                     {onlineInfo.roomCode.toUpperCase()}
                                 </span>
                                 {onlineInfo.peerNick ? ` · vs ${onlineInfo.peerNick}` : ''}
                                 {' · '}
-                                {onlineInfo.myColor === 'red' ? '执红' : '执黑'}
+                                {onlineInfo.myColor === 'red' ? 'Playing Red' : 'Playing Black'}
                             </>
                         ) : (
-                            '本地对局'
+                            'Local game'
                         )}
                     </span>
                     <button
                         type="button"
                         onClick={() => leaveToLobby()}
                         className="text-rose-300 hover:text-rose-200 font-semibold"
-                    >
-                        返回大厅
-                    </button>
+                    >Back to Lobby</button>
                 </div>
                 <div className="flex gap-1">
                     <button 
@@ -4199,7 +4197,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         }}
                                         className="px-6 py-3 bg-gradient-to-r from-amber-600 to-orange-700 hover:from-amber-500 text-white rounded-full font-bold text-lg shadow-lg"
                                     >
-                                        {onlineInfo ? '返回大厅' : 'Play Again'}
+                                        {onlineInfo ? 'Back to Lobby' : 'Play Again'}
                                     </button>
                                 </div>
                             </div>
@@ -4606,7 +4604,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         const winner = redScore > blackScore ? 'red' : redScore < blackScore ? 'black' : null;
                                         const status = winner ? 'checkmate' : 'draw';
                                         // 调用游戏结束处理函数
-                                        handleGameOver(status, winner, '玩家主动认输');
+                                        handleGameOver(status, winner, 'Player resigned');
                                     }} 
                                     disabled={isThinking || !!gameOver}
                                     style={getButtonStyle()}

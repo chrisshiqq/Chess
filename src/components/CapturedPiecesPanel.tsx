@@ -24,34 +24,6 @@ const sortPieces = (pieces: PieceType[]) => {
     return [...pieces].sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
 };
 
-const SKIN_STYLES: Record<Skin, { bg: string; border: string; text: string; headerBorder: string }> = {
-    'stone-board': {
-        bg: 'bg-[#d0d0d0]', // 与棋盘的 containerBg 一致
-        border: 'border-[#a0a0a0]', // 与棋盘的 border 一致
-        text: 'text-[#606060]', // 与棋盘的 coord 一致
-        headerBorder: 'border-[#a0a0a0]' // 与棋盘的 border 一致
-    },
-    'wood-board': {
-        bg: 'bg-[#654321]', // 与棋盘的 containerBg 一致
-        border: 'border-[#3d2817]', // 与棋盘的 border 一致
-        text: 'text-[#DAA520]', // 与棋盘的 grid/coord/river 一致
-        headerBorder: 'border-[#3d2817]' // 与棋盘的 border 一致
-    },
-
-    'paper-board': {
-        bg: 'bg-[#D8C9A8]', // 与棋盘的 containerBg 一致
-        border: 'border-[#8B6B42]', // 与棋盘的 border 一致
-        text: 'text-[#005AB5]', // 与棋盘的 grid/coord/river 一致
-        headerBorder: 'border-[#8B6B42]' // 与棋盘的 border 一致
-    },
-    'glass-board': {
-        bg: 'bg-[#70DBDB]', // 与棋盘的 containerBg 一致
-        border: 'border-[#006000]', // 与棋盘的 border 一致
-        text: 'text-[#006000]', // 与棋盘的 coord 一致
-        headerBorder: 'border-[#006000]' // 与棋盘的 border 一致
-    }
-};
-
 export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor, label, isSetupMode = false, skin = 'stone-board', material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
     const sortedPieces = sortPieces(pieces);
 
@@ -61,12 +33,15 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
         e.dataTransfer.dropEffect = 'move';
     };
 
-    const styles = isSetupMode 
-        ? { bg: 'bg-stone-700', border: 'border-stone-500', text: 'text-white', headerBorder: 'border-gray-500' }
-        : SKIN_STYLES[skin];
+    // Match EvaluationPanel / settings panels: stone chrome, not board-skin colors
+    const styles = {
+        bg: 'bg-stone-900/50',
+        border: 'border-stone-700',
+        text: 'text-stone-400',
+    };
 
     return (
-            <div className={`flex flex-col gap-0 p-0 pt-0 rounded-lg shadow-xl border-2 w-full transition-all duration-500
+            <div className={`flex flex-col gap-0 p-0 pt-0 rounded-lg border w-full transition-all duration-500
                     ${styles.bg} ${styles.border}
                 `}
                 onDragOver={handleDragOver}

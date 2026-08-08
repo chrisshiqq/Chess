@@ -28,7 +28,7 @@ export type PeerSessionHandlers = {
 };
 
 const CROSS_NET_HINT =
-  '跨网直连失败。请双方尽量连同一 Wi‑Fi 后重试；若仍失败，网络可能限制了 P2P。';
+  'Direct connection failed across networks. Prefer the same Wi‑Fi; if it still fails, the network may block P2P.';
 
 export class PeerSession {
   private peer: Peer | null = null;
@@ -122,12 +122,12 @@ export class PeerSession {
 
     conn.on('close', () => {
       if (this.destroyed) return;
-      this.handlers.onDisconnected?.('对方已断开');
+      this.handlers.onDisconnected?.('Opponent disconnected');
     });
 
     conn.on('error', (err: Error) => {
       if (this.destroyed) return;
-      this.handlers.onError?.(err.message || '连接错误');
+      this.handlers.onError?.(err.message || 'Connection error');
     });
 
     this.watchIce(conn);
@@ -187,10 +187,10 @@ export class PeerSession {
           if (this.destroyed) return;
           const message =
             err.type === 'unavailable-id'
-              ? '房间码已被占用，请重开一局'
+              ? 'Room code taken — create a new room'
               : err.type === 'network'
-                ? '无法连接信令服务器，请检查网络后重试'
-                : err.message || '信令错误';
+                ? 'Cannot reach signaling server. Check network and retry.'
+                : err.message || 'Signaling error';
           this.handlers.onError?.(message);
           reject(err);
         });
@@ -200,7 +200,7 @@ export class PeerSession {
           try {
             peer.reconnect();
           } catch {
-            this.handlers.onDisconnected?.('信令断开');
+            this.handlers.onDisconnected?.('Signaling disconnected');
           }
         });
       } catch (err) {
@@ -230,10 +230,10 @@ export class PeerSession {
           if (this.destroyed) return;
           const message =
             err.type === 'peer-unavailable'
-              ? '房间不存在或房主未就绪，请确认房间码'
+              ? 'Room not found or host not ready. Check the room code.'
               : err.type === 'network'
-                ? '无法连接信令服务器，请检查网络后重试'
-                : err.message || '无法加入房间';
+                ? 'Cannot reach signaling server. Check network and retry.'
+                : err.message || 'Could not join room';
           this.handlers.onError?.(message);
           reject(err);
         });
@@ -243,7 +243,7 @@ export class PeerSession {
           try {
             peer.reconnect();
           } catch {
-            this.handlers.onDisconnected?.('信令断开');
+            this.handlers.onDisconnected?.('Signaling disconnected');
           }
         });
       } catch (err) {

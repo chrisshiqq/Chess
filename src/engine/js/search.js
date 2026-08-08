@@ -730,7 +730,9 @@ const unmakeMove = (board, from, to, captured) => {
     }
 };
 
-// 仅普通节点使用：父局面安全且起终点不影响将线或敌马依赖格时，走子后仍必然安全。
+// 仅普通节点使用：父局面安全时，走子后仍必然安全则可跳过全量检测。
+// 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
+// 马：只有腾出马腿才可能新被马将；落到马腿/马位只会挡马或吃马。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
     if (!searchContext.kingSafetyFastPath || wasInCheck || !state || move == null) return false;
     const fromSq = moveFromSq(move);
@@ -751,12 +753,69 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 
     const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
     for (let i = 0; i < horseCheckers.length; i++) {
-        const entry = horseCheckers[i];
-        const legSq = entry >>> 7;
-        const horseSq = entry & MOVE_TO_MASK;
-        if (fromSq === legSq || toSq === legSq || fromSq === horseSq || toSq === horseSq) return false;
+        if (fromSq === (horseCheckers[i] >>> 7)) return false;
     }
     return true;
+};
+
+// 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
+const isCheckRawFromPieceStateAfterSafeNonKingMove = (state, color, fromSq, toSq) => {
+    const ownIsRed = color === 'red';
+    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) return true;
+
+    const squareCodes = state.squareCodes;
+    const enemyIsRed = !ownIsRed;
+    const gr = SEARCH_SQ_ROWS[generalSq];
+    const gc = SEARCH_SQ_COLS[generalSq];
+    const fromR = SEARCH_SQ_ROWS[fromSq];
+    const fromC = SEARCH_SQ_COLS[fromSq];
+    const toR = SEARCH_SQ_ROWS[toSq];
+    const toC = SEARCH_SQ_COLS[toSq];
+    const fromOnRank = fromR === gr;
+    const fromOnFile = fromC === gc;
+    const toOnRank = toR === gr;
+    const toOnFile = toC === gc;
+
+    if (fromOnRank || toOnRank || fromOnFile || toOnFile) {
+        for (let dir = 0, rayIndex = generalSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+            let need = false;
+            if (dir === 0) need = (fromOnRank && fromC > gc) || (toOnRank && toC > gc);
+            else if (dir === 1) need = (fromOnRank && fromC < gc) || (toOnRank && toC < gc);
+            else if (dir === 2) need = (fromOnFile && fromR > gr) || (toOnFile && toR > gr);
+            else need = (fromOnFile && fromR < gr) || (toOnFile && toR < gr);
+            if (!need) continue;
+
+            let seen = 0;
+            const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+            for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                const pieceCode = squareCodes[SEARCH_RAY_SQUARES[rayPos]];
+                if (pieceCode === 0) continue;
+                seen++;
+                const isEnemy = (pieceCode < 8) === enemyIsRed;
+                const pieceType = pieceCode & 7;
+                if (seen === 1) {
+                    if (isEnemy && (pieceType === 2 || pieceType === 1)) return true;
+                } else {
+                    if (isEnemy && pieceType === 6) return true;
+                    break;
+                }
+            }
+        }
+    }
+
+    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+    for (let i = 0; i < horseCheckers.length; i++) {
+        const entry = horseCheckers[i];
+        const legSq = entry >>> 7;
+        if (fromSq !== legSq) continue;
+        if (squareCodes[legSq] !== 0) continue;
+        const horseSq = entry & MOVE_TO_MASK;
+        const pieceCode = squareCodes[horseSq];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
+    }
+
+    return false;
 };
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
@@ -769,7 +828,23 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
         return false;
     }
     if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
-    const unsafe = pieceState ? isCheckRawFromPieceState(pieceState, color) : (isFlyingGeneral(board) || isCheckRaw(board, color));
+    let unsafe;
+    if (pieceState) {
+        if (!wasInCheck && move != null) {
+            const toSq = moveToSq(move);
+            const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
+            // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
+            unsafe = generalSq === toSq
+                ? isCheckRawFromPieceState(pieceState, color)
+                : isCheckRawFromPieceStateAfterSafeNonKingMove(
+                    pieceState, color, moveFromSq(move), toSq
+                );
+        } else {
+            unsafe = isCheckRawFromPieceState(pieceState, color);
+        }
+    } else {
+        unsafe = isFlyingGeneral(board) || isCheckRaw(board, color);
+    }
     if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
 };
@@ -5527,7 +5602,7 @@ const quiescencePlay = (
         const move = moves[i];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
@@ -5825,7 +5900,7 @@ const quiescence = (
         const move = moves[i];
         const movingPiece = b[moveFromR(move)][moveFromC(move)];
         const captured = makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
             unmakeSearchMove(b, move, captured);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
