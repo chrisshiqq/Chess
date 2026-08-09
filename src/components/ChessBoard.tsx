@@ -459,107 +459,78 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     const markerSize = 6; // 十字标记的大小
     const offset = 4; // 距离交叉点的偏移
     
-    // 判断是否在边界上，避免标记超出边界
-    const hasTop = r > 0;
-    const hasBottom = r < 9;
-    const hasLeft = c > 0;
-    const hasRight = c < 8;
+    // 按实际屏幕坐标判断边界，避免 flip 后边兵/边卒半十字画到棋盘外
+    const boardLeft = BOARD_OFFSET;
+    const boardRight = BOARD_OFFSET + 8 * CELL_SIZE;
+    const boardTop = BOARD_OFFSET;
+    const boardBottom = BOARD_OFFSET + 9 * CELL_SIZE;
+    const hasTop = y > boardTop;
+    const hasBottom = y < boardBottom;
+    const hasLeft = x > boardLeft;
+    const hasRight = x < boardRight;
     
     // 左上角
     if (hasTop && hasLeft) {
-      // 向上的线条 - 如果不是棋盘顶部行则绘制
-      if (r > 0) {
-        markers.push(
-          <line key={`marker-${r}-${c}-tl-v`} 
-                x1={x - offset} y1={y - offset} 
-                x2={x - offset} 
-                y2={y - offset - markerSize} 
-                stroke={lineColor} strokeWidth="2" />
-        );
-      }
-      // 向左的线条 - 如果不是棋盘最左列则绘制
-      if (c > 0) {
-        markers.push(
-          <line key={`marker-${r}-${c}-tl-h`} 
-                x1={x - offset} y1={y - offset} 
-                x2={x - offset - markerSize} 
-                y2={y - offset} 
-                stroke={lineColor} strokeWidth="2" />
-        );
-      }
+      markers.push(
+        <line key={`marker-${r}-${c}-tl-v`}
+              x1={x - offset} y1={y - offset}
+              x2={x - offset}
+              y2={y - offset - markerSize}
+              stroke={lineColor} strokeWidth="2" />,
+        <line key={`marker-${r}-${c}-tl-h`}
+              x1={x - offset} y1={y - offset}
+              x2={x - offset - markerSize}
+              y2={y - offset}
+              stroke={lineColor} strokeWidth="2" />
+      );
     }
     
     // 右上角
     if (hasTop && hasRight) {
-      // 向上的线条 - 如果不是棋盘顶部行则绘制
-      if (r > 0) {
-        markers.push(
-          <line key={`marker-${r}-${c}-tr-v`} 
-                x1={x + offset} y1={y - offset} 
-                x2={x + offset} 
-                y2={y - offset - markerSize} 
-
-                stroke={lineColor} strokeWidth="2" />
-        );
-      }
-      // 向右的线条 - 如果不是棋盘最右列则绘制
-      if (c < 8) {
-        markers.push(
-          <line key={`marker-${r}-${c}-tr-h`} 
-                x1={x + offset} y1={y - offset} 
-                x2={x + offset + markerSize} 
-                y2={y - offset} 
-                stroke={lineColor} strokeWidth="2" />
-        );
-      }
+      markers.push(
+        <line key={`marker-${r}-${c}-tr-v`}
+              x1={x + offset} y1={y - offset}
+              x2={x + offset}
+              y2={y - offset - markerSize}
+              stroke={lineColor} strokeWidth="2" />,
+        <line key={`marker-${r}-${c}-tr-h`}
+              x1={x + offset} y1={y - offset}
+              x2={x + offset + markerSize}
+              y2={y - offset}
+              stroke={lineColor} strokeWidth="2" />
+      );
     }
     
     // 左下角
     if (hasBottom && hasLeft) {
-      // 向下的线条 - 如果不是棋盘底部行则绘制
-      if (r < 9) {
-        markers.push(
-          <line key={`marker-${r}-${c}-bl-v`} 
-                x1={x - offset} y1={y + offset} 
-                x2={x - offset} 
-                y2={y + offset + markerSize} 
-                stroke={lineColor} strokeWidth="2" />
-        );
-      }
-      // 向左的线条 - 如果不是棋盘最左列则绘制
-      if (c > 0) {
-        markers.push(
-          <line key={`marker-${r}-${c}-bl-h`} 
-                x1={x - offset} y1={y + offset} 
-                x2={x - offset - markerSize} 
-                y2={y + offset} 
-                stroke={currentSkin.grid} strokeWidth="2" />
-        );
-      }
+      markers.push(
+        <line key={`marker-${r}-${c}-bl-v`}
+              x1={x - offset} y1={y + offset}
+              x2={x - offset}
+              y2={y + offset + markerSize}
+              stroke={lineColor} strokeWidth="2" />,
+        <line key={`marker-${r}-${c}-bl-h`}
+              x1={x - offset} y1={y + offset}
+              x2={x - offset - markerSize}
+              y2={y + offset}
+              stroke={currentSkin.grid} strokeWidth="2" />
+      );
     }
     
     // 右下角
     if (hasBottom && hasRight) {
-      // 向下的线条 - 如果不是棋盘底部行则绘制
-      if (r < 9) {
-        markers.push(
-          <line key={`marker-${r}-${c}-br-v`} 
-                x1={x + offset} y1={y + offset} 
-                x2={x + offset} 
-                y2={y + offset + markerSize} 
-                stroke={currentSkin.grid} strokeWidth="2" />
-        );
-      }
-      // 向右的线条 - 如果不是棋盘最右列则绘制
-      if (c < 8) {
-        markers.push(
-          <line key={`marker-${r}-${c}-br-h`} 
-                x1={x + offset} y1={y + offset} 
-                x2={x + offset + markerSize} 
-                y2={y + offset} 
-                stroke={currentSkin.grid} strokeWidth="2" />
-        );
-      }
+      markers.push(
+        <line key={`marker-${r}-${c}-br-v`}
+              x1={x + offset} y1={y + offset}
+              x2={x + offset}
+              y2={y + offset + markerSize}
+              stroke={currentSkin.grid} strokeWidth="2" />,
+        <line key={`marker-${r}-${c}-br-h`}
+              x1={x + offset} y1={y + offset}
+              x2={x + offset + markerSize}
+              y2={y + offset}
+              stroke={currentSkin.grid} strokeWidth="2" />
+      );
     }
     
     return markers;
