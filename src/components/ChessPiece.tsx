@@ -1,7 +1,28 @@
 
-import React, { useId } from 'react';
+import React, { memo, useEffect, useId } from 'react';
 import { PieceType, Color } from '../domain/types';
 import { PieceMaterial } from '../ui/types';
+
+const PIECE_ANIMATION_STYLE_ID = 'chess-piece-animations';
+const ensurePieceAnimationStyles = () => {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById(PIECE_ANIMATION_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = PIECE_ANIMATION_STYLE_ID;
+    style.textContent = `
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0); }
+            25% { transform: translate(1px, 1px); }
+            50% { transform: translate(-1px, -1px); }
+            75% { transform: translate(1px, -1px); }
+        }
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(720deg); }
+        }
+    `;
+    document.head.appendChild(style);
+};
 
 interface ChessPieceProps {
     type: PieceType;
@@ -110,7 +131,7 @@ const MATERIAL_CONFIGS = {
     }
 };
 
-export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, variant = 'normal', material = 'wood', playerColor = 'red', isInCheck = false, isRecentlyCaptured = false, style }) => {
+const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant = 'normal', material = 'wood', playerColor = 'red', isInCheck = false, isRecentlyCaptured = false, style }) => {
     const r = size / 2 - 4;
     const fontSize = size * 0.52;
     
@@ -119,6 +140,10 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
     // 稳定唯一ID，避免每次渲染重建滤镜导致将军动画被重置
     const reactId = useId().replace(/:/g, '');
     const uniqueId = `${material}-${color}-${reactId}`;
+
+    useEffect(() => {
+        ensurePieceAnimationStyles();
+    }, []);
     
     // 暗色变体使用固定的深色
     const fillColor = isDark ? "#3e2723" : `url(#pieceGradient-${material}-${color})`;
@@ -154,20 +179,6 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
     
     return (
         <g style={{ ...animationStyle, ...style }}>
-            {/* 动画定义：挂在棋子内部，确保 SVG 内也能播 */}
-            <style>{`
-                @keyframes shake {
-                    0%, 100% { transform: translate(0, 0); }
-                    25% { transform: translate(1px, 1px); }
-                    50% { transform: translate(-1px, -1px); }
-                    75% { transform: translate(1px, -1px); }
-                }
-                
-                @keyframes rotate {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(720deg); }
-                }
-            `}</style>
             {/* 渐变定义 */}
             {!isDark && (
                 <defs>
@@ -454,3 +465,6 @@ export const ChessPiece: React.FC<ChessPieceProps> = ({ type, color, size, varia
         </g>
     );
 };
+
+// 选子时 board 会重渲，memo 避免每个棋子重建木纹/玻璃滤镜
+export const ChessPiece = memo(ChessPieceInner);

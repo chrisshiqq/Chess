@@ -149,3 +149,9 @@ export const BookOpenIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => 
     <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
   </SvgIcon>
 );
+
+export const BoltIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <SvgIcon {...props} fill="currentColor" stroke="none">
+    <path d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+  </SvgIcon>
+);

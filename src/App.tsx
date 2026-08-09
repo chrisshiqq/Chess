@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, startTransition } from 'react';
 import { ChessBoard, CELL_SIZE, BOARD_OFFSET, SKINS } from './components/ChessBoard';
 import { SidePanel } from './components/CapturedPiecesPanel';
 import { ChessPiece } from './components/ChessPiece';
@@ -28,7 +28,8 @@ import {
     PaletteIcon,
     ClockIcon,
     SquareIcon,
-    AdjustmentsIcon
+    AdjustmentsIcon,
+    BoltIcon
 } from './components/Icons';
 import { ClockDisplay, FlyingPiece, formatTime } from './AppUI';
 import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
@@ -579,6 +580,17 @@ const App: React.FC = () => {
 
     // Worker Ref
     const workerRef = useRef<Worker | null>(null);
+    // 选子探测请求序号：快速连点时丢弃过期结果，避免旧评估堵住交互感
+    const selectInspectIdRef = useRef(0);
+    const selectInspectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const emptyPieceRelations = useRef({
+        threat: [] as Position[],
+        threatenedBy: [] as Position[],
+        guard: [] as Position[],
+        guardedBy: [] as Position[],
+        control: [] as Position[],
+        controllers: [] as Position[]
+    }).current;
 
     // Worker函数调用封装
     const workerGetValidMoves = useRef((board: Board, pos: Position): Promise<Position[]> => {
@@ -652,6 +664,46 @@ const App: React.FC = () => {
             workerRef.current.postMessage({
                 type: 'evaluatePiece',
                 payload: { board, pos, turn }
+            });
+        });
+    }).current;
+
+    // 一次 worker 调用完成：合法着法 + 单子评估 + 关系（内部只跑一遍 evaluateBoard）
+    const workerInspectSquare = useRef((
+        board: Board,
+        pos: Position,
+        turn: Color | null,
+        needMoves: boolean,
+        requestId: string
+    ): Promise<{ moves: Position[]; evaluation: any; relations: any }> => {
+        return new Promise((resolve, reject) => {
+            if (!workerRef.current) {
+                reject(new Error('Worker not initialized'));
+                return;
+            }
+
+            const timeoutId = setTimeout(() => {
+                workerRef.current?.removeEventListener('message', handleMessage);
+                console.warn('⚠️ workerInspectSquare timeout');
+                reject(new Error('inspectSquare timeout'));
+            }, 2000);
+
+            const handleMessage = (e: MessageEvent) => {
+                if (e.data.type === 'squareInspected' && e.data.requestId === requestId) {
+                    clearTimeout(timeoutId);
+                    workerRef.current?.removeEventListener('message', handleMessage);
+                    resolve({
+                        moves: e.data.moves || [],
+                        evaluation: e.data.evaluation,
+                        relations: e.data.relations
+                    });
+                }
+            };
+
+            workerRef.current.addEventListener('message', handleMessage);
+            workerRef.current.postMessage({
+                type: 'inspectSquare',
+                payload: { board, pos, turn, needMoves, requestId }
             });
         });
     }).current;
@@ -2013,126 +2065,78 @@ const App: React.FC = () => {
     };
     executeMoveRef.current = executeMove;
 
-    const handlePieceSelect = async (pos: Position) => {
-        //console.log('handlePieceSelect called with pos:', pos);
-        // 点击棋子不播放背景音乐
-        
+    const handlePieceSelect = (pos: Position) => {
         if (selectedPos?.r === pos.r && selectedPos?.c === pos.c) {
-            //console.log('handlePieceSelect: clicking the same piece, deselecting');
+            selectInspectIdRef.current += 1;
+            if (selectInspectTimerRef.current) {
+                clearTimeout(selectInspectTimerRef.current);
+                selectInspectTimerRef.current = null;
+            }
             setSelectedPos(null);
             setValidMoves([]);
-            setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+            setPieceRelations(emptyPieceRelations);
             setSelectedPieceEval(null);
             return;
         }
-        
-        // 获取当前棋盘状态
+
         const currentBoard = isReplaying ? allReplayBoards[replayIndex] : board;
-
-            
         const piece = currentBoard[pos.r][pos.c];
-        
-        // 如果点击的是空位置，获取该位置的控制者信息
-        if (!piece) {
-            //console.log('handlePieceSelect: clicking empty position, showing controllers');
-            setSelectedPos(pos); // 设置选中位置，用于显示控制者信息
-            setValidMoves([]);
-            
-            // 调用worker获取该位置的控制者信息
-            if (workerRef.current) {
-                const handleMessage = (e: MessageEvent) => {
-                    if (e.data.type === 'pieceRelations') {
-                        workerRef.current?.removeEventListener('message', handleMessage);
-                        setPieceRelations(e.data.relations);
-                        setSelectedPieceEval(null);
-                    }
-                };
-                
-                workerRef.current.addEventListener('message', handleMessage);
-                workerRef.current.postMessage({
-                    type: 'getPieceRelations',
-                    payload: {
-                        board: currentBoard,
-                        pos: pos
-                    }
-                });
-            }
-            return;
-        }
-        
-        // 允许选择任何棋子来查看关系
-        setSelectedPos(pos);
-        //console.log('handlePieceSelect: selected piece at pos:', pos);
-        
-        // 在所有模式下都显示有效移动（Setup模式下不显示）
-        if (!isSetupMode) {
-            // 检查是否是己方回合
-            const currentTurn = isReplaying ? (replayIndex % 2 === 0 ? 'red' : 'black') : turn;
-            //console.log('handlePieceSelect: currentTurn:', currentTurn, 'piece.color:', piece.color);
-            // 检查是否为当前颜色的回合，不管是人工还是Auto
+        const currentTurn = isSetupMode
+            ? turn
+            : (isReplaying ? (replayIndex % 2 === 0 ? 'red' : 'black') : turn);
+
+        let needMoves = false;
+        if (piece && !isSetupMode) {
             const isMyTurn = currentTurn === piece.color;
-            // 联机时仅己方棋子可走
             const canControlPiece = !onlineInfo || piece.color === onlineInfo.myColor;
-            //console.log('handlePieceSelect: isMyTurn:', isMyTurn);
-            
-            // 只有当前回合的棋子才显示有效移动
-            if (isMyTurn && canControlPiece) {
-                //console.log('handlePieceSelect: getting valid moves for piece at pos:', pos);
-                try {
-                    const moves = await workerGetValidMoves(currentBoard, pos);
-                    //console.log('handlePieceSelect: valid moves:', moves);
+            needMoves = isMyTurn && canControlPiece;
+        }
+
+        const requestId = String(++selectInspectIdRef.current);
+
+        // 先同步更新选中态，高亮立刻出现；重评估放到一次 worker 调用里
+        setSelectedPos(pos);
+        setValidMoves([]);
+        setPieceRelations(emptyPieceRelations);
+        setSelectedPieceEval(null);
+
+        // 合法着法优先：轻量消息，不跑 evaluateBoard，落点提示更快出现
+        if (needMoves) {
+            workerGetValidMoves(currentBoard, pos)
+                .then((moves) => {
+                    if (String(selectInspectIdRef.current) !== requestId) return;
                     setValidMoves(moves);
-                } catch (error) {
-                    //console.error('handlePieceSelect: Failed to get valid moves:', error);
+                })
+                .catch(() => {
+                    if (String(selectInspectIdRef.current) !== requestId) return;
                     setValidMoves([]);
-                }
-            } else {
-                //console.log('handlePieceSelect: not my turn, setting validMoves to empty array');
-                setValidMoves([]);
-            }
-        } else {
-            // Setup模式下不显示有效移动
-            setValidMoves([]);
+                });
         }
-        
-        // 在所有模式下获取单个棋子的评估值
-        try {
-            // Setup模式下使用当前turn
-            const currentTurn = isSetupMode ? turn : (isReplaying ? (replayIndex % 2 === 0 ? 'red' : 'black') : turn);
-            const pieceEval = await workerGetPieceEval(currentBoard, pos, currentTurn);
-            setSelectedPieceEval(pieceEval);
-        } catch (error) {
-            //console.error('handlePieceSelect: Failed to get piece evaluation:', error);
-            setSelectedPieceEval(null);
+
+        // 评估/关系较重：短防抖，避免连点时多个 evaluateBoard 堵住 worker 队列
+        if (selectInspectTimerRef.current) {
+            clearTimeout(selectInspectTimerRef.current);
         }
-        
-        // 计算棋子关系，传入当前棋盘状态
-        await calculatePieceRelations(pos, currentBoard);
-    };
-
-    // 计算棋子关系（威胁者、被威胁者、保护者、被保护者）
-    const calculatePieceRelations = async (pos: Position, currentBoard: Board) => {
-        return new Promise<void>((resolve) => {
-            if (!workerRef.current) {
-                setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
-                resolve();
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'pieceRelations') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    setPieceRelations(e.data.relations);
-                    resolve();
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'getPieceRelations',
-                payload: { board: currentBoard, pos }
-            });
-        });
+        selectInspectTimerRef.current = setTimeout(() => {
+            selectInspectTimerRef.current = null;
+            if (String(selectInspectIdRef.current) !== requestId) return;
+            workerInspectSquare(currentBoard, pos, piece ? currentTurn : null, false, requestId)
+                .then((result) => {
+                    if (String(selectInspectIdRef.current) !== requestId) return;
+                    startTransition(() => {
+                        if (String(selectInspectIdRef.current) !== requestId) return;
+                        setPieceRelations(result.relations || emptyPieceRelations);
+                        setSelectedPieceEval(piece ? (result.evaluation || null) : null);
+                    });
+                })
+                .catch(() => {
+                    if (String(selectInspectIdRef.current) !== requestId) return;
+                    startTransition(() => {
+                        setPieceRelations(emptyPieceRelations);
+                        setSelectedPieceEval(null);
+                    });
+                });
+        }, 40);
     };
 
     const handleMove = async (to: Position) => {
@@ -4319,9 +4323,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
 
                     {checkAlert && !gameOver && !isReplaying && !isSetupMode && (
-                        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none animate-pulse z-20">
-                            <div className="bg-red-600/90 text-white px-8 py-3 rounded-full text-3xl font-bold shadow-2xl border-2 border-red-400 tracking-wider">
-                                CHECK!
+                        <div
+                            className="absolute pointer-events-none z-20 animate-pulse"
+                            style={{
+                                top: '50%',
+                                left: '50%',
+                                transform: 'translate(-50%, -50%)'
+                            }}
+                        >
+                            <div className="flex items-center justify-center bg-yellow-400/95 text-stone-900 p-2 rounded-md shadow-md border border-yellow-500">
+                                <BoltIcon className="w-10 h-10 text-stone-900" />
                             </div>
                         </div>
                     )}
@@ -5062,7 +5073,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* Try模式下的临时No和Yes按钮 */}
                                 {!isAnalysisMode && (isThinking || lastSearchBench) && (
                                     <div className={`col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
-                                        <div className="mb-1 text-stone-400">{isThinking ? 'thinking' : 'Done'}</div>
+                                        <div className="mb-1 text-stone-400">{isThinking ? 'Thinking' : 'Done'}</div>
                                         <div className="space-y-1">
                                             <div>
                                                 Depth: {isThinking

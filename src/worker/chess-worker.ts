@@ -36,6 +36,61 @@ const emptyPieceEvaluation = () => ({
   tactic: 0
 });
 
+const emptyRelations = () => ({
+  threat: [] as Array<{ r: number; c: number }>,
+  threatenedBy: [] as Array<{ r: number; c: number }>,
+  guard: [] as Array<{ r: number; c: number }>,
+  guardedBy: [] as Array<{ r: number; c: number }>,
+  control: [] as Array<{ r: number; c: number }>,
+  controllers: [] as Array<{ r: number; c: number }>
+});
+
+const buildSquareInspection = (
+  board: ReturnType<typeof decodeBoard>,
+  pos: { r: number; c: number },
+  turn: Parameters<typeof evaluateBoard>[1],
+  needMoves: boolean
+) => {
+  const moves = needMoves ? getValidMoves(board, pos) : [];
+  const piece = board[pos.r][pos.c];
+  const boardEvaluation = evaluateBoard(board, turn, gameStage());
+  const piecesInfo = boardEvaluation.piecesInfo;
+  const boardInfo = boardEvaluation.boardInfo as any;
+  if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);
+
+  const rawControllers = boardInfo.controllerGrid
+    ? (boardInfo.controllerGrid[pos.r][pos.c] || [])
+    : (boardInfo[pos.r]?.[pos.c] || []);
+  const controllers = rawControllers.map((controller: { r: number; c: number }) => ({
+    r: controller.r,
+    c: controller.c
+  }));
+
+  let relations: Record<string, unknown> = { ...emptyRelations(), controllers };
+  let evaluation = emptyPieceEvaluation();
+
+  if (piece) {
+    const info = piecesInfo.find((candidate: { r: number; c: number }) =>
+      candidate.r === pos.r && candidate.c === pos.c
+    );
+    if (info) {
+      const positions = (items: Array<{ r: number; c: number }> = []) =>
+        items.map(({ r, c }) => ({ r, c }));
+      relations = {
+        threat: positions(info.threat),
+        threatenedBy: positions(info.threatenedBy),
+        guard: positions(info.guard),
+        guardedBy: positions(info.guardedBy),
+        control: positions(info.control),
+        controllers
+      };
+      evaluation = evaluatePieceInfo(info);
+    }
+  }
+
+  return { moves, evaluation, relations };
+};
+
 export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void => {
   try {
     const { type, payload } = request;
@@ -126,43 +181,29 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         return;
       }
 
+      case 'inspectSquare': {
+        const board = decodeBoard(payload.board);
+        syncGeneralPosCache(board);
+        const inspected = buildSquareInspection(
+          board,
+          payload.pos,
+          payload.turn,
+          !!payload.needMoves
+        );
+        emit({
+          type: 'squareInspected',
+          requestId: payload.requestId,
+          moves: inspected.moves,
+          evaluation: inspected.evaluation,
+          relations: inspected.relations
+        });
+        return;
+      }
+
       case 'getPieceRelations': {
         const board = decodeBoard(payload.board);
-        const piece = board[payload.pos.r][payload.pos.c];
-        const boardEvaluation = evaluateBoard(board, null, gameStage());
-        const piecesInfo = boardEvaluation.piecesInfo;
-        const boardInfo = boardEvaluation.boardInfo as any;
-        if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);
-
-        const rawControllers = boardInfo.controllerGrid
-          ? (boardInfo.controllerGrid[payload.pos.r][payload.pos.c] || [])
-          : (boardInfo[payload.pos.r]?.[payload.pos.c] || []);
-        const controllers = rawControllers.map((controller: { r: number; c: number }) => ({
-          r: controller.r,
-          c: controller.c
-        }));
-        let relations: Record<string, unknown> = {
-          threat: [], threatenedBy: [], guard: [], guardedBy: [], control: [], controllers
-        };
-
-        if (piece) {
-          const info = piecesInfo.find((candidate: { r: number; c: number }) =>
-            candidate.r === payload.pos.r && candidate.c === payload.pos.c
-          );
-          if (info) {
-            const positions = (items: Array<{ r: number; c: number }> = []) =>
-              items.map(({ r, c }) => ({ r, c }));
-            relations = {
-              threat: positions(info.threat),
-              threatenedBy: positions(info.threatenedBy),
-              guard: positions(info.guard),
-              guardedBy: positions(info.guardedBy),
-              control: positions(info.control),
-              controllers
-            };
-          }
-        }
-        emit({ type: 'pieceRelations', relations });
+        const inspected = buildSquareInspection(board, payload.pos, null, false);
+        emit({ type: 'pieceRelations', relations: inspected.relations });
         return;
       }
 

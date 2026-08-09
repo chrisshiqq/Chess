@@ -33,6 +33,16 @@ export type WorkerRequest =
   | { type: 'SEARCH'; payload: SearchOptions }
   | { type: 'getValidMoves'; payload: { board: WireBoard; pos: Position } }
   | { type: 'getPieceRelations'; payload: { board: WireBoard; pos: Position } }
+  | {
+      type: 'inspectSquare';
+      payload: {
+        board: WireBoard;
+        pos: Position;
+        turn: Color | null;
+        needMoves?: boolean;
+        requestId: string;
+      };
+    }
   | { type: 'checkGameState'; payload: { board: WireBoard; turn: Color; requestId?: number } }
   | { type: 'evaluateBoard'; payload: { board: WireBoard; turn: Color | null } }
   | { type: 'evaluatePiece'; payload: { board: WireBoard; pos: Position; turn: Color | null } }
@@ -82,6 +92,13 @@ export type WorkerResponse =
   | { type: 'SEARCH_COMPLETE'; payload: SearchCompletePayload }
   | { type: 'validMoves'; moves: Position[] }
   | { type: 'pieceRelations'; relations: unknown }
+  | {
+      type: 'squareInspected';
+      requestId: string;
+      moves: Position[];
+      evaluation: unknown;
+      relations: unknown;
+    }
   | { type: 'gameState'; state: unknown; requestId?: number }
   | { type: 'detailedEvaluation'; evaluation: unknown }
   | { type: 'pieceEvaluation'; evaluation: unknown }

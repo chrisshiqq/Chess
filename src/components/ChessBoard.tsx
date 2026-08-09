@@ -820,7 +820,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     }
     if (selectedPos) {
         const { x, y } = toSVG(selectedPos.r, selectedPos.c);
-        indicators.push(<rect key="selected" x={x - CELL_SIZE/2 + 1} y={y - CELL_SIZE/2 + 1} width={CELL_SIZE - 2} height={CELL_SIZE - 2} fill="none" stroke="#22c55e" strokeWidth="3" rx={4} className="animate-pulse" pointerEvents="none" />);
+        // 静态选框：避免 animate-pulse 持续重绘带动 glass/棋子滤镜
+        indicators.push(<rect key="selected" x={x - CELL_SIZE/2 + 1} y={y - CELL_SIZE/2 + 1} width={CELL_SIZE - 2} height={CELL_SIZE - 2} fill="none" stroke="#22c55e" strokeWidth="3" rx={4} pointerEvents="none" />);
         
         // 渲染棋子评估值提示框
         if (pieceEval) {
@@ -1171,10 +1172,11 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
               style={{
                   zIndex: isSelected ? 20 : isMoving ? 15 : 1,
                   // 被将闪动时不要挂 CSS transition:transform，否则会冲掉子节点的 shake
-                  transition: isInCheck ? undefined : animationTransition,
+                  // 选中态避免额外 CSS drop-shadow（整盘 SVG 重滤镜很贵），用绿色选框提示即可
+                  transition: isInCheck || isSelected ? undefined : animationTransition,
                   transformOrigin: 'center',
                   transformBox: 'fill-box', // 确保变换原点相对于元素本身计算
-                  filter: isSelected ? 'drop-shadow(0 0 10px rgba(255, 255, 0, 0.8))' : 'url(#dropShadow)',
+                  filter: 'url(#dropShadow)',
                   opacity: shouldHide ? 0 : 1 // 隐藏动画期间目标位置的棋子
               }}
               {...({ draggable: isSetupMode } as any)}
@@ -1479,10 +1481,10 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                     {/* 基础茶色玻璃底色 */}
                     <feFlood floodColor="#70DBDB" floodOpacity="0.7" result="glassBase" />
                     
-                    {/* 花纹密度为原 baseFrequency 的 25% */}
+                    {/* 花纹密度再降为上一档的 25%（相对最初约 6.25%） */}
                     <feTurbulence 
                         type="fractalNoise" 
-                        baseFrequency="0.125 0.075" 
+                        baseFrequency="0.03125 0.01875" 
                         numOctaves="1" 
                         seed="300"
                         result="glassNoise"
