@@ -15,6 +15,8 @@ export const searchContext = {
   lmrMinMove: 5,
   // 减深上限：原先公式在 d12 可减到只剩 1–2 层，战术漏着严重
   lmrMaxReduction: 2,
+  // 树内 PVS：首着全窗，其后空窗探测，fail-high 再全窗回搜
+  internalPvs: true,
   preserveTtAcrossSearches: true,
   currentGenerationTtPriority: true,
   ttMaxAge: 1,
@@ -39,6 +41,7 @@ export const configureSearch = ({
   lmrMinDepth = 3,
   lmrMinMove = 5,
   lmrMaxReduction = 2,
+  internalPvs = true,
   preserveTtAcrossSearches = true,
   currentGenerationTtPriority = true,
   ttMaxAge = 1,
@@ -58,6 +61,7 @@ export const configureSearch = ({
   searchContext.lmrMinDepth = Math.max(2, lmrMinDepth | 0);
   searchContext.lmrMinMove = Math.max(2, lmrMinMove | 0);
   searchContext.lmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
+  searchContext.internalPvs = !!internalPvs;
   searchContext.preserveTtAcrossSearches = !!preserveTtAcrossSearches;
   searchContext.currentGenerationTtPriority = !!currentGenerationTtPriority;
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);

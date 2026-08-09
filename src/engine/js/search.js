@@ -4978,6 +4978,8 @@ let perfStats = {
     legalMovesSearched: 0,
     lmrAttempts: 0,
     lmrReSearches: 0,
+    pvsAttempts: 0,
+    pvsReSearches: 0,
     // Zobrist：全盘重算次数 / 增量更新次数
     fullHashCount: 0,
     incrementalHashUpdates: 0,
@@ -5029,6 +5031,8 @@ const resetPerfStats = () => {
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
     perfStats.lmrReSearches = 0;
+    perfStats.pvsAttempts = 0;
+    perfStats.pvsReSearches = 0;
     perfStats.fullHashCount = 0;
     perfStats.incrementalHashUpdates = 0;
     perfStats.fastLeafEvalCount = 0;
@@ -5088,6 +5092,14 @@ const snapshotPerfStats = () => {
             reSearches: perfStats.lmrReSearches,
             reSearchRate: perfStats.lmrAttempts
                 ? Number((perfStats.lmrReSearches / perfStats.lmrAttempts * 100).toFixed(2))
+                : 0
+        } : null,
+        pvs: searchContext.collectMetrics ? {
+            enabled: searchContext.internalPvs,
+            attempts: perfStats.pvsAttempts,
+            reSearches: perfStats.pvsReSearches,
+            reSearchRate: perfStats.pvsAttempts
+                ? Number((perfStats.pvsReSearches / perfStats.pvsAttempts * 100).toFixed(2))
                 : 0
         } : null,
         fullHashCount: perfStats.fullHashCount,
@@ -5168,6 +5180,7 @@ const clearEvalCache = () => {
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
+const NULL_WINDOW_EPS = 1e-6;
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 
 // Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
@@ -5880,21 +5893,59 @@ const alphaBetaPlay = (
             !isSameMove(move, killersAtDepth[0]) &&
             !isSameMove(move, killersAtDepth[1]);
 
-        let value;
+        // 树内 PVS：非首着且窗口够宽时先空窗；fail-high 再全窗回搜
+        const pvsEligible = searchContext.internalPvs &&
+            legalMovesFound > 1 &&
+            (maximizing ? Number.isFinite(alpha) : Number.isFinite(beta)) &&
+            (beta - alpha) > NULL_WINDOW_EPS;
+
+        let reducedDepth = d - 1;
         if (canLmr) {
             let reduction = (Math.log(d) * Math.log(legalMovesFound) / Math.LN2) | 0;
             if (reduction < 1) reduction = 1;
             const maxReduction = Math.min(searchContext.lmrMaxReduction | 0 || 2, d - 2);
             if (reduction > maxReduction) reduction = maxReduction;
-            const reducedDepth = d - 1 - reduction;
+            reducedDepth = d - 1 - reduction;
             if (searchContext.collectMetrics) perfStats.lmrAttempts++;
-            if (maximizing) {
+        }
+
+        let value;
+        if (maximizing) {
+            if (canLmr) {
                 value = alphaBetaPlay(
-                    b, reducedDepth, alpha, alpha + 1e-6, nextMaximizing, nextPlayer,
+                    b, reducedDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                    if (pvsEligible) {
+                        if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                        value = alphaBetaPlay(
+                            b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                            searchDepth, searchInitiator, gameStage, nextHash
+                        );
+                        if (value > alpha) {
+                            if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                            value = alphaBetaPlay(
+                                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                                searchDepth, searchInitiator, gameStage, nextHash
+                            );
+                        }
+                    } else {
+                        value = alphaBetaPlay(
+                            b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                            searchDepth, searchInitiator, gameStage, nextHash
+                        );
+                    }
+                }
+            } else if (pvsEligible) {
+                if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                value = alphaBetaPlay(
+                    b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
+                if (value > alpha) {
+                    if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                     value = alphaBetaPlay(
                         b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
@@ -5902,16 +5953,49 @@ const alphaBetaPlay = (
                 }
             } else {
                 value = alphaBetaPlay(
-                    b, reducedDepth, beta - 1e-6, beta, nextMaximizing, nextPlayer,
+                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
-                if (value < beta) {
-                    if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+            }
+        } else if (canLmr) {
+            value = alphaBetaPlay(
+                b, reducedDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, nextHash
+            );
+            if (value < beta) {
+                if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                if (pvsEligible) {
+                    if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                    value = alphaBetaPlay(
+                        b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                        searchDepth, searchInitiator, gameStage, nextHash
+                    );
+                    if (value < beta) {
+                        if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                        value = alphaBetaPlay(
+                            b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                            searchDepth, searchInitiator, gameStage, nextHash
+                        );
+                    }
+                } else {
                     value = alphaBetaPlay(
                         b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                 }
+            }
+        } else if (pvsEligible) {
+            if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+            value = alphaBetaPlay(
+                b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, nextHash
+            );
+            if (value < beta) {
+                if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                value = alphaBetaPlay(
+                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
             }
         } else {
             value = alphaBetaPlay(
@@ -6404,7 +6488,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
 
   const workBoard = board.map((row) => [...row]);
   activeSearchPieceState = createSearchPieceState(workBoard, gameStage);
-  const NULL_WINDOW_EPS = 1e-6;
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hash(board);
