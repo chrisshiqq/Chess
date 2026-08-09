@@ -22,6 +22,7 @@ export const evaluatePieceInfo = (pieceInfo) => ({
 
 export {
   evaluateBoard,
+  evaluateBoardForUi,
   getGamePhase,
   hydrateRelationsFromMasks
 } from './search.js';

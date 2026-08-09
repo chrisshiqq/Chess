@@ -501,8 +501,9 @@ const forEachSetBit = (mask, fn) => {
     }
 };
 
-// 主评估函数 - 详细评估棋盘局势（UI / 点棋关系 / 搜索叶 / 根节点）
+// 主评估函数 - 详细评估棋盘局势（局面评估面板 / 搜索叶 / 根节点）
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
+// 点棋关系请用 evaluateBoardForUi，不要往这里加 UI 专用开关
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     // 统计
@@ -663,6 +664,66 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
+};
+
+// 点棋专用评估：关系 + 单子分。不跑终局“扫全体合法着”，也不改 evaluateBoard
+const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
+    const piecesInfo = [];
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const piece = board[r][c];
+            if (!piece) continue;
+            piecesInfo.push({
+                piece,
+                r,
+                c,
+                pieceIndex: piecesInfo.length,
+                moves: [],
+                allyGuards: [],
+                materialValue: getMaterialValue(piece, gameStage),
+                positionValue: getPositionValue(piece, r, c),
+                threatValue: 0,
+                safetyValue: 0,
+                tacticValue: 0,
+                mobilityValue: 0,
+                threat: [],
+                threatenedBy: [],
+                guard: [],
+                guardedBy: [],
+                control: [],
+                protect: []
+            });
+        }
+    }
+
+    let boardInfo;
+    if (piecesInfo.length <= 32) {
+        clearRelationMasks(true);
+        clearAttackBits(scratchRedAttack);
+        clearAttackBits(scratchBlackAttack);
+        boardInfo = {
+            useRelationMasks: true,
+            useAttackBits: true,
+            skipControlMask: false,
+            palaceControlOnly: false,
+            attackMask: scratchAttackMask,
+            guardMask: scratchGuardMask,
+            controlMask: scratchControlMask,
+            redAttack: scratchRedAttack,
+            blackAttack: scratchBlackAttack
+        };
+    } else {
+        boardInfo = makeEmptyControllerGrid();
+    }
+
+    calculatePieceRelations(board, piecesInfo, boardInfo);
+    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board, false);
+
+    return {
+        piecesInfo,
+        gameStage,
+        boardInfo
+    };
 };
 
 // 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
@@ -1288,7 +1349,7 @@ const sortStagedMoveRangePlay = (moves, start, end, board, currentPlayer, killer
 
 // 搜索用着法准备（轻量）：不建关系图/威胁/机动性
 // 只生成伪合法着，合法性在试走时检测。
-// 点棋关系仍走完整 evaluateBoard，不受影响
+// 点棋关系走 evaluateBoardForUi，不受影响
 const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.collectMetrics) perfStats.prepareSearchInfoCount[currentPlayer]++;
@@ -6524,6 +6585,7 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
 export {
   checkGameState,
   evaluateBoard,
+  evaluateBoardForUi,
   getBestMove,
   getGamePhase,
   getValidMoves,

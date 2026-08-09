@@ -5,6 +5,7 @@ import type { Move } from '../domain/types';
 import type { WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
+  evaluateBoardForUi,
   evaluatePieceInfo,
   getGamePhase,
   hydrateRelationsFromMasks,
@@ -48,12 +49,13 @@ const emptyRelations = () => ({
 const buildSquareInspection = (
   board: ReturnType<typeof decodeBoard>,
   pos: { r: number; c: number },
-  turn: Parameters<typeof evaluateBoard>[1],
+  turn: Parameters<typeof evaluateBoardForUi>[1],
   needMoves: boolean
 ) => {
   const moves = needMoves ? getValidMoves(board, pos) : [];
   const piece = board[pos.r][pos.c];
-  const boardEvaluation = evaluateBoard(board, turn, gameStage());
+  // 点棋专用函数，不走通用 evaluateBoard
+  const boardEvaluation = evaluateBoardForUi(board, turn, gameStage());
   const piecesInfo = boardEvaluation.piecesInfo;
   const boardInfo = boardEvaluation.boardInfo as any;
   if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);
@@ -177,7 +179,11 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       case 'getValidMoves': {
         const board = decodeBoard(payload.board);
         syncGeneralPosCache(board);
-        emit({ type: 'validMoves', moves: getValidMoves(board, payload.pos) });
+        emit({
+          type: 'validMoves',
+          moves: getValidMoves(board, payload.pos),
+          requestId: payload.requestId
+        });
         return;
       }
 

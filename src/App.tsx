@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo, useCallback, startTransition } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { ChessBoard, CELL_SIZE, BOARD_OFFSET, SKINS } from './components/ChessBoard';
 import { SidePanel } from './components/CapturedPiecesPanel';
 import { ChessPiece } from './components/ChessPiece';
@@ -593,13 +593,14 @@ const App: React.FC = () => {
     }).current;
 
     // Worker函数调用封装
-    const workerGetValidMoves = useRef((board: Board, pos: Position): Promise<Position[]> => {
+    const workerGetValidMoves = useRef((board: Board, pos: Position, requestId?: string): Promise<Position[]> => {
         return new Promise((resolve, reject) => {
             if (!workerRef.current) {
                 reject(new Error('Worker not initialized'));
                 return;
             }
 
+            const reqId = requestId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
             const timeoutId = setTimeout(() => {
                 workerRef.current?.removeEventListener('message', handleMessage);
                 console.warn('⚠️ workerGetValidMoves timeout, returning empty moves');
@@ -607,7 +608,7 @@ const App: React.FC = () => {
             }, 1000); // 1秒超时
 
             const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'validMoves') {
+                if (e.data.type === 'validMoves' && e.data.requestId === reqId) {
                     clearTimeout(timeoutId);
                     workerRef.current?.removeEventListener('message', handleMessage);
                     resolve(e.data.moves);
@@ -617,7 +618,7 @@ const App: React.FC = () => {
             workerRef.current.addEventListener('message', handleMessage);
             workerRef.current.postMessage({
                 type: 'getValidMoves',
-                payload: { board, pos }
+                payload: { board, pos, requestId: reqId }
             });
         });
     }).current;
@@ -2094,15 +2095,15 @@ const App: React.FC = () => {
 
         const requestId = String(++selectInspectIdRef.current);
 
-        // 先同步更新选中态，高亮立刻出现；重评估放到一次 worker 调用里
+        // 先同步更新选中态，高亮立刻出现
         setSelectedPos(pos);
         setValidMoves([]);
         setPieceRelations(emptyPieceRelations);
         setSelectedPieceEval(null);
 
-        // 合法着法优先：轻量消息，不跑 evaluateBoard，落点提示更快出现
+        // 合法着法优先：轻量消息，不跑 evaluateBoard
         if (needMoves) {
-            workerGetValidMoves(currentBoard, pos)
+            workerGetValidMoves(currentBoard, pos, `moves-${requestId}`)
                 .then((moves) => {
                     if (String(selectInspectIdRef.current) !== requestId) return;
                     setValidMoves(moves);
@@ -2113,30 +2114,22 @@ const App: React.FC = () => {
                 });
         }
 
-        // 评估/关系较重：短防抖，避免连点时多个 evaluateBoard 堵住 worker 队列
+        // 关系/单子评估：立即走 forUiInspect（不再防抖、不用 startTransition，避免手机上 defer 感很强）
         if (selectInspectTimerRef.current) {
             clearTimeout(selectInspectTimerRef.current);
-        }
-        selectInspectTimerRef.current = setTimeout(() => {
             selectInspectTimerRef.current = null;
-            if (String(selectInspectIdRef.current) !== requestId) return;
-            workerInspectSquare(currentBoard, pos, piece ? currentTurn : null, false, requestId)
-                .then((result) => {
-                    if (String(selectInspectIdRef.current) !== requestId) return;
-                    startTransition(() => {
-                        if (String(selectInspectIdRef.current) !== requestId) return;
-                        setPieceRelations(result.relations || emptyPieceRelations);
-                        setSelectedPieceEval(piece ? (result.evaluation || null) : null);
-                    });
-                })
-                .catch(() => {
-                    if (String(selectInspectIdRef.current) !== requestId) return;
-                    startTransition(() => {
-                        setPieceRelations(emptyPieceRelations);
-                        setSelectedPieceEval(null);
-                    });
-                });
-        }, 40);
+        }
+        workerInspectSquare(currentBoard, pos, piece ? currentTurn : null, false, requestId)
+            .then((result) => {
+                if (String(selectInspectIdRef.current) !== requestId) return;
+                setPieceRelations(result.relations || emptyPieceRelations);
+                setSelectedPieceEval(piece ? (result.evaluation || null) : null);
+            })
+            .catch(() => {
+                if (String(selectInspectIdRef.current) !== requestId) return;
+                setPieceRelations(emptyPieceRelations);
+                setSelectedPieceEval(null);
+            });
     };
 
     const handleMove = async (to: Position) => {

@@ -31,7 +31,7 @@ export interface SearchOptions {
 
 export type WorkerRequest =
   | { type: 'SEARCH'; payload: SearchOptions }
-  | { type: 'getValidMoves'; payload: { board: WireBoard; pos: Position } }
+  | { type: 'getValidMoves'; payload: { board: WireBoard; pos: Position; requestId?: string } }
   | { type: 'getPieceRelations'; payload: { board: WireBoard; pos: Position } }
   | {
       type: 'inspectSquare';
@@ -90,7 +90,7 @@ export type WorkerResponse =
   | { type: 'SEARCH_STARTED'; payload: { gameId: number; turn: Color; depth: number; ply: number; enableTimeLimit: boolean } }
   | { type: 'SEARCH_PROGRESS'; payload: SearchProgressPayload }
   | { type: 'SEARCH_COMPLETE'; payload: SearchCompletePayload }
-  | { type: 'validMoves'; moves: Position[] }
+  | { type: 'validMoves'; moves: Position[]; requestId?: string }
   | { type: 'pieceRelations'; relations: unknown }
   | {
       type: 'squareInspected';
