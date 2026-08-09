@@ -144,7 +144,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           <button
             type="button"
             onClick={() => onStartLocal('ai')}
-            className="w-full py-3.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-base transition-colors shadow-lg shadow-amber-900/30"
+            className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
           >
             Player vs Computer
           </button>
@@ -163,7 +163,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <button
           type="button"
           onClick={() => onCreateRoom(trimmedNick)}
-          className="w-full py-3.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-base transition-colors mb-3"
+          className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors mb-3"
         >
           Create Room
         </button>

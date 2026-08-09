@@ -4324,9 +4324,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 transform: 'translate(-50%, -50%)'
                             }}
                         >
-                            <div className="flex items-center justify-center bg-yellow-400/95 text-stone-900 p-2 rounded-md shadow-md border border-yellow-500">
-                                <BoltIcon className="w-10 h-10 text-stone-900" />
-                            </div>
+                            <BoltIcon
+                                className="text-red-500"
+                                style={{
+                                    width: '48px',
+                                    height: '48px',
+                                    opacity: 0.85,
+                                    filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.5))'
+                                }}
+                            />
                         </div>
                     )}
 
@@ -4352,34 +4358,47 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     )}
 
                     {gameOver && gameOver.status !== 'setup' && !isReplaying && (
-                        <div className="absolute inset-0 bg-black/10 flex items-center justify-center z-50 rounded-lg">
-                            <div className="p-8 rounded-2xl text-center animate-scaleUp max-w-md mx-4">
-                                <h2 className="text-3xl font-bold mb-2 text-amber-400 uppercase tracking-wide">Game Over</h2>
-                                <div className="text-5xl font-extrabold mb-4 text-red-500 drop-shadow-md">
-                                    {gameOver.status === 'draw' ? 'DRAW' : (gameOver.winner === playerColor ? 'VICTORY' : 'DEFEAT')}
-                                </div>
-                                <p className="text-stone-400 text-lg mb-8">
-                                    {gameOver.status === 'checkmate' ? <span className="text-yellow-600">Checkmate</span> : 
-                                     gameOver.status === 'stalemate' ? <><span className="text-yellow-600">Stalemate</span> (Unable to move)</> : 
-                                     'Draw by repetition'}
-                                </p>
-                                <div className="flex gap-4 justify-center">
-                                    <button onClick={startReplay} className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white rounded-full font-bold text-lg shadow-lg">Replay</button>
-                                    <button
-                                        onClick={() => {
-                                            if (onlineInfo) {
-                                                leaveToLobby();
-                                                return;
-                                            }
-                                            handleRestart();
-                                        }}
-                                        className="px-6 py-3 bg-gradient-to-r from-amber-600 to-orange-700 hover:from-amber-500 text-white rounded-full font-bold text-lg shadow-lg"
-                                    >
-                                        {onlineInfo ? 'Back to Lobby' : 'Play Again'}
-                                    </button>
-                                </div>
+                        <>
+                            <div
+                                className="absolute z-50 pointer-events-none animate-scaleUp text-4xl font-extrabold tracking-wide drop-shadow-md text-red-500/90"
+                                style={{
+                                    top: '50%',
+                                    left: '50%',
+                                    transform: 'translate(-50%, -50%)'
+                                }}
+                            >
+                                {gameOver.status === 'draw' ? 'DRAW' : (gameOver.winner === playerColor ? 'VICTORY' : 'DEFEAT')}
                             </div>
-                        </div>
+                            <div
+                                className="absolute z-50 flex gap-3 pointer-events-auto"
+                                style={{
+                                    top: 'calc(50% + 28px)',
+                                    left: '50%',
+                                    transform: 'translateX(-50%)'
+                                }}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={startReplay}
+                                    className="px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
+                                >
+                                    Replay
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (onlineInfo) {
+                                            leaveToLobby();
+                                            return;
+                                        }
+                                        handleRestart();
+                                    }}
+                                    className="px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
+                                >
+                                    {onlineInfo ? 'Back to Lobby' : 'Rematch'}
+                                </button>
+                            </div>
+                        </>
                     )}
                 </div>
                 
