@@ -107,9 +107,9 @@ export const SKINS: Record<Skin, {
         boardBg: "#70DBDB",
         containerBg: "#70DBDB",
         border: "#70DBDB",
-        grid: "#116de5ff",
-        coord: "#116de5ff",
-        river: "#116de5ff",
+        grid: "#589362",
+        coord: "#589362",
+        river: "#589362",
         texture: "glass"
     }
 };
@@ -1473,16 +1473,16 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                 </>
             )}
             
-            {/* 玻璃纹理 - 透明反光效果，模拟茶色玻璃板 */}
+            {/* 玻璃纹理 - 透明反光效果；花纹为棋线色 #589362 的互补色 #A76C9D */}
             {currentSkin.texture === 'glass' && (
                 <filter id="glassTexture" x="-50%" y="-50%" width="200%" height="200%">
                     {/* 基础茶色玻璃底色 */}
                     <feFlood floodColor="#70DBDB" floodOpacity="0.7" result="glassBase" />
                     
-                    {/* 添加高光和反光效果 */}
+                    {/* 花纹密度为原 baseFrequency 的 25% */}
                     <feTurbulence 
                         type="fractalNoise" 
-                        baseFrequency="0.5 0.3" 
+                        baseFrequency="0.125 0.075" 
                         numOctaves="1" 
                         seed="300"
                         result="glassNoise"
@@ -1490,10 +1490,10 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
                     <feColorMatrix 
                         in="glassNoise"
                         type="matrix"
-                        values="0.2 0.1 0 0 0                                
-                                0.15 0.1 0 0 0
-                                0.1 0.05 0 0 0
-                                0   0   0 1 0"
+                        values="0.655 0.2 0.1 0 0
+                                0.25 0.424 0.1 0 0
+                                0.35 0.15 0.616 0 0
+                                0 0 0 1 0"
                         result="glassTint"
                     />
                     

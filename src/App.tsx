@@ -57,6 +57,9 @@ const COLS = 9;
 type SearchBench = {
     thinkingTime: number;
     completedDepth?: number;
+    targetDepth?: number;
+    rootMoves?: number;
+    bestPreview?: string;
 };
 
 const formatBenchTime = (value?: number) => `${((value ?? 0) / 1000).toFixed(2)}s`;
@@ -422,8 +425,39 @@ const App: React.FC = () => {
     const [isThinking, setIsThinking] = useState(false);
     const [showSkinSelector, setShowSkinSelector] = useState(false);
     const [showMaterialSelector, setShowMaterialSelector] = useState(false);
+    const [aiSearchDebug, setAiSearchDebug] = useState<{
+        active: boolean;
+        gameId: number | null;
+        turn: Color | null;
+        targetDepth: number;
+        completedDepth: number;
+        rootMoves: number;
+        phase: string;
+        bestPreview: string;
+        score: number | null;
+        startedAt: number | null;
+        lastProgressAt: number | null;
+        lastEvent: string;
+        postedAt: number | null;
+    }>({
+        active: false,
+        gameId: null,
+        turn: null,
+        targetDepth: 0,
+        completedDepth: -2,
+        rootMoves: 0,
+        phase: '',
+        bestPreview: '',
+        score: null,
+        startedAt: null,
+        lastProgressAt: null,
+        lastEvent: '',
+        postedAt: null
+    });
+    const aiSearchDebugRef = useRef(aiSearchDebug);
+    aiSearchDebugRef.current = aiSearchDebug;
 
-    const [aiDepth, setAiDepth] = useState<number>(8);
+    const [aiDepth, setAiDepth] = useState<number>(10);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
     const [bestMoveSequence, setBestMoveSequence] = useState<Move[]>([]);
     const [secondBestMoveSequence, setSecondBestMoveSequence] = useState<Move[]>([]);
@@ -1268,6 +1302,36 @@ const App: React.FC = () => {
     const searchAndExecuteMove = async (currentBoard: Board, currentTurn: Color, searchDepth: number, capturedGameId: number, randomness: number = 0, ply: number = 0, isAutoMode: boolean = false, delay: number = 0, enableTimeLimit: boolean = false) => {
         // 开始搜索，显示齿轮转动效果
         setIsThinking(true);
+        // 清掉上一手分析箭头，避免误判为“正在考虑非法应将”
+        setBestMoveSequence([]);
+        setSecondBestMoveSequence([]);
+        setAnalysisMoves([]);
+        setHiddenBestMove(null);
+        setSuboptimalMove(null);
+        setHintMove(null);
+        const postedAt = Date.now();
+        setAiSearchDebug({
+            active: true,
+            gameId: capturedGameId,
+            turn: currentTurn,
+            targetDepth: searchDepth,
+            completedDepth: -2,
+            rootMoves: 0,
+            phase: 'posted',
+            bestPreview: '',
+            score: null,
+            startedAt: null,
+            lastProgressAt: postedAt,
+            lastEvent: 'SEARCH posted',
+            postedAt
+        });
+        console.info('[AI] SEARCH posted', {
+            gameId: capturedGameId,
+            turn: currentTurn,
+            depth: searchDepth,
+            ply,
+            enableTimeLimit
+        });
         
         // 辅助函数定义
         // 获取当前玩家的所有合法走法
@@ -1404,17 +1468,73 @@ const App: React.FC = () => {
         
         // Define message handler
         const handleWorkerMessage = async (e: MessageEvent) => {
-            console.log('Worker message received:', e.data.type);
             const { type, payload } = e.data;
+            if (type === 'SEARCH_STARTED' || type === 'SEARCH_PROGRESS') {
+                if (payload?.gameId !== capturedGameId) return;
+                const now = Date.now();
+                const best = payload.bestMove;
+                const bestPreview = best?.from && best?.to
+                    ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
+                    : '';
+                setAiSearchDebug(prev => ({
+                    ...prev,
+                    active: true,
+                    gameId: payload.gameId,
+                    turn: payload.turn ?? prev.turn,
+                    targetDepth: payload.maxDepth ?? payload.depth ?? prev.targetDepth,
+                    completedDepth: payload.completedDepth ?? prev.completedDepth,
+                    rootMoves: payload.rootMoves ?? prev.rootMoves,
+                    phase: payload.phase ?? type,
+                    bestPreview: bestPreview || prev.bestPreview,
+                    score: payload.score ?? prev.score,
+                    startedAt: type === 'SEARCH_STARTED' ? now : (prev.startedAt ?? now),
+                    lastProgressAt: now,
+                    lastEvent: type === 'SEARCH_STARTED'
+                        ? `STARTED d=${payload.depth}`
+                        : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`
+                }));
+                // 仅关键节点打日志，避免每层 depth 刷屏拖慢 DevTools
+                if (type === 'SEARCH_STARTED' || payload.phase === 'root-eval' || payload.phase === 'start') {
+                    console.info(`[AI] ${type}`, payload.phase ?? '', payload.completedDepth ?? '');
+                }
+                return;
+            }
             if (type === 'SEARCH_COMPLETE') {
+                console.info('[AI] SEARCH_COMPLETE', {
+                    gameId: payload?.gameId,
+                    expect: capturedGameId,
+                    thinkingTime: payload?.thinkingTime,
+                    completedDepth: payload?.completedDepth,
+                    best: payload?.bestMove
+                });
                 // 无论gameId是否匹配，都要移除事件监听器
                 workerRef.current?.removeEventListener('message', handleWorkerMessage);
                 
                 if (payload.gameId === capturedGameId) {
-                    setLastSearchBench({
-                        thinkingTime: payload.thinkingTime ?? 0,
-                        completedDepth: payload.completedDepth
-                    });
+                    {
+                        const best = payload.bestMove;
+                        const prevDbg = aiSearchDebugRef.current;
+                        const bestPreview = best?.from && best?.to
+                            ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
+                            : prevDbg.bestPreview;
+                        const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
+                        setAiSearchDebug(prev => ({
+                            ...prev,
+                            active: false,
+                            phase: 'complete',
+                            completedDepth,
+                            bestPreview,
+                            lastEvent: `COMPLETE ${payload.thinkingTime}ms`,
+                            lastProgressAt: Date.now()
+                        }));
+                        setLastSearchBench({
+                            thinkingTime: payload.thinkingTime ?? 0,
+                            completedDepth,
+                            targetDepth: prevDbg.targetDepth || searchDepth,
+                            rootMoves: prevDbg.rootMoves,
+                            bestPreview
+                        });
+                    }
                     // 首先尝试使用最优走法
                     const newBestMoveSequence = payload.moveSequence || [];
                     const newSecondBestMoveSequence = payload.secondMoveSequence || [];
@@ -1505,6 +1625,16 @@ const App: React.FC = () => {
                     }
                 } else {
                     // 如果gameId不匹配，也要确保isThinking被设置为false
+                    console.warn('[AI] SEARCH_COMPLETE gameId mismatch', {
+                        got: payload?.gameId,
+                        expect: capturedGameId
+                    });
+                    setAiSearchDebug(prev => ({
+                        ...prev,
+                        active: false,
+                        lastEvent: `COMPLETE ignored gameId ${payload?.gameId}!=${capturedGameId}`,
+                        lastProgressAt: Date.now()
+                    }));
                     setIsThinking(false);
                 }
             }
@@ -1539,6 +1669,50 @@ const App: React.FC = () => {
             workerRef.current?.removeEventListener('message', handleWorkerMessage);
         };
     };
+
+    // AI 搜索调试：刷新耗时显示 + 无进度看门狗
+    const [aiDebugTick, setAiDebugTick] = useState(0);
+    useEffect(() => {
+        if (!isThinking) return;
+        const tickId = window.setInterval(() => setAiDebugTick(v => v + 1), 1000);
+        const watchId = window.setInterval(() => {
+            const dbg = aiSearchDebugRef.current;
+            if (!dbg.active || !dbg.postedAt) return;
+            const elapsed = Date.now() - dbg.postedAt;
+            const sinceProgress = dbg.lastProgressAt ? Date.now() - dbg.lastProgressAt : elapsed;
+            if (sinceProgress < 8000) return;
+            const snapshot = {
+                ...dbg,
+                elapsedMs: elapsed,
+                sinceProgressMs: sinceProgress,
+                isThinking: true,
+                turn,
+                aiDepth,
+                enableTimeLimit,
+                hint: sinceProgress >= 8000 && dbg.phase === 'posted'
+                    ? '已 post SEARCH 但未收到 SEARCH_STARTED：Worker 可能未跑/被阻塞/监听器丢失'
+                    : sinceProgress >= 8000 && (dbg.phase === 'SEARCH_STARTED' || dbg.phase === 'root-eval')
+                        ? '卡在开局评估/根着法生成（还没进入迭代加深）'
+                        : sinceProgress >= 8000 && dbg.phase === 'start'
+                            ? '卡在 depth=1 搜索'
+                            : `迭代加深停在 d=${dbg.completedDepth}/${dbg.targetDepth}`
+            };
+            console.warn('[AI watchdog] no progress >8s', snapshot);
+            (window as unknown as { __CHESS_AI_DEBUG__?: unknown }).__CHESS_AI_DEBUG__ = snapshot;
+        }, 2000);
+        (window as unknown as { __CHESS_AI_DEBUG__?: unknown }).__CHESS_AI_DEBUG__ = () => ({
+            ...aiSearchDebugRef.current,
+            isThinking: true,
+            turn,
+            aiDepth,
+            enableTimeLimit,
+            now: Date.now()
+        });
+        return () => {
+            window.clearInterval(tickId);
+            window.clearInterval(watchId);
+        };
+    }, [isThinking, turn, aiDepth, enableTimeLimit]);
 
     // AI Turn Logic
     useEffect(() => {
@@ -4404,7 +4578,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onChange={(e) => setAiDepth(parseInt(e.target.value))}
                                     className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
                                 >
-                                    {[6, 7, 8, 9, 10].map((depth) => (
+                                    {[8, 9, 10, 11, 12].map((depth) => (
                                         <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
                                             Depth {depth}
                                         </option>
@@ -4886,17 +5060,31 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 )}
                                 
                                 {/* Try模式下的临时No和Yes按钮 */}
-                                {!isAnalysisMode && (
-                                    <div className="col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs text-stone-300">
-                                        <div className="mb-1 text-stone-400">AI Bench</div>
-                                        {lastSearchBench ? (
-                                            <div className="space-y-1">
-                                                <div>Depth: {lastSearchBench.completedDepth ?? 0}</div>
-                                                <div>Time: {formatBenchTime(lastSearchBench.thinkingTime)}</div>
+                                {!isAnalysisMode && (isThinking || lastSearchBench) && (
+                                    <div className={`col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
+                                        <div className="mb-1 text-stone-400">{isThinking ? 'thinking' : 'Done'}</div>
+                                        <div className="space-y-1">
+                                            <div>
+                                                Depth: {isThinking
+                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || aiDepth}`
+                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? aiDepth}`}
                                             </div>
-                                        ) : (
-                                            <div className="text-stone-500">Waiting for AI search...</div>
-                                        )}
+                                            <div>
+                                                Time: {isThinking
+                                                    ? (aiSearchDebug.postedAt
+                                                        ? `${((Date.now() - (aiDebugTick, aiSearchDebug.postedAt)) / 1000).toFixed(2)}s`
+                                                        : '0.00s')
+                                                    : formatBenchTime(lastSearchBench?.thinkingTime)}
+                                            </div>
+                                            {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (
+                                                <div>root: {isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves}</div>
+                                            ) : null}
+                                            {(isThinking ? aiSearchDebug.bestPreview : lastSearchBench?.bestPreview) ? (
+                                                <div className="truncate">
+                                                    PV: {isThinking ? aiSearchDebug.bestPreview : lastSearchBench?.bestPreview}
+                                                </div>
+                                            ) : null}
+                                        </div>
                                     </div>
                                 )}
 

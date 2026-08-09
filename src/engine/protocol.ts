@@ -19,6 +19,10 @@ export interface SearchOptions {
   reuseQsMoveBuffers?: boolean;
   reusePackedQsCaptures?: boolean;
   kingSafetyFastPath?: boolean;
+  lmr?: boolean;
+  lmrMinDepth?: number;
+  lmrMinMove?: number;
+  lmrMaxReduction?: number;
   preserveTtAcrossSearches?: boolean;
   currentGenerationTtPriority?: boolean;
   ttMaxAge?: number;
@@ -60,7 +64,21 @@ export interface SearchCompletePayload {
   perf: unknown;
 }
 
+export interface SearchProgressPayload {
+  gameId: number;
+  phase: 'root-eval' | 'start' | 'depth' | 'book';
+  turn?: Color;
+  maxDepth?: number;
+  completedDepth?: number;
+  rootMoves?: number;
+  bestMove?: Move | null;
+  score?: number;
+  elapsedMs?: number;
+}
+
 export type WorkerResponse =
+  | { type: 'SEARCH_STARTED'; payload: { gameId: number; turn: Color; depth: number; ply: number; enableTimeLimit: boolean } }
+  | { type: 'SEARCH_PROGRESS'; payload: SearchProgressPayload }
   | { type: 'SEARCH_COMPLETE'; payload: SearchCompletePayload }
   | { type: 'validMoves'; moves: Position[] }
   | { type: 'pieceRelations'; relations: unknown }

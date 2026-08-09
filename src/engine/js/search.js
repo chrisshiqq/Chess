@@ -4915,6 +4915,8 @@ let perfStats = {
     kingSafetyFastSkips: 0,
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
+    lmrAttempts: 0,
+    lmrReSearches: 0,
     // Zobrist：全盘重算次数 / 增量更新次数
     fullHashCount: 0,
     incrementalHashUpdates: 0,
@@ -4964,6 +4966,8 @@ const resetPerfStats = () => {
     perfStats.kingSafetyFastSkips = 0;
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
+    perfStats.lmrAttempts = 0;
+    perfStats.lmrReSearches = 0;
     perfStats.fullHashCount = 0;
     perfStats.incrementalHashUpdates = 0;
     perfStats.fastLeafEvalCount = 0;
@@ -5015,6 +5019,16 @@ const snapshotPerfStats = () => {
         } : null,
         illegalMovesSkipped: perfStats.illegalMovesSkipped,
         legalMovesSearched: perfStats.legalMovesSearched,
+        lmr: searchContext.collectMetrics ? {
+            enabled: searchContext.lmr,
+            minDepth: searchContext.lmrMinDepth,
+            minMove: searchContext.lmrMinMove,
+            attempts: perfStats.lmrAttempts,
+            reSearches: perfStats.lmrReSearches,
+            reSearchRate: perfStats.lmrAttempts
+                ? Number((perfStats.lmrReSearches / perfStats.lmrAttempts * 100).toFixed(2))
+                : 0
+        } : null,
         fullHashCount: perfStats.fullHashCount,
         incrementalHashUpdates: perfStats.incrementalHashUpdates,
         fastLeafEvalCount: perfStats.fastLeafEvalCount,
@@ -5794,10 +5808,56 @@ const alphaBetaPlay = (
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const nextMaximizing = nextPlayer === searchInitiator;
-        const value = alphaBetaPlay(
-            b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
-            searchDepth, searchInitiator, gameStage, nextHash
-        );
+
+        // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
+        const canLmr = searchContext.lmr &&
+            !inCheck &&
+            !isCapture &&
+            d >= searchContext.lmrMinDepth &&
+            legalMovesFound >= searchContext.lmrMinMove &&
+            !isSameMove(move, ttMove) &&
+            !isSameMove(move, killersAtDepth[0]) &&
+            !isSameMove(move, killersAtDepth[1]);
+
+        let value;
+        if (canLmr) {
+            let reduction = (Math.log(d) * Math.log(legalMovesFound) / Math.LN2) | 0;
+            if (reduction < 1) reduction = 1;
+            const maxReduction = Math.min(searchContext.lmrMaxReduction | 0 || 2, d - 2);
+            if (reduction > maxReduction) reduction = maxReduction;
+            const reducedDepth = d - 1 - reduction;
+            if (searchContext.collectMetrics) perfStats.lmrAttempts++;
+            if (maximizing) {
+                value = alphaBetaPlay(
+                    b, reducedDepth, alpha, alpha + 1e-6, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
+                if (value > alpha) {
+                    if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                    value = alphaBetaPlay(
+                        b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                        searchDepth, searchInitiator, gameStage, nextHash
+                    );
+                }
+            } else {
+                value = alphaBetaPlay(
+                    b, reducedDepth, beta - 1e-6, beta, nextMaximizing, nextPlayer,
+                    searchDepth, searchInitiator, gameStage, nextHash
+                );
+                if (value < beta) {
+                    if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                    value = alphaBetaPlay(
+                        b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                        searchDepth, searchInitiator, gameStage, nextHash
+                    );
+                }
+            }
+        } else {
+            value = alphaBetaPlay(
+                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, nextHash
+            );
+        }
         unmakeSearchMove(b, move, captured);
 
         if (maximizing) {
@@ -6161,6 +6221,17 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   // 根节点：迭代加深 + PVS；TT/killer/history 跨深度保留（仅开局清空一次）
   resetPerfStats();
   const startTime = Date.now();
+  if (typeof searchContext.reportSearchProgress === 'function') {
+    try {
+      searchContext.reportSearchProgress({
+        phase: 'root-eval',
+        turn,
+        maxDepth: Math.max(1, depth | 0),
+        completedDepth: -1,
+        elapsedMs: 0
+      });
+    } catch (_) { /* ignore */ }
+  }
   transpositionTable.resetStats();
   const phase = getGamePhase();
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
@@ -6228,6 +6299,22 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
       allMovesWithScores: []
     };
   }
+
+  const emitSearchProgress = (info) => {
+    if (typeof searchContext.reportSearchProgress !== 'function') return;
+    try {
+      searchContext.reportSearchProgress({
+        turn,
+        maxDepth,
+        rootMoves: rootMoves.length,
+        elapsedMs: Date.now() - startTime,
+        ...info
+      });
+    } catch (_) {
+      /* debug sink must never break search */
+    }
+  };
+  emitSearchProgress({ phase: 'start', completedDepth: 0 });
 
   const sortRootMovesByScore = (moves) => {
     moves.sort((a, b) => {
@@ -6369,6 +6456,14 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
 
     sortRootMovesByScore(rootMoves);
     completedDepth = currentDepth;
+    emitSearchProgress({
+      phase: 'depth',
+      completedDepth: currentDepth,
+      bestMove: rootMoves[0]
+        ? { from: rootMoves[0].from, to: rootMoves[0].to }
+        : null,
+      score: rootMoves[0] ? rootMoves[0].score : 0
+    });
 
     // 把本层最佳着写入 TT，供更深一层根排序
     transpositionTable.store(

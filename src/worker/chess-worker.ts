@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { decodeBoard, formatMove } from '../engine/codec.ts';
+import type { Move } from '../domain/types';
 import type { WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
@@ -16,7 +17,7 @@ import {
   isValidPlacement,
   syncGeneralPosCache
 } from '../engine/js/rules.js';
-import { configureSearch } from '../engine/js/search-context.js';
+import { configureSearch, searchContext } from '../engine/js/search-context.js';
 import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
 
 type Emit = (message: WorkerResponse) => void;
@@ -45,15 +46,48 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         configureSearch(payload);
         openingBook.setEnabled(payload.openingBookEnabled ?? true);
 
+        emit({
+          type: 'SEARCH_STARTED',
+          payload: {
+            gameId: payload.gameId,
+            turn: payload.turn,
+            depth: payload.depth,
+            ply: payload.ply ?? 0,
+            enableTimeLimit: !!payload.enableTimeLimit
+          }
+        });
+
+        searchContext.reportSearchProgress = (info) => {
+          emit({
+            type: 'SEARCH_PROGRESS',
+            payload: {
+              gameId: payload.gameId,
+              phase: (info.phase as 'root-eval' | 'start' | 'depth' | 'book') || 'depth',
+              turn: info.turn as typeof payload.turn | undefined,
+              maxDepth: info.maxDepth as number | undefined,
+              completedDepth: info.completedDepth as number | undefined,
+              rootMoves: info.rootMoves as number | undefined,
+              bestMove: info.bestMove as Move | null | undefined,
+              score: info.score as number | undefined,
+              elapsedMs: info.elapsedMs as number | undefined
+            }
+          });
+        };
+
         const started = performance.now();
-        const result = getBestMove(
-          board,
-          payload.turn,
-          payload.depth,
-          payload.ply ?? 0,
-          payload.enableTimeLimit ?? false,
-          payload.exactRootScores ?? false
-        );
+        let result;
+        try {
+          result = getBestMove(
+            board,
+            payload.turn,
+            payload.depth,
+            payload.ply ?? 0,
+            payload.enableTimeLimit ?? false,
+            payload.exactRootScores ?? false
+          );
+        } finally {
+          searchContext.reportSearchProgress = null;
+        }
         const thinkingTime = Math.round(performance.now() - started);
         const bookMove = openingBook.getBookMove(board, payload.ply ?? 0);
         const fromBook = !!bookMove && JSON.stringify(bookMove) === JSON.stringify(result.bestMove);

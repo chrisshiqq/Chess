@@ -8,12 +8,21 @@ export const searchContext = {
   reusePackedQsCaptures: true,
   numericLeafSoA: true,
   kingSafetyFastPath: true,
+  // LMR：靠后的安静着先减深空窗搜索，fail-high 再全深回搜
+  lmr: true,
+  lmrMinDepth: 3,
+  // 合法着序号 >= minMove 才 LMR；5 = 前 4 手全深（防守/冷着更不易被过早减深）
+  lmrMinMove: 5,
+  // 减深上限：原先公式在 d12 可减到只剩 1–2 层，战术漏着严重
+  lmrMaxReduction: 2,
   preserveTtAcrossSearches: true,
   currentGenerationTtPriority: true,
   ttMaxAge: 1,
   ttReuseScope: 'default',
   ttSearchPly: 0,
-  collectMoveSequence: true
+  collectMoveSequence: true,
+  /** @type {null | ((info: Record<string, unknown>) => void)} */
+  reportSearchProgress: null
 };
 
 export const configureSearch = ({
@@ -26,6 +35,10 @@ export const configureSearch = ({
   reusePackedQsCaptures = true,
   numericLeafSoA = true,
   kingSafetyFastPath = true,
+  lmr = true,
+  lmrMinDepth = 3,
+  lmrMinMove = 5,
+  lmrMaxReduction = 2,
   preserveTtAcrossSearches = true,
   currentGenerationTtPriority = true,
   ttMaxAge = 1,
@@ -41,6 +54,10 @@ export const configureSearch = ({
   searchContext.reusePackedQsCaptures = !!reusePackedQsCaptures;
   searchContext.numericLeafSoA = !!numericLeafSoA;
   searchContext.kingSafetyFastPath = !!kingSafetyFastPath;
+  searchContext.lmr = !!lmr;
+  searchContext.lmrMinDepth = Math.max(2, lmrMinDepth | 0);
+  searchContext.lmrMinMove = Math.max(2, lmrMinMove | 0);
+  searchContext.lmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
   searchContext.preserveTtAcrossSearches = !!preserveTtAcrossSearches;
   searchContext.currentGenerationTtPriority = !!currentGenerationTtPriority;
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);
