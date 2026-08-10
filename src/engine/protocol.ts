@@ -23,6 +23,9 @@ export interface SearchOptions {
   lmrMinDepth?: number;
   lmrMinMove?: number;
   lmrMaxReduction?: number;
+  nmp?: boolean;
+  nmpMinDepth?: number;
+  nmpReduction?: number;
   preserveTtAcrossSearches?: boolean;
   currentGenerationTtPriority?: boolean;
   ttMaxAge?: number;

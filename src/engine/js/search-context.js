@@ -17,6 +17,10 @@ export const searchContext = {
   lmrMaxReduction: 2,
   // 树内 PVS：首着全窗，其后空窗探测，fail-high 再全窗回搜
   internalPvs: true,
+  // NMP：仅在非 PV、未被将且仍有车马炮时尝试，禁止连续空步
+  nmp: true,
+  nmpMinDepth: 3,
+  nmpReduction: 2,
   preserveTtAcrossSearches: true,
   currentGenerationTtPriority: true,
   ttMaxAge: 1,
@@ -42,6 +46,9 @@ export const configureSearch = ({
   lmrMinMove = 5,
   lmrMaxReduction = 2,
   internalPvs = true,
+  nmp = true,
+  nmpMinDepth = 3,
+  nmpReduction = 2,
   preserveTtAcrossSearches = true,
   currentGenerationTtPriority = true,
   ttMaxAge = 1,
@@ -62,6 +69,9 @@ export const configureSearch = ({
   searchContext.lmrMinMove = Math.max(2, lmrMinMove | 0);
   searchContext.lmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
   searchContext.internalPvs = !!internalPvs;
+  searchContext.nmp = !!nmp;
+  searchContext.nmpMinDepth = Math.max(2, nmpMinDepth | 0);
+  searchContext.nmpReduction = Math.max(1, nmpReduction | 0);
   searchContext.preserveTtAcrossSearches = !!preserveTtAcrossSearches;
   searchContext.currentGenerationTtPriority = !!currentGenerationTtPriority;
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);

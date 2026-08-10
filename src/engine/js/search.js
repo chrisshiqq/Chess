@@ -5269,6 +5269,9 @@ let perfStats = {
     lmrReSearches: 0,
     pvsAttempts: 0,
     pvsReSearches: 0,
+    nmpAttempts: 0,
+    nmpCutoffs: 0,
+    nmpProbeNodes: 0,
     // Zobrist：全盘重算次数 / 增量更新次数
     fullHashCount: 0,
     incrementalHashUpdates: 0,
@@ -5322,6 +5325,9 @@ const resetPerfStats = () => {
     perfStats.lmrReSearches = 0;
     perfStats.pvsAttempts = 0;
     perfStats.pvsReSearches = 0;
+    perfStats.nmpAttempts = 0;
+    perfStats.nmpCutoffs = 0;
+    perfStats.nmpProbeNodes = 0;
     perfStats.fullHashCount = 0;
     perfStats.incrementalHashUpdates = 0;
     perfStats.fastLeafEvalCount = 0;
@@ -5390,6 +5396,17 @@ const snapshotPerfStats = () => {
             reSearchRate: perfStats.pvsAttempts
                 ? Number((perfStats.pvsReSearches / perfStats.pvsAttempts * 100).toFixed(2))
                 : 0
+        } : null,
+        nmp: searchContext.collectMetrics ? {
+            enabled: searchContext.nmp,
+            minDepth: searchContext.nmpMinDepth,
+            reduction: searchContext.nmpReduction,
+            attempts: perfStats.nmpAttempts,
+            cutoffs: perfStats.nmpCutoffs,
+            cutoffRate: perfStats.nmpAttempts
+                ? Number((perfStats.nmpCutoffs / perfStats.nmpAttempts * 100).toFixed(2))
+                : 0,
+            probeNodes: perfStats.nmpProbeNodes
         } : null,
         fullHashCount: perfStats.fullHashCount,
         incrementalHashUpdates: perfStats.incrementalHashUpdates,
@@ -5528,6 +5545,22 @@ const recordFirstLegalMove = (depth, moveIndex) => {
 const recordFirstLegalCutoff = (depth) => {
     const cutoffs = perfStats.moveOrdering.firstLegalCutoffsByDepth;
     cutoffs[depth] = (cutoffs[depth] || 0) + 1;
+};
+
+// 仅在仍有车、马或炮时允许空步，避开最容易出现 zugzwang 的低子力残局。
+const hasNullMoveMaterial = (pieceState, color) => {
+    if (!pieceState) return false;
+    const isRed = color === 'red';
+    const records = pieceState.records;
+    const pieceCodes = pieceState.pieceCodes;
+    for (let i = 0; i < records.length; i++) {
+        if (!records[i].alive) continue;
+        const pieceCode = pieceCodes[i];
+        if ((pieceCode < 8) !== isRed) continue;
+        const pieceType = pieceCode & 7;
+        if (pieceType === 2 || pieceType === 3 || pieceType === 6) return true;
+    }
+    return false;
 };
 
 // 搜索用 TT key：增量模式为 number，旧模式为 `${hash}:${side}` 字符串
@@ -6023,7 +6056,8 @@ const quiescencePlay = (
 
 const alphaBetaPlay = (
     b, d, alpha, beta, maximizing, currentPlayer,
-    searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid', boardHash = 0
+    searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid', boardHash = 0,
+    allowNull = true
 ) => {
     const originalAlpha = alpha;
     const originalBeta = beta;
@@ -6095,6 +6129,42 @@ const alphaBetaPlay = (
             return baseScore + (isInitiatorWinner ? d : (searchDepth - d));
         }
         return terminalScore();
+    }
+
+    // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
+    const canNmp = searchContext.nmp &&
+        allowNull &&
+        !inCheck &&
+        d >= searchContext.nmpMinDepth &&
+        Number.isFinite(alpha) &&
+        Number.isFinite(beta) &&
+        (beta - alpha) <= NULL_WINDOW_EPS * 1.5 &&
+        Math.abs(alpha) < 90000 &&
+        Math.abs(beta) < 90000 &&
+        hasNullMoveMaterial(stagedPieceState, currentPlayer);
+    if (canNmp) {
+        const reduction = Math.min(searchContext.nmpReduction, d - 1);
+        const nullDepth = d - 1 - reduction;
+        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+        const nextMaximizing = nextPlayer === searchInitiator;
+        const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
+        if (searchContext.collectMetrics) perfStats.nmpAttempts++;
+        const nullValue = maximizing
+            ? alphaBetaPlay(
+                b, nullDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, boardHash, false
+            )
+            : alphaBetaPlay(
+                b, nullDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                searchDepth, searchInitiator, gameStage, boardHash, false
+            );
+        if (searchContext.collectMetrics) {
+            perfStats.nmpProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
+        }
+        if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
+            if (searchContext.collectMetrics) perfStats.nmpCutoffs++;
+            return nullValue;
+        }
     }
 
     let moves = useTrueStagedGeneration ? [] : searchInfo.legalMoveList;

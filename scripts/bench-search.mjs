@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs) {
+function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStaged
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction
       }
     });
   });
@@ -104,6 +104,7 @@ function printSummary(label, run) {
   const ks = perf.kingSafety;
   const lmr = perf.lmr;
   const pvs = perf.pvs;
+  const nmp = perf.nmp;
 
   console.log(`wallMs=${wallMs}`);
   console.log(`thinkingTimeMs=${payload.thinkingTime}`);
@@ -180,6 +181,17 @@ function printSummary(label, run) {
     console.log(`  reSearchRate=${pvs.reSearchRate}%`);
   }
 
+  if (nmp) {
+    console.log('nmp:');
+    console.log(`  enabled=${nmp.enabled}`);
+    console.log(`  minDepth=${nmp.minDepth}`);
+    console.log(`  reduction=${nmp.reduction}`);
+    console.log(`  attempts=${nmp.attempts}`);
+    console.log(`  cutoffs=${nmp.cutoffs}`);
+    console.log(`  cutoffRate=${nmp.cutoffRate}%`);
+    console.log(`  probeNodes=${nmp.probeNodes}`);
+  }
+
   if (perf.profile) {
     console.log('profile:');
     console.log(`  sortMovesMs=${Math.round(perf.sortMovesMs)}`);
@@ -223,6 +235,9 @@ const kingSafetyFastPath = process.env.BENCH_KING_SAFETY_FAST_PATH !== '0';
 const lmr = process.env.BENCH_LMR !== '0';
 const lmrMinMove = Number(process.env.BENCH_LMR_MIN_MOVE ?? 5);
 const internalPvs = process.env.BENCH_INTERNAL_PVS !== '0';
+const nmp = process.env.BENCH_NMP !== '0';
+const nmpMinDepth = Number(process.env.BENCH_NMP_MIN_DEPTH ?? 3);
+const nmpReduction = Number(process.env.BENCH_NMP_REDUCTION ?? 2);
 const jobs = [];
 if (mode === 'play' || mode === 'both') jobs.push({ label: 'play', exact: false });
 if (mode === 'analysis' || mode === 'both') jobs.push({ label: 'analysis', exact: true });
@@ -231,8 +246,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);
