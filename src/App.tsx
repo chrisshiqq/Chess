@@ -1881,21 +1881,13 @@ const App: React.FC = () => {
         }
         
         
-        // 长将/长捉检测通过，设置行棋动画
-        // 在所有模式下都设置行棋动画
-        setMoveAnimation({ 
-            from: move.from, 
-            to: move.to,
-            id: Date.now(),
-            piece: board[move.from.r][move.from.c] // 保存起始位置的棋子信息
-        });
-        
         // 只有在没有长将/长捉违规的情况下，才更新历史记录
         // boardHistory包含初始局面和每一步移动后的局面，长度为moveHistory.length + 1
         setBoardHistory(prev => [...prev, newBoard]);
         setMoveHistory(prev => [...prev, move]);
         
         // 检查是否构成将军（走棋后对手是否被将军）
+        // 注意：以下 await 期间不要 setMoveAnimation/setBoard，否则会出现「动画已开、棋盘未变」的中间帧
         const isCheck = await isBoardInCheck(newBoard, nextTurn);
         const isChase = capturingResult.isThreat;
         const initiator = (isCheck || isChase) ? currentTurn : undefined;
@@ -1927,27 +1919,6 @@ const App: React.FC = () => {
             }
         }
 
-        // 重置选择状态和有效移动
-        setSelectedPos(null);
-        setValidMoves([]);
-        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
-        setSelectedPieceEval(null);
-        
-        // 0.3秒后清除动画状态，动画时长为0.3秒
-        // 使用clearTimeout确保只有一个定时器在运行
-        if (animationTimeoutRef.current) {
-            clearTimeout(animationTimeoutRef.current);
-        }
-        animationTimeoutRef.current = setTimeout(() => {
-            // 动画结束时播放音效
-            if (hasCapture) {
-                playCaptureSound(); // 吃子音效
-            } else {
-                playMoveSound(); // 普通移动音效
-            }
-            setMoveAnimation(null);
-        }, 300);
-        
         // 检查连续无吃子回合是否达到30回合
         // 由于每方走一步算一个回合，当计数器达到60时表示30个回合（每个方走30步）
         // 直接检查当前步骤后应该有的计数器值
@@ -1964,15 +1935,32 @@ const App: React.FC = () => {
             setBlackStepCount(prev => prev + 1);
         }
         
+        // 动画与棋盘同一同步段更新，避免 await 拆批导致瞬移/回弹
         setSelectedPos(null);
         setValidMoves([]);
-        
-        // 更新棋盘状态
+        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+        setSelectedPieceEval(null);
+        setMoveAnimation({
+            from: move.from,
+            to: move.to,
+            id: Date.now(),
+            piece: movingPiece
+        });
         setBoard(newBoard);
-        // 只有在非重试模式下才自动切换回合
         if (!isRetryMode) {
             setTurn(nextTurn);
         }
+        if (animationTimeoutRef.current) {
+            clearTimeout(animationTimeoutRef.current);
+        }
+        animationTimeoutRef.current = setTimeout(() => {
+            if (hasCapture) {
+                playCaptureSound();
+            } else {
+                playMoveSound();
+            }
+            setMoveAnimation(null);
+        }, 300);
         
         // 在棋盘状态更新后设置最近被吃的棋子
         // 使用setTimeout确保在下次渲染后执行，此时capturedInfo已经更新

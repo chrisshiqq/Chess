@@ -68,15 +68,22 @@ const FlyingPiece: React.FC<{
     });
 
     useEffect(() => {
-        requestAnimationFrame(() => {
-            setStyle({
-                top: targetPos.y,
-                left: targetPos.x,
-                transform: 'scale(0.6)', 
-                opacity: 0,
-                transition: 'all 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+        let raf2 = 0;
+        const raf1 = requestAnimationFrame(() => {
+            raf2 = requestAnimationFrame(() => {
+                setStyle({
+                    top: targetPos.y,
+                    left: targetPos.x,
+                    transform: 'scale(0.6)',
+                    opacity: 0,
+                    transition: 'all 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                });
             });
         });
+        return () => {
+            cancelAnimationFrame(raf1);
+            cancelAnimationFrame(raf2);
+        };
     }, [targetPos]);
 
     return (
@@ -122,15 +129,23 @@ const MovingPiece: React.FC<{
     });
 
     useEffect(() => {
-        requestAnimationFrame(() => {
-            setStyle({
-                top: targetY,
-                left: targetX,
-                transform: 'scale(1)',
-                opacity: 1,
-                transition: 'all 1s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+        // 双 rAF：保证先以起点完成绘制，再启用 transition（避免移动端瞬移）
+        let raf2 = 0;
+        const raf1 = requestAnimationFrame(() => {
+            raf2 = requestAnimationFrame(() => {
+                setStyle({
+                    top: targetY,
+                    left: targetX,
+                    transform: 'scale(1)',
+                    opacity: 1,
+                    transition: 'top 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), left 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                });
             });
         });
+        return () => {
+            cancelAnimationFrame(raf1);
+            cancelAnimationFrame(raf2);
+        };
     }, [startY, startX, targetY, targetX]);
 
     return (

@@ -152,6 +152,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
 
   // 手机窄屏：按容器宽度等比缩小整盘（含行棋动画坐标系），避免边线棋子被裁成一半
   const boardViewportRef = useRef<HTMLDivElement>(null);
+  const moveAnimElRef = useRef<HTMLDivElement>(null);
   const [boardScale, setBoardScale] = useState(1);
 
   useEffect(() => {
@@ -185,6 +186,34 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     x: (flip ? (8 - c) : c) * CELL_SIZE + BOARD_OFFSET,
     y: (flip ? r : (9 - r)) * CELL_SIZE + BOARD_OFFSET
   });
+
+  // 行棋位移动画：必须等首帧画在起点后再改 transform，否则手机会「先瞬移到终点→退回→再播」
+  useEffect(() => {
+    const el = moveAnimElRef.current;
+    if (!el || !moveAnimation) return;
+
+    const from = toSVG(moveAnimation.from.r, moveAnimation.from.c);
+    const to = toSVG(moveAnimation.to.r, moveAnimation.to.c);
+    const deltaX = to.x - from.x;
+    const deltaY = to.y - from.y;
+
+    let raf2 = 0;
+    el.style.transition = 'none';
+    el.style.transform = 'translate(0px, 0px)';
+
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        el.style.transition = 'transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        el.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moveAnimation?.id, flip]);
 
   const handleClick = (r: number, c: number) => {
     if (isSetupMode) {
@@ -1113,11 +1142,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
           let translateY = 0;
           let animationTransition = 'transform 0.3s linear';
           
-          // 在动画期间：
-          // 1. 保留起始位置的棋子显示（不隐藏）
-          // 2. 隐藏目标位置的棋子，因为动画元素会显示移动的棋子
-          // 3. 只有当棋子是起始位置且不是目标位置时，才应用动画偏移
-          const shouldHide = moveAnimation && isMovingTo;
+          // 动画期间棋盘已是新局面：目标格有子但由浮层棋子播放位移，故隐藏目标格实体子
+          const shouldHide = !!(moveAnimation && isMovingTo);
           
           // 计算最终的变换矩阵：先平移到正确位置，再缩放
           const transform = `translate(${x}, ${y}) scale(${scale})`;
@@ -1694,43 +1720,24 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
         {renderIndicators()}
       </svg>
       
-      {/* 行棋动画层 - 使用绝对定位的div包裹，确保动画不受SVG限制 */}
+      {/* 行棋动画层：起点定位 + useEffect 双 rAF 后再 transition 到终点 */}
       {moveAnimation && moveAnimation.piece && (
         <div
           key={`anim-${moveAnimation.id}`}
+          ref={moveAnimElRef}
           className="chess-move-element"
           style={{
-            // 计算起始位置
-            left: `${toSVG(moveAnimation.from.r, moveAnimation.from.c).x - CELL_SIZE/2}px`,
-            top: `${toSVG(moveAnimation.from.r, moveAnimation.from.c).y - CELL_SIZE/2}px`,
+            left: `${toSVG(moveAnimation.from.r, moveAnimation.from.c).x - CELL_SIZE / 2}px`,
+            top: `${toSVG(moveAnimation.from.r, moveAnimation.from.c).y - CELL_SIZE / 2}px`,
             position: 'absolute',
             width: `${CELL_SIZE}px`,
             height: `${CELL_SIZE}px`,
             zIndex: 1000,
             pointerEvents: 'none',
-            // 直接计算目标位置，使用CSS transition触发动画
-            transform: 'translate(0, 0)',
-            transition: 'transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+            transform: 'translate(0px, 0px)',
             transformOrigin: 'center',
-            // 强制CSS重新计算动画：通过animation-delay触发
-            animation: 'none',
-            animationDelay: '0.1s'
-          }}
-          // 使用ref和useEffect直接操作DOM，确保动画从正确位置开始
-          ref={(el) => {
-            if (el && moveAnimation) {
-              // 重置transform
-              el.style.transform = 'translate(0, 0)';
-              // 强制重排
-              el.offsetHeight;
-              // 设置目标transform
-              const deltaX = toSVG(moveAnimation.to.r, moveAnimation.to.c).x - toSVG(moveAnimation.from.r, moveAnimation.from.c).x;
-              const deltaY = toSVG(moveAnimation.to.r, moveAnimation.to.c).y - toSVG(moveAnimation.from.r, moveAnimation.from.c).y;
-              el.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
-            }
           }}
         >
-          {/* 使用SVG元素来渲染动画棋子 */}
           <svg width={CELL_SIZE} height={CELL_SIZE} viewBox="0 0 50 50" style={{ overflow: 'visible' }}>
             <g transform="translate(25, 25)">
               <ChessPiece 
