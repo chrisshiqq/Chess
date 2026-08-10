@@ -80,32 +80,116 @@ function formatMove(move) {
   return move?.from && move?.to ? `${JSON.stringify(move.from)}->${JSON.stringify(move.to)}` : 'null';
 }
 
+function printDepthOrdering(byDepth) {
+  if (!byDepth || typeof byDepth !== 'object') return;
+  const depths = Object.keys(byDepth).sort((a, b) => Number(a) - Number(b));
+  if (!depths.length) return;
+  console.log('  moveOrdering by depth:');
+  for (const d of depths) {
+    const row = byDepth[d] || {};
+    console.log(`    d=${d}`);
+    console.log(`      firstLegalMoves=${row.firstLegalMoves ?? 0}`);
+    console.log(`      firstLegalCutoffs=${row.firstLegalCutoffs ?? 0}`);
+    console.log(`      firstLegalCutoffRate=${row.firstLegalCutoffRate ?? 0}%`);
+    console.log(`      avgFirstLegalMoveIndex=${row.averageFirstLegalMoveIndex ?? 0}`);
+  }
+}
+
 function printSummary(label, run) {
   const { payload, wallMs } = run;
   const perf = payload.perf || {};
-  console.log(`wall=${wallMs}ms thinkingTime=${payload.thinkingTime}ms best=${formatMove(payload.bestMove)} score=${payload.bestMoveScore} allMoves=${payload.allMovesWithScores?.length ?? 0}`);
-  console.log(`  alphaBeta=${perf.alphaBetaCalls} legalityChecks=${perf.legalityChecks} legalSearched=${perf.legalMovesSearched}`);
-  console.log(`  Zobrist: fullHash=${perf.fullHashCount} incrUpdates=${perf.incrementalHashUpdates}`);
-  console.log(`  numericLeaf: count=${perf.fastLeafEvalCount} ms=${Math.round(perf.fastLeafEvalMs ?? 0)} prepare=${Math.round(perf.prepareSearchInfoMs ?? 0)}ms`);
-  console.log(`  TT hits=${perf.tt?.hits} misses=${perf.tt?.misses} hitRate=${perf.tt?.hitRate}% stores=${perf.tt?.stores} updates=${perf.tt?.updatedStores ?? 0} evicted=${perf.tt?.lruEvictions}/${perf.tt?.evictionBatches ?? 0} depth/fallback=${perf.tt?.depthPreferredEvictions ?? 0}/${perf.tt?.fallbackEvictions ?? 0} historical=${perf.tt?.historicalHits ?? 0}/${perf.tt?.historicalReplacements ?? 0} size=${perf.tt?.currentSize}/${perf.tt?.maxSize} batch=${perf.tt?.evictionBatch}`);
+  const tt = perf.tt || {};
+  const top = perf.moveOrdering?.topMoveSources || {};
+  const staged = perf.stagedGeneration;
+  const ks = perf.kingSafety;
+  const lmr = perf.lmr;
+  const pvs = perf.pvs;
+
+  console.log(`wallMs=${wallMs}`);
+  console.log(`thinkingTimeMs=${payload.thinkingTime}`);
+  console.log(`best=${formatMove(payload.bestMove)}`);
+  console.log(`score=${payload.bestMoveScore}`);
+  console.log(`allMoves=${payload.allMovesWithScores?.length ?? 0}`);
+  console.log(`alphaBeta=${perf.alphaBetaCalls}`);
+  console.log(`legalityChecks=${perf.legalityChecks}`);
+  console.log(`legalSearched=${perf.legalMovesSearched}`);
+  console.log(`zobristFullHash=${perf.fullHashCount}`);
+  console.log(`zobristIncrUpdates=${perf.incrementalHashUpdates}`);
+  console.log(`numericLeafCount=${perf.fastLeafEvalCount}`);
+  console.log(`numericLeafMs=${Math.round(perf.fastLeafEvalMs ?? 0)}`);
+  console.log(`prepareSearchInfoMs=${Math.round(perf.prepareSearchInfoMs ?? 0)}`);
+
+  console.log('TT:');
+  console.log(`  hits=${tt.hits}`);
+  console.log(`  misses=${tt.misses}`);
+  console.log(`  hitRate=${tt.hitRate}%`);
+  console.log(`  stores=${tt.stores}`);
+  console.log(`  updates=${tt.updatedStores ?? 0}`);
+  console.log(`  lruEvictions=${tt.lruEvictions}`);
+  console.log(`  evictionBatches=${tt.evictionBatches ?? 0}`);
+  console.log(`  depthPreferredEvictions=${tt.depthPreferredEvictions ?? 0}`);
+  console.log(`  fallbackEvictions=${tt.fallbackEvictions ?? 0}`);
+  console.log(`  historicalHits=${tt.historicalHits ?? 0}`);
+  console.log(`  historicalReplacements=${tt.historicalReplacements ?? 0}`);
+  console.log(`  currentSize=${tt.currentSize}`);
+  console.log(`  maxSize=${tt.maxSize}`);
+  console.log(`  evictionBatch=${tt.evictionBatch}`);
+
   if (perf.moveOrdering) {
-    console.log(`  ordering top=${JSON.stringify(perf.moveOrdering.topMoveSources)} depth=${JSON.stringify(perf.moveOrdering.byDepth)}`);
+    console.log('ordering top:');
+    console.log(`  tt=${top.tt ?? 0}`);
+    console.log(`  killer=${top.killer ?? 0}`);
+    console.log(`  capture=${top.capture ?? 0}`);
+    console.log(`  quiet=${top.quiet ?? 0}`);
+    printDepthOrdering(perf.moveOrdering.byDepth);
   }
-  if (perf.stagedGeneration) {
-    console.log(`  stagedGen enabled=${perf.stagedGeneration.enabled} nodes=${perf.stagedGeneration.nodes} stages=${JSON.stringify(perf.stagedGeneration.stages)} generated=${JSON.stringify(perf.stagedGeneration.generated)} quietSkipped=${perf.stagedGeneration.quietSkipped} rate=${perf.stagedGeneration.quietSkipRate}%`);
+
+  if (staged) {
+    console.log('stagedGen:');
+    console.log(`  enabled=${staged.enabled}`);
+    console.log(`  nodes=${staged.nodes}`);
+    console.log(`  stages=${JSON.stringify(staged.stages)}`);
+    console.log(`  generated=${JSON.stringify(staged.generated)}`);
+    console.log(`  quietSkipped=${staged.quietSkipped}`);
+    console.log(`  quietSkipRate=${staged.quietSkipRate}%`);
   }
-  if (perf.kingSafety) {
-    console.log(`  kingSafety fastPath=${perf.kingSafety.fastPathEnabled} full=${perf.kingSafety.fullChecks} skips=${perf.kingSafety.fastSkips} skipRate=${perf.kingSafety.skipRate}%`);
+
+  if (ks) {
+    console.log('kingSafety:');
+    console.log(`  fastPath=${ks.fastPathEnabled}`);
+    console.log(`  fullChecks=${ks.fullChecks}`);
+    console.log(`  fastSkips=${ks.fastSkips}`);
+    console.log(`  skipRate=${ks.skipRate}%`);
   }
-  if (perf.lmr) {
-    console.log(`  lmr enabled=${perf.lmr.enabled} minDepth=${perf.lmr.minDepth} minMove=${perf.lmr.minMove} attempts=${perf.lmr.attempts} reSearches=${perf.lmr.reSearches} reSearchRate=${perf.lmr.reSearchRate}%`);
+
+  if (lmr) {
+    console.log('lmr:');
+    console.log(`  enabled=${lmr.enabled}`);
+    console.log(`  minDepth=${lmr.minDepth}`);
+    console.log(`  minMove=${lmr.minMove}`);
+    console.log(`  attempts=${lmr.attempts}`);
+    console.log(`  reSearches=${lmr.reSearches}`);
+    console.log(`  reSearchRate=${lmr.reSearchRate}%`);
   }
-  if (perf.pvs) {
-    console.log(`  pvs enabled=${perf.pvs.enabled} attempts=${perf.pvs.attempts} reSearches=${perf.pvs.reSearches} reSearchRate=${perf.pvs.reSearchRate}%`);
+
+  if (pvs) {
+    console.log('pvs:');
+    console.log(`  enabled=${pvs.enabled}`);
+    console.log(`  attempts=${pvs.attempts}`);
+    console.log(`  reSearches=${pvs.reSearches}`);
+    console.log(`  reSearchRate=${pvs.reSearchRate}%`);
   }
+
   if (perf.profile) {
-    console.log(`  profile: sort=${Math.round(perf.sortMovesMs)}ms/${perf.sortMovesCount} legality=${Math.round(perf.legalityCheckMs)}ms captureGen=${Math.round(perf.captureGenMs)}ms/${perf.captureGenCount} QS=${perf.quiescenceCalls}`);
+    console.log('profile:');
+    console.log(`  sortMovesMs=${Math.round(perf.sortMovesMs)}`);
+    console.log(`  sortMovesCount=${perf.sortMovesCount}`);
+    console.log(`  legalityCheckMs=${Math.round(perf.legalityCheckMs)}`);
+    console.log(`  captureGenMs=${Math.round(perf.captureGenMs)}`);
+    console.log(`  captureGenCount=${perf.captureGenCount}`);
+    console.log(`  quiescenceCalls=${perf.quiescenceCalls}`);
   }
+
   return { label, wallMs, thinkingTimeMs: payload.thinkingTime, bestMove: formatMove(payload.bestMove), score: payload.bestMoveScore, perf };
 }
 
