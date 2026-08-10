@@ -13,7 +13,7 @@ if "%DEPTH%"=="" set "DEPTH=10"
 set "MODE=%~2"
 if "%MODE%"=="" set "MODE=play"
 set "PATHMODE=%~3"
-if "%PATHMODE%"=="" set "PATHMODE=cpuperf"
+if "%PATHMODE%"=="" set "PATHMODE=latest"
 
 set "NON_DIGIT="
 for /f "delims=0123456789" %%A in ("%DEPTH%") do set "NON_DIGIT=%%A"

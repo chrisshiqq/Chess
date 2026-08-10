@@ -549,7 +549,7 @@ const App: React.FC = () => {
     const [redStepCount, setRedStepCount] = useState(0);
     const [blackStepCount, setBlackStepCount] = useState(0);
     
-    // 连续无吃子回合计数器 (双方各走一步算一个回合)
+    // 连续无吃子步数计数器（每步 +1；满 120 步即双方各 60 回合判和）
     const [drawMoveCounter, setDrawMoveCounter] = useState(0);
     
     // Difficulty State - Default MEDIUM
@@ -1871,11 +1871,10 @@ const App: React.FC = () => {
             const repetitionCheck = await checkRepetition(newHash, positionHistory, move, board, turn);
             
             if (repetitionCheck.violation) {
-                const violationType = repetitionCheck.type === 'check' ? 'Perpetual check' : 'Perpetual chase';
                 console.log('👤 玩家手动走棋违规，判负');
                 const violationWinner = turn === 'red' ? 'black' : 'red';
-                // 调用游戏结束处理函数
-                handleGameOver('checkmate', violationWinner, `${violationType} violation! ${turn === 'red' ? 'Red' : 'Black'} loses`);
+                const warningMessage = repetitionCheck.type === 'check' ? 'LONG CHECK!' : 'LONG CHASE!';
+                handleGameOver('checkmate', violationWinner, warningMessage);
                 return false; // 不执行这步棋，也不更新历史记录
             }
         }
@@ -1919,13 +1918,11 @@ const App: React.FC = () => {
             }
         }
 
-        // 检查连续无吃子回合是否达到30回合
-        // 由于每方走一步算一个回合，当计数器达到60时表示30个回合（每个方走30步）
-        // 直接检查当前步骤后应该有的计数器值
+        // 检查连续无吃子回合是否达到60回合
+        // 每步 +1，双方各走 60 步时计数器为 120
         const newCounter = targetPiece ? 0 : drawMoveCounter + 1;
-        if (newCounter >= 60) {
-            // 调用游戏结束处理函数
-            handleGameOver('draw', null, '30 moves without capture — draw!');
+        if (newCounter >= 120) {
+            handleGameOver('draw', null, 'NO CAPTURE!');
         }
         
         // Increment step count for the player who just moved
@@ -2240,7 +2237,7 @@ const App: React.FC = () => {
         if (msg.type === 'resign') {
             const info = onlineInfoRef.current;
             if (!info) return;
-            handleGameOver('checkmate', info.myColor, 'Opponent resigned');
+            handleGameOver('checkmate', info.myColor, 'RESIGNED!');
         }
     };
     onNetMessageRef.current = handleNetMessage;
@@ -2378,7 +2375,7 @@ const App: React.FC = () => {
         if (!onlineInfo) return;
         peerSessionRef.current?.send({ type: 'resign' });
         const winner: Color = onlineInfo.myColor === 'red' ? 'black' : 'red';
-        handleGameOver('checkmate', winner, 'You resigned');
+        handleGameOver('checkmate', winner, 'RESIGNED!');
     };
 
     useEffect(() => {
@@ -4326,8 +4323,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
                     {repetitionWarning && !isReplaying && !isSetupMode && (
                         <div className="absolute top-1/4 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none z-30">
-                            <div className="bg-orange-600/95 text-white px-6 py-3 rounded-2xl text-xl font-bold shadow-2xl border-2 border-orange-400 backdrop-blur-sm animate-pulse">
-                                ⚠️ {repetitionWarning}
+                            <div className="bg-transparent text-orange-500 text-2xl font-extrabold tracking-wide whitespace-nowrap drop-shadow-md animate-pulse">
+                                {repetitionWarning}
                             </div>
                         </div>
                     )}
@@ -4789,7 +4786,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         const winner = redScore > blackScore ? 'red' : redScore < blackScore ? 'black' : null;
                                         const status = winner ? 'checkmate' : 'draw';
                                         // 调用游戏结束处理函数
-                                        handleGameOver(status, winner, 'Player resigned');
+                                        handleGameOver(status, winner, 'RESIGNED!');
                                     }} 
                                     disabled={isThinking || !!gameOver}
                                     style={getButtonStyle()}
