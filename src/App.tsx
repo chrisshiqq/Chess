@@ -65,6 +65,54 @@ type SearchBench = {
 
 const formatBenchTime = (value?: number) => `${((value ?? 0) / 1000).toFixed(2)}s`;
 
+let workerRequestSequence = 0;
+
+const requestWorker = <T,>(
+    worker: Worker,
+    requestType: string,
+    payload: Record<string, unknown>,
+    responseType: string,
+    readResponse: (data: any) => T,
+    timeoutMs = 2000,
+    requestId = `${Date.now()}-${++workerRequestSequence}`
+): Promise<T> => new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+        clearTimeout(timeoutId);
+        worker.removeEventListener('message', handleMessage);
+    };
+    const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+    };
+    const handleMessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (data?.requestId !== requestId) return;
+        if (data.type === 'WORKER_ERROR') {
+            finish(() => reject(new Error(data.error || `${requestType} failed`)));
+            return;
+        }
+        if (data.type === responseType) {
+            finish(() => resolve(readResponse(data)));
+        }
+    };
+    const timeoutId = window.setTimeout(() => {
+        finish(() => reject(new Error(`${requestType} timeout`)));
+    }, timeoutMs);
+
+    worker.addEventListener('message', handleMessage);
+    try {
+        worker.postMessage({
+            type: requestType,
+            payload: { ...payload, requestId }
+        });
+    } catch (error) {
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+    }
+});
+
 // --- Board Initialization ---
 // --- Enhanced Difficulty Configuration ---
 const DIFFICULTIES: Record<DifficultyLevel, { depth: number; randomness: number; timeLimit: number }> = {
@@ -580,6 +628,9 @@ const App: React.FC = () => {
 
     // Worker Ref
     const workerRef = useRef<Worker | null>(null);
+    const valueWeightsRef = useRef(valueWeights);
+    valueWeightsRef.current = valueWeights;
+    const customOpeningLinesRef = useRef<string[]>([]);
     // 选子探测请求序号：快速连点时丢弃过期结果，避免旧评估堵住交互感
     const selectInspectIdRef = useRef(0);
     const selectInspectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -594,79 +645,36 @@ const App: React.FC = () => {
 
     // Worker函数调用封装
     const workerGetValidMoves = useRef((board: Board, pos: Position, requestId?: string): Promise<Position[]> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const reqId = requestId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const timeoutId = setTimeout(() => {
-                workerRef.current?.removeEventListener('message', handleMessage);
-                console.warn('⚠️ workerGetValidMoves timeout, returning empty moves');
-                resolve([]); // 返回空数组，避免卡住
-            }, 1000); // 1秒超时
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'validMoves' && e.data.requestId === reqId) {
-                    clearTimeout(timeoutId);
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.moves);
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(worker, 'getValidMoves', { board, pos }, 'validMoves', data => data.moves, 1000, requestId)
+            .catch(error => {
+                if (error instanceof Error && error.message === 'getValidMoves timeout') {
+                    console.warn('⚠️ workerGetValidMoves timeout, returning empty moves');
+                    return [];
                 }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'getValidMoves',
-                payload: { board, pos, requestId: reqId }
+                throw error;
             });
-        });
     }).current;
 
     // 获取详细的局面评估分数
     const workerGetDetailedEval = useRef((board: Board, turn: Color, isReplay: boolean = false): Promise<any> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'detailedEvaluation') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.evaluation);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'evaluateBoard',
-                payload: { board, turn, isReplay, depth: aiDepth }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(
+            worker,
+            'evaluateBoard',
+            { board, turn, isReplay, depth: aiDepth },
+            'detailedEvaluation',
+            data => data.evaluation
+        );
     }).current;
 
     // 获取单个棋子的评估分数
     const workerGetPieceEval = useRef((board: Board, pos: Position, turn: Color): Promise<any> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'pieceEvaluation') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.evaluation);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'evaluatePiece',
-                payload: { board, pos, turn }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(worker, 'evaluatePiece', { board, pos, turn }, 'pieceEvaluation', data => data.evaluation);
     }).current;
 
     // 一次 worker 调用完成：合法着法 + 单子评估 + 关系（内部只跑一遍 evaluateBoard）
@@ -677,104 +685,45 @@ const App: React.FC = () => {
         needMoves: boolean,
         requestId: string
     ): Promise<{ moves: Position[]; evaluation: any; relations: any }> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const timeoutId = setTimeout(() => {
-                workerRef.current?.removeEventListener('message', handleMessage);
-                console.warn('⚠️ workerInspectSquare timeout');
-                reject(new Error('inspectSquare timeout'));
-            }, 2000);
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'squareInspected' && e.data.requestId === requestId) {
-                    clearTimeout(timeoutId);
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve({
-                        moves: e.data.moves || [],
-                        evaluation: e.data.evaluation,
-                        relations: e.data.relations
-                    });
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'inspectSquare',
-                payload: { board, pos, turn, needMoves, requestId }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(
+            worker,
+            'inspectSquare',
+            { board, pos, turn, needMoves },
+            'squareInspected',
+            data => ({
+                moves: data.moves || [],
+                evaluation: data.evaluation,
+                relations: data.relations
+            }),
+            2000,
+            requestId
+        );
     }).current;
 
     const workerCheckGameState = useRef((board: Board, turn: Color): Promise<GameStatusResult> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'gameState' && e.data.requestId === requestId) {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.state);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'checkGameState',
-                payload: { board, turn, requestId }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(worker, 'checkGameState', { board, turn }, 'gameState', data => data.state);
     }).current;
 
     const workerIsCheck = useRef((board: Board, color: Color): Promise<boolean> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'check' && e.data.requestId === requestId) {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.isCheck);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'isCheck',
-                payload: { board, color, requestId }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(worker, 'isCheck', { board, color }, 'check', data => data.isCheck);
     }).current;
 
     const workerIsValidPlacement = useRef((type: PieceType, color: Color, r: number, c: number): Promise<boolean> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'validPlacement') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.isValid);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'isValidPlacement',
-                payload: { type, color, r, c }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(
+            worker,
+            'isValidPlacement',
+            { type, color, r, c },
+            'validPlacement',
+            data => data.isValid
+        );
     }).current;
 
 
@@ -818,51 +767,57 @@ const App: React.FC = () => {
         });
     }).current;
 
-    // Initialize Worker - ENABLED (Inline Worker to avoid SecurityError)
-    useEffect(() => {
+    const recreateWorker = useRef(() => {
+        const previousWorker = workerRef.current;
+        workerRef.current = null;
+        previousWorker?.terminate();
+
         try {
-            workerRef.current = new ChessWorker();
+            const worker = new ChessWorker();
+            workerRef.current = worker;
             console.log('✅ Worker loaded successfully (inline module worker)');
 
-                // Automatically load opening book from inlined data
-                try {
-                    // Import opening book data from separate file
-                    import('./openingBookData').then(({ openingBookData }) => {
-                        const lines = openingBookData.trim().split('\n');
-                        
-                        // Send each line to the worker to add to the opening book
-                        lines.forEach((line, index) => {
-                            const trimmedLine = line.trim();
-                            if (trimmedLine && !trimmedLine.startsWith('#')) {
-                                // Send the move string to the worker
-                                if (workerRef.current) {
-                                    workerRef.current.postMessage({
-                                        type: 'addOpeningLineFromString',
-                                        payload: {
-                                            moves: trimmedLine,
-                                            // Use default weights similar to the hardcoded ones
-                                            weights: [85, 85, 95, 90, 90, 85, 85, 80, 85, 85, 85, 85]
-                                        }
-                                    });
-                                }
+            worker.postMessage({
+                type: 'setValueWeights',
+                payload: valueWeightsRef.current
+            });
+
+            import('./openingBookData').then(({ openingBookData }) => {
+                if (workerRef.current !== worker) return;
+                const builtInLines = openingBookData.trim().split('\n');
+                const lines = [...builtInLines, ...customOpeningLinesRef.current];
+                lines.forEach((line) => {
+                    const trimmedLine = line.trim();
+                    if (trimmedLine && !trimmedLine.startsWith('#')) {
+                        worker.postMessage({
+                            type: 'addOpeningLineFromString',
+                            payload: {
+                                moves: trimmedLine,
+                                weights: [85, 85, 95, 90, 90, 85, 85, 80, 85, 85, 85, 85]
                             }
                         });
-                        
-                        console.log(`✅ Successfully loaded ${lines.length} opening lines from inlined book data`);
-                    }).catch((error) => {
-                        console.error('❌ Failed to import opening book data:', error);
-                    });
-                } catch (error) {
-                    console.error('❌ Failed to load opening book:', error);
+                    }
+                });
+                console.log(`✅ Successfully loaded ${lines.length} opening lines`);
+            }).catch((error) => {
+                if (workerRef.current === worker) {
+                    console.error('❌ Failed to import opening book data:', error);
                 }
+            });
         } catch (e) {
             console.error("❌ Failed to load worker:", e);
         }
-        
+    }).current;
+
+    // Initialize Worker - ENABLED (Inline Worker to avoid SecurityError)
+    useEffect(() => {
+        recreateWorker();
         return () => {
-            workerRef.current?.terminate();
+            const worker = workerRef.current;
+            workerRef.current = null;
+            worker?.terminate();
         };
-    }, []);
+    }, [recreateWorker]);
 
     // 发送权重到worker
     const sendWeightsToWorker = useCallback(() => {
@@ -2386,6 +2341,10 @@ const App: React.FC = () => {
     }, []);
 
     const handleRestart = () => {
+        // A true new game cannot reuse the previous search generation. Recreate
+        // the Worker so its TT, eval cache and any pending listeners are released.
+        recreateWorker();
+
         // 清除游戏结束定时器
         if (gameOverTimerRef.current) {
             clearTimeout(gameOverTimerRef.current);
@@ -2873,9 +2832,14 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
                 // Parse the content - assuming each line is a space-separated move string
                 const lines = content.trim().split('\n');
+                const customLines = lines.filter(line => {
+                    const trimmedLine = line.trim();
+                    return trimmedLine && !trimmedLine.startsWith('#');
+                });
+                customOpeningLinesRef.current.push(...customLines);
                 
                 // Send each line to the worker to add to the opening book
-                lines.forEach((line, index) => {
+                lines.forEach((line) => {
                     const trimmedLine = line.trim();
                     if (trimmedLine && !trimmedLine.startsWith('#')) {
                         // Send the move string to the worker
@@ -3663,25 +3627,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
     // 将坐标移动转换为传统棋谱格式
     const convertMovesToNotation = useRef((boardHistory: Board[], moveHistory: Move[]): Promise<string[]> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'notation') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.notation);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'movesToNotation',
-                payload: { boardHistory, moveHistory }
-            });
-        });
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
+        return requestWorker(
+            worker,
+            'movesToNotation',
+            { boardHistory, moveHistory },
+            'notation',
+            data => data.notation,
+            5000
+        );
     }).current;
 
     // 保存棋谱到文件（支持特定初始局面）
@@ -3768,30 +3723,20 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
     // 将传统棋谱格式转换为坐标移动
     const convertNotationToMoves = useRef((notation: string | string[], initialBoard?: Board): Promise<Move[]> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
+        const worker = workerRef.current;
+        if (!worker) return Promise.reject(new Error('Worker not initialized'));
 
-            // 确保notation是数组
-            const notationArray = notation ? 
-                (typeof notation === 'string' ? notation.split(' ').filter(move => move.trim() !== '') : notation) : 
-                [];
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'moves') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve(e.data.moves);
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'notationToMoves',
-                payload: { notation: notationArray, initialBoard }
-            });
-        });
+        const notationArray = notation
+            ? (typeof notation === 'string' ? notation.split(' ').filter(move => move.trim() !== '') : notation)
+            : [];
+        return requestWorker(
+            worker,
+            'notationToMoves',
+            { notation: notationArray, initialBoard },
+            'moves',
+            data => data.moves,
+            5000
+        );
     }).current;
 
     // 从传统棋谱生成棋盘历史，支持从特定初始局面开始

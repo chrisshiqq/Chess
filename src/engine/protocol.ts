@@ -36,8 +36,8 @@ export interface SearchOptions {
 
 export type WorkerRequest =
   | { type: 'SEARCH'; payload: SearchOptions }
-  | { type: 'getValidMoves'; payload: { board: WireBoard; pos: Position; requestId?: string } }
-  | { type: 'getPieceRelations'; payload: { board: WireBoard; pos: Position } }
+  | { type: 'getValidMoves'; payload: { board: WireBoard; pos: Position; requestId: string } }
+  | { type: 'getPieceRelations'; payload: { board: WireBoard; pos: Position; requestId: string } }
   | {
       type: 'inspectSquare';
       payload: {
@@ -48,14 +48,14 @@ export type WorkerRequest =
         requestId: string;
       };
     }
-  | { type: 'checkGameState'; payload: { board: WireBoard; turn: Color; requestId?: number } }
-  | { type: 'evaluateBoard'; payload: { board: WireBoard; turn: Color | null } }
-  | { type: 'evaluatePiece'; payload: { board: WireBoard; pos: Position; turn: Color | null } }
-  | { type: 'isCheck'; payload: { board: WireBoard; color: Color; requestId?: number } }
-  | { type: 'isValidPlacement'; payload: { type: PieceType; color: Color; r: number; c: number } }
+  | { type: 'checkGameState'; payload: { board: WireBoard; turn: Color; requestId: string } }
+  | { type: 'evaluateBoard'; payload: { board: WireBoard; turn: Color | null; requestId: string; isReplay?: boolean; depth?: number } }
+  | { type: 'evaluatePiece'; payload: { board: WireBoard; pos: Position; turn: Color | null; requestId: string } }
+  | { type: 'isCheck'; payload: { board: WireBoard; color: Color; requestId: string } }
+  | { type: 'isValidPlacement'; payload: { type: PieceType; color: Color; r: number; c: number; requestId: string } }
   | { type: 'addOpeningLineFromString'; payload: { moves: string; weights?: number[] } }
-  | { type: 'movesToNotation'; payload: { boardHistory: Board[]; moveHistory: Move[] } }
-  | { type: 'notationToMoves'; payload: { notation: string; initialBoard: WireBoard } }
+  | { type: 'movesToNotation'; payload: { boardHistory: Board[]; moveHistory: Move[]; requestId: string } }
+  | { type: 'notationToMoves'; payload: { notation: string | string[]; initialBoard?: WireBoard; requestId: string } }
   | { type: 'setValueWeights'; payload: Partial<Record<'material' | 'position' | 'threat' | 'tactic' | 'safety' | 'mobility', number>> };
 
 export interface SearchMoveScore {
@@ -95,8 +95,8 @@ export type WorkerResponse =
   | { type: 'SEARCH_STARTED'; payload: { gameId: number; turn: Color; depth: number; ply: number; enableTimeLimit: boolean } }
   | { type: 'SEARCH_PROGRESS'; payload: SearchProgressPayload }
   | { type: 'SEARCH_COMPLETE'; payload: SearchCompletePayload }
-  | { type: 'validMoves'; moves: Position[]; requestId?: string }
-  | { type: 'pieceRelations'; relations: unknown }
+  | { type: 'validMoves'; moves: Position[]; requestId: string }
+  | { type: 'pieceRelations'; relations: unknown; requestId: string }
   | {
       type: 'squareInspected';
       requestId: string;
@@ -104,13 +104,13 @@ export type WorkerResponse =
       evaluation: unknown;
       relations: unknown;
     }
-  | { type: 'gameState'; state: unknown; requestId?: number }
-  | { type: 'detailedEvaluation'; evaluation: unknown }
-  | { type: 'pieceEvaluation'; evaluation: unknown }
-  | { type: 'check'; isCheck: boolean; requestId?: number }
-  | { type: 'validPlacement'; isValid: boolean }
+  | { type: 'gameState'; state: unknown; requestId: string }
+  | { type: 'detailedEvaluation'; evaluation: unknown; requestId: string }
+  | { type: 'pieceEvaluation'; evaluation: unknown; requestId: string }
+  | { type: 'check'; isCheck: boolean; requestId: string }
+  | { type: 'validPlacement'; isValid: boolean; requestId: string }
   | { type: 'openingLineAdded'; success: boolean }
-  | { type: 'notation'; notation: string | string[] }
-  | { type: 'moves'; moves: Move[] }
+  | { type: 'notation'; notation: string | string[]; requestId: string }
+  | { type: 'moves'; moves: Move[]; requestId: string }
   | { type: 'log'; data: string }
-  | { type: 'WORKER_ERROR'; error: string; requestType?: string };
+  | { type: 'WORKER_ERROR'; error: string; requestType?: string; requestId?: string };

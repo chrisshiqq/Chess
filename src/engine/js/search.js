@@ -5409,7 +5409,9 @@ class TranspositionTable {
         this.flags = new Uint8Array(n);
         this.gens = new Uint32Array(n);
         this.bestMoves = new Array(n);
-        this.moveSequences = new Array(n);
+        // Play does not collect PV sequences. Avoid a second 4M-slot pointer
+        // array until Analysis actually stores a sequence.
+        this.moveSequences = null;
         // retrieve 复用，避免每次分配；调用方须在下一次 retrieve/递归前读完字段
         this.entryScratch = {
             depth: 0,
@@ -5467,7 +5469,12 @@ class TranspositionTable {
             this.values[i] = value | 0;
             this.flags[i] = flagCode;
             this.bestMoves[i] = bestMove;
-            this.moveSequences[i] = moveSequence;
+            if (moveSequence !== null) {
+                if (this.moveSequences === null) this.moveSequences = new Array(this.size);
+                this.moveSequences[i] = moveSequence;
+            } else if (this.moveSequences !== null) {
+                this.moveSequences[i] = null;
+            }
             this.gens[i] = gen;
             if (searchContext.collectMetrics) this.stats.stores++;
             return;
@@ -5500,7 +5507,12 @@ class TranspositionTable {
         this.values[i] = value | 0;
         this.flags[i] = flagCode;
         this.bestMoves[i] = bestMove;
-        this.moveSequences[i] = moveSequence;
+        if (moveSequence !== null) {
+            if (this.moveSequences === null) this.moveSequences = new Array(this.size);
+            this.moveSequences[i] = moveSequence;
+        } else if (this.moveSequences !== null) {
+            this.moveSequences[i] = null;
+        }
         if (searchContext.collectMetrics) this.stats.stores++;
     }
 
@@ -5529,7 +5541,7 @@ class TranspositionTable {
         e.value = this.values[i];
         e.flag = TT_FLAG_NAMES[flagCode];
         e.bestMove = this.bestMoves[i];
-        e.moveSequence = this.moveSequences[i];
+        e.moveSequence = this.moveSequences === null ? null : this.moveSequences[i];
         return e;
     }
 

@@ -209,7 +209,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       case 'getPieceRelations': {
         const board = decodeBoard(payload.board);
         const inspected = buildSquareInspection(board, payload.pos, null, false);
-        emit({ type: 'pieceRelations', relations: inspected.relations });
+        emit({ type: 'pieceRelations', relations: inspected.relations, requestId: payload.requestId });
         return;
       }
 
@@ -225,7 +225,11 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
 
       case 'evaluateBoard': {
         const board = decodeBoard(payload.board);
-        emit({ type: 'detailedEvaluation', evaluation: evaluateBoard(board, payload.turn, gameStage()) });
+        emit({
+          type: 'detailedEvaluation',
+          evaluation: evaluateBoard(board, payload.turn, gameStage()),
+          requestId: payload.requestId
+        });
         return;
       }
 
@@ -233,7 +237,11 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         const board = decodeBoard(payload.board);
         const piece = board[payload.pos.r][payload.pos.c];
         if (!piece) {
-          emit({ type: 'pieceEvaluation', evaluation: emptyPieceEvaluation() });
+          emit({
+            type: 'pieceEvaluation',
+            evaluation: emptyPieceEvaluation(),
+            requestId: payload.requestId
+          });
           return;
         }
         const boardEvaluation = evaluateBoard(board, payload.turn, gameStage());
@@ -242,7 +250,8 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         );
         emit({
           type: 'pieceEvaluation',
-          evaluation: info ? evaluatePieceInfo(info) : emptyPieceEvaluation()
+          evaluation: info ? evaluatePieceInfo(info) : emptyPieceEvaluation(),
+          requestId: payload.requestId
         });
         return;
       }
@@ -257,7 +266,8 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       case 'isValidPlacement':
         emit({
           type: 'validPlacement',
-          isValid: isValidPlacement(payload.type, payload.color, payload.r, payload.c)
+          isValid: isValidPlacement(payload.type, payload.color, payload.r, payload.c),
+          requestId: payload.requestId
         });
         return;
 
@@ -269,14 +279,16 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       case 'movesToNotation':
         emit({
           type: 'notation',
-          notation: openingBook.movesToNotation(payload.boardHistory, payload.moveHistory)
+          notation: openingBook.movesToNotation(payload.boardHistory, payload.moveHistory),
+          requestId: payload.requestId
         });
         return;
 
       case 'notationToMoves':
         emit({
           type: 'moves',
-          moves: openingBook.notationToMoves(payload.notation, decodeBoard(payload.initialBoard))
+          moves: openingBook.notationToMoves(payload.notation, decodeBoard(payload.initialBoard)),
+          requestId: payload.requestId
         });
         return;
 
@@ -285,10 +297,15 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         return;
     }
   } catch (error) {
+    const requestId = request && 'payload' in request &&
+      typeof (request.payload as { requestId?: unknown }).requestId === 'string'
+      ? (request.payload as { requestId: string }).requestId
+      : undefined;
     emit({
       type: 'WORKER_ERROR',
       error: error instanceof Error ? error.message : String(error),
-      requestType: request?.type
+      requestType: request?.type,
+      requestId
     });
   }
 };
