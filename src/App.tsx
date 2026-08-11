@@ -4118,13 +4118,14 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 </div>
             </div>
 
-            <div className="flex flex-col lg:flex-row gap-8 items-center max-w-[1040px] w-full">
+            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 items-center max-w-[1040px] w-full">
                 
-                <div className="order-2 lg:order-1 flex flex-col h-[550px] w-full lg:w-[300px]">
-                    {/* 上半部分 - 根据玩家视角动态调整 */}
-                    <div className="flex flex-col h-[275px] gap-2 justify-end">
-                        {/* 上方时钟 - Setup模式下隐藏 */}
-                        
+                {/* Mobile: contents 使子项参与父级 flex order；Desktop: 左栏侧边栏 */}
+                <div className="contents lg:flex lg:flex-col lg:h-[550px] lg:w-[300px] lg:order-1">
+                    {/* 对手：mobile order-1（棋盘上方），desktop 左栏上半 */}
+                    <div className="order-1 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-end">
+                        {/* Setup 竖屏隐藏时钟省空间；桌面仍显示 */}
+                        <div className={isSetupMode ? 'hidden lg:block' : undefined}>
                             <ClockDisplay 
                                 color={playerColor === 'red' ? 'black' : 'red'} 
                                 time={playerColor === 'red' ? blackTime : redTime} 
@@ -4133,9 +4134,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
                                 playerColor={playerColor}
                             />
+                        </div>
                         
-                        
-                        {/* 上方吃子面板 - Setup模式下隐藏 */}
                         {!isSetupMode && (
                             <SidePanel 
                                 label={topPanelLabel} 
@@ -4150,23 +4150,43 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 recentlyCaptured={recentlyCaptured}
                             />
                         )}
+
+                        {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
+                        {isSetupMode && (
+                            <div className="lg:hidden">
+                                <SidePanel 
+                                    label={topPanelLabel} 
+                                    color={topPanelColor} 
+                                    playerColor={playerColor}
+                                    pieces={topPanelPieces}
+                                    isSetupMode={isSetupMode}
+                                    skin={skin}
+                                    material={material}
+                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
+                                    onDrop={(e) => handleDropOnPanel(e, topPanelColor)}
+                                    recentlyCaptured={recentlyCaptured}
+                                />
+                            </div>
+                        )}
                         
-                        {/* 上方EVALUATION */}
-                        <EvaluationPanel 
-                            color={playerColor === 'red' ? 'black' : 'red'} 
-                            evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
-                        />
+                        {/* 评估面板仅桌面显示 */}
+                        <div className="hidden lg:block">
+                            <EvaluationPanel 
+                                color={playerColor === 'red' ? 'black' : 'red'} 
+                                evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
+                            />
+                        </div>
                     </div>
                     
-                    {/* 下半部分 - 根据玩家视角动态调整 */}
-                    <div className="flex flex-col h-[275px] gap-2 justify-start">
-                        {/* 下方EVALUATION */}
-                        <EvaluationPanel 
-                            color={playerColor} 
-                            evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
-                        />
+                    {/* 己方：mobile order-3（棋盘下方），desktop 左栏下半 */}
+                    <div className="order-3 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-start">
+                        <div className="hidden lg:block">
+                            <EvaluationPanel 
+                                color={playerColor} 
+                                evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
+                            />
+                        </div>
                         
-                        {/* 下方吃子面板 - Setup模式下隐藏 */}
                         {!isSetupMode && (
                             <SidePanel 
                                 label={bottomPanelLabel} 
@@ -4181,9 +4201,26 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 onDrop={(e) => handleDropOnPanel(e, playerColor)}
                             />
                         )}
+
+                        {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
+                        {isSetupMode && (
+                            <div className="lg:hidden">
+                                <SidePanel 
+                                    label={bottomPanelLabel} 
+                                    color={bottomPanelColor} 
+                                    playerColor={playerColor}
+                                    pieces={bottomPanelPieces}
+                                    isSetupMode={isSetupMode}
+                                    skin={skin}
+                                    material={material}
+                                    recentlyCaptured={recentlyCaptured}
+                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
+                                    onDrop={(e) => handleDropOnPanel(e, bottomPanelColor)}
+                                />
+                            </div>
+                        )}
                         
-                        {/* 下方时钟 - Setup模式下隐藏 */}
-                        
+                        <div className={isSetupMode ? 'hidden lg:block' : undefined}>
                             <ClockDisplay 
                                 color={playerColor} 
                                 time={playerColor === 'red' ? redTime : blackTime} 
@@ -4192,11 +4229,11 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
                                 playerColor={playerColor}
                             />
-                        
+                        </div>
                     </div>
                 </div>
 
-                <div className="relative order-1 lg:order-2 w-full max-w-[500px] flex justify-center">
+                <div className="relative order-2 lg:order-2 w-full max-w-[500px] flex justify-center">
                     <ChessBoard 
                         board={displayBoard} 
                         onSelect={handlePieceSelect} 
@@ -4387,7 +4424,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     )}
                 </div>
                 
-                <div className="order-3 flex flex-col h-auto lg:h-[550px] w-full lg:w-[300px] bg-stone-800/90 backdrop-blur p-3 rounded-xl shadow-2xl border border-stone-700 transition-colors duration-300">
+                <div className="order-4 lg:order-3 flex flex-col h-auto lg:h-[550px] w-full lg:w-[300px] bg-stone-800/90 backdrop-blur p-3 rounded-xl shadow-2xl border border-stone-700 transition-colors duration-300">
                 {/* Settings Tab Content */}
                 {activeTab === 'settings' && (
                     <div className="flex flex-col gap-3">
@@ -5194,33 +5231,36 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         <div className="flex flex-col h-full animate-fadeIn">
 
                             
-                            {/* 黑方棋子面板 */}
-                            <SidePanel 
-                                label="Black Pieces" 
-                                color="black" 
-                                playerColor={playerColor}
-                                pieces={topPanelColor === 'black' ? topPanelPieces : bottomPanelPieces}
-                                isSetupMode={isSetupMode}
-                                skin={skin}
-                                material={material}
-                                onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                onDrop={(e) => handleDropOnPanel(e, 'black')}
-                                recentlyCaptured={recentlyCaptured}
-                            />
-                            
-                            {/* 红方棋子面板 */}
-                            <SidePanel 
-                                label="Red Pieces" 
-                                color="red" 
-                                playerColor={playerColor}
-                                pieces={topPanelColor === 'red' ? topPanelPieces : bottomPanelPieces}
-                                isSetupMode={isSetupMode}
-                                skin={skin}
-                                material={material}
-                                onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                onDrop={(e) => handleDropOnPanel(e, 'red')}
-                                recentlyCaptured={recentlyCaptured}
-                            />
+                            {/* 桌面右栏 Setup 可摆棋子；竖屏改由左栏 order-1/3 显示 */}
+                            <div className="hidden lg:block">
+                                {/* 黑方棋子面板 */}
+                                <SidePanel 
+                                    label="Black Pieces" 
+                                    color="black" 
+                                    playerColor={playerColor}
+                                    pieces={topPanelColor === 'black' ? topPanelPieces : bottomPanelPieces}
+                                    isSetupMode={isSetupMode}
+                                    skin={skin}
+                                    material={material}
+                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
+                                    onDrop={(e) => handleDropOnPanel(e, 'black')}
+                                    recentlyCaptured={recentlyCaptured}
+                                />
+                                
+                                {/* 红方棋子面板 */}
+                                <SidePanel 
+                                    label="Red Pieces" 
+                                    color="red" 
+                                    playerColor={playerColor}
+                                    pieces={topPanelColor === 'red' ? topPanelPieces : bottomPanelPieces}
+                                    isSetupMode={isSetupMode}
+                                    skin={skin}
+                                    material={material}
+                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
+                                    onDrop={(e) => handleDropOnPanel(e, 'red')}
+                                    recentlyCaptured={recentlyCaptured}
+                                />
+                            </div>
                             
                             {/* 棋盒和按钮之间的间隔 */}
                             <div className="h-4"></div>

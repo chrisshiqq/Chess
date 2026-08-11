@@ -40,21 +40,23 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
         text: 'text-stone-400',
     };
 
+    const setupHeightClass = 'min-h-[110px] max-h-[110px] lg:min-h-[180px] lg:max-h-[180px]';
+    const capturedHeightClass = 'min-h-[70px] max-h-[70px]';
+
     return (
             <div className={`flex flex-col gap-0 p-0 pt-0 rounded-lg border w-full transition-all duration-500
                     ${styles.bg} ${styles.border}
+                    ${isSetupMode ? setupHeightClass : capturedHeightClass}
                 `}
                 onDragOver={handleDragOver}
                 onDrop={(e) => isSetupMode && onDrop && onDrop(e)}
                 style={{ 
-                    minHeight: isSetupMode ? '180px' : '70px', 
-                    maxHeight: isSetupMode ? '180px' : '70px',
                     position: 'relative',
                     resize: isSetupMode ? 'vertical' : 'none',
                     overflow: 'hidden'
                 }}
             >
-                <div className={`grid gap-0 w-full justify-items-center items-center min-h-[${isSetupMode ? '180px' : '70px'}] ${isSetupMode ? 'grid-cols-4 grid-rows-4' : 'grid-cols-8'} ${isSetupMode ? 'p-0' : ''}`}>
+                <div className={`grid gap-0 w-full justify-items-center items-center ${isSetupMode ? `${setupHeightClass} grid-cols-8 grid-rows-2 lg:grid-cols-4 lg:grid-rows-4 p-0` : `${capturedHeightClass} grid-cols-8`}`}>
                 {sortedPieces.map((type, idx) => {
                     // 检查当前棋子是否是最近被吃的棋子，并且是同类型中最后一个出现的（即最新被吃的）
                     const isRecentlyCaptured = !isSetupMode && recentlyCaptured && 
@@ -65,7 +67,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                         <div 
                             key={`${color}-${type}-${idx}`} 
                             className={`relative transition-transform
-                                ${isSetupMode ? 'w-12 h-12 cursor-grab active:cursor-grabbing hover:scale-105' : 'w-8 h-8 animate-scaleUp'}
+                                ${isSetupMode ? 'w-10 h-10 lg:w-12 lg:h-12 cursor-grab active:cursor-grabbing hover:scale-105' : 'w-8 h-8 animate-scaleUp'}
                                 ${isRecentlyCaptured ? 'animate-rotate' : ''}
                             `}
                             draggable={isSetupMode}
@@ -83,7 +85,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                 width={isSetupMode ? "48" : "32"} 
                                 height={isSetupMode ? "48" : "32"} 
                                 viewBox={isSetupMode ? "-24 -24 48 48" : "-16 -16 32 32"} 
-                                className="overflow-visible pointer-events-none"
+                                className={`overflow-visible pointer-events-none ${isSetupMode ? 'w-10 h-10 lg:w-12 lg:h-12' : ''}`}
                             >
                                 <ChessPiece 
                                     type={type} 
@@ -98,7 +100,11 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                         </div>
                     );
                 })}
-                {pieces.length === 0 && <div className={`col-span-${isSetupMode ? '4' : '8'} text-xs text-center italic py-2 opacity-50 ${styles.text}`}>Empty</div>}
+                {pieces.length === 0 && (
+                    <div className={`${isSetupMode ? 'col-span-8 lg:col-span-4' : 'col-span-8'} text-xs text-center italic py-2 opacity-50 ${styles.text}`}>
+                        Empty
+                    </div>
+                )}
             </div>
         </div>
     );
