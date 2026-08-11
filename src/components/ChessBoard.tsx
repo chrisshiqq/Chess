@@ -114,7 +114,7 @@ export const SKINS: Record<Skin, {
     }
 };
 
-export const ChessBoard: React.FC<ChessBoardProps> = ({ 
+export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({ 
     board, onSelect, onMove, onRightClick, selectedPos, validMoves, turn, lastMove, hintMove, flip = false,
     isSetupMode = false, skin = 'wood-board', material = 'wood', playerColor = 'red', 
     boardBgColor, boardLineColor, coordinateStyle = 'chinese', onDragStart, onDrop, pieceRelations, moveAnimation, pieceEval, isCheck = false,
@@ -1755,4 +1755,4 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
       </div>
     </div>
   );
-};
+});

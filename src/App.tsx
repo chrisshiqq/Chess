@@ -505,6 +505,13 @@ const App: React.FC = () => {
     });
     const aiSearchDebugRef = useRef(aiSearchDebug);
     aiSearchDebugRef.current = aiSearchDebug;
+    // SEARCH_PROGRESS 节流：合并到 pending，≥200ms 再 flush；COMPLETE 时强制刷最新值
+    const aiSearchProgressPendingRef = useRef<((prev: typeof aiSearchDebug) => typeof aiSearchDebug) | null>(null);
+    const aiSearchProgressTimerRef = useRef<number | null>(null);
+    const aiSearchProgressLastFlushRef = useRef(0);
+    const aiSearchListenerRef = useRef<((e: MessageEvent) => void) | null>(null);
+    const aiSearchCleanupRef = useRef<(() => void) | null>(null);
+    const aiSearchAbortRef = useRef<{ gameId: number; aborted: boolean } | null>(null);
 
     const [aiDepth, setAiDepth] = useState<number>(10);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
@@ -562,6 +569,12 @@ const App: React.FC = () => {
             black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
         }
     });
+    // 缓存上一手 post 评估，供下一步作 pre，避免每步双次整盘评估
+    const cachedBoardEvalRef = useRef<{
+        hash: string;
+        red: PlayerEvaluation;
+        black: PlayerEvaluation;
+    } | null>(null);
     
     // Tab navigation for right panel
     const [activeTab, setActiveTab] = useState<'game' | 'replay' | 'setup' | 'settings' | 'stats'>('game');
@@ -642,6 +655,7 @@ const App: React.FC = () => {
         control: [] as Position[],
         controllers: [] as Position[]
     }).current;
+    const emptyValidMoves = useRef<Position[]>([]).current;
 
     // Worker函数调用封装
     const workerGetValidMoves = useRef((board: Board, pos: Position, requestId?: string): Promise<Position[]> => {
@@ -768,6 +782,19 @@ const App: React.FC = () => {
     }).current;
 
     const recreateWorker = useRef(() => {
+        // 旧 worker 将被 terminate，先丢掉主线程上的 listener 引用，避免指向已死 worker
+        if (aiSearchListenerRef.current && workerRef.current) {
+            workerRef.current.removeEventListener('message', aiSearchListenerRef.current);
+        }
+        aiSearchListenerRef.current = null;
+        if (aiSearchAbortRef.current) aiSearchAbortRef.current.aborted = true;
+        aiSearchCleanupRef.current = null;
+        if (aiSearchProgressTimerRef.current != null) {
+            window.clearTimeout(aiSearchProgressTimerRef.current);
+            aiSearchProgressTimerRef.current = null;
+        }
+        aiSearchProgressPendingRef.current = null;
+
         const previousWorker = workerRef.current;
         workerRef.current = null;
         previousWorker?.terminate();
@@ -1130,19 +1157,27 @@ const App: React.FC = () => {
         history: PositionHistoryEntry[],
         lastMove: Move, 
         boardBeforeMove: Board,
-        turn: Color
+        turn: Color,
+        cached?: {
+            isCheck?: boolean;
+            capturingResult?: { isThreat: boolean; targetPiece?: { type: PieceType; position: Position } };
+        }
     ): Promise<{ violation: boolean; type: 'chase' | 'check' | null }> => {
-        // 模拟走棋后的棋盘
-        const newBoard = boardBeforeMove.map(row => [...row]);
-        newBoard[lastMove.to.r][lastMove.to.c] = newBoard[lastMove.from.r][lastMove.from.c];
-        newBoard[lastMove.from.r][lastMove.from.c] = null;
-        
-        // 检查走棋后是否构成将军（对手是否被将军）
         const enemyColor = turn === 'red' ? 'black' : 'red';
-        const isCheck = await isBoardInCheck(newBoard, enemyColor);
-        
-        // 检查当前走法是否构成捉子
-        const capturingResult = await isCapturingThreat(boardBeforeMove, lastMove, turn);
+        // 调用方可传入已算好的将军/捉子，避免同一步内重复 Worker RPC
+        let isCheck = cached?.isCheck;
+        let capturingResult = cached?.capturingResult;
+        if (isCheck === undefined || capturingResult === undefined) {
+            const newBoard = boardBeforeMove.map(row => [...row]);
+            newBoard[lastMove.to.r][lastMove.to.c] = newBoard[lastMove.from.r][lastMove.from.c];
+            newBoard[lastMove.from.r][lastMove.from.c] = null;
+            if (isCheck === undefined) {
+                isCheck = await isBoardInCheck(newBoard, enemyColor);
+            }
+            if (capturingResult === undefined) {
+                capturingResult = await isCapturingThreat(boardBeforeMove, lastMove, turn);
+            }
+        }
         const isChase = capturingResult.isThreat && capturingResult.targetPiece;
         const currentTarget = capturingResult.targetPiece;
         
@@ -1306,8 +1341,54 @@ const App: React.FC = () => {
 
 
 
-    // 通用的搜索和执行走法函数，用于AI和玩家Auto模式
-    const searchAndExecuteMove = async (currentBoard: Board, currentTurn: Color, searchDepth: number, capturedGameId: number, randomness: number = 0, ply: number = 0, isAutoMode: boolean = false, delay: number = 0, enableTimeLimit: boolean = false) => {
+    const flushAiSearchProgress = () => {
+        if (aiSearchProgressTimerRef.current != null) {
+            window.clearTimeout(aiSearchProgressTimerRef.current);
+            aiSearchProgressTimerRef.current = null;
+        }
+        const apply = aiSearchProgressPendingRef.current;
+        aiSearchProgressPendingRef.current = null;
+        if (!apply) return;
+        aiSearchProgressLastFlushRef.current = Date.now();
+        setAiSearchDebug(prev => {
+            const next = apply(prev);
+            aiSearchDebugRef.current = next;
+            return next;
+        });
+    };
+
+    const scheduleAiSearchProgress = (apply: (prev: typeof aiSearchDebug) => typeof aiSearchDebug) => {
+        const prevPending = aiSearchProgressPendingRef.current;
+        aiSearchProgressPendingRef.current = (prev) => apply(prevPending ? prevPending(prev) : prev);
+        const elapsed = Date.now() - aiSearchProgressLastFlushRef.current;
+        const THROTTLE_MS = 200;
+        if (elapsed >= THROTTLE_MS) {
+            flushAiSearchProgress();
+            return;
+        }
+        if (aiSearchProgressTimerRef.current == null) {
+            aiSearchProgressTimerRef.current = window.setTimeout(flushAiSearchProgress, THROTTLE_MS - elapsed);
+        }
+    };
+
+    // 通用的搜索和执行走法函数，用于AI和玩家Auto模式（同步返回 cleanup，供 effect 使用）
+    const searchAndExecuteMove = (currentBoard: Board, currentTurn: Color, searchDepth: number, capturedGameId: number, randomness: number = 0, ply: number = 0, isAutoMode: boolean = false, delay: number = 0, enableTimeLimit: boolean = false) => {
+        // 新搜索开始前移除旧 listener，避免叠加
+        const prevListener = aiSearchListenerRef.current;
+        if (prevListener) {
+            workerRef.current?.removeEventListener('message', prevListener);
+            aiSearchListenerRef.current = null;
+        }
+        if (aiSearchAbortRef.current) aiSearchAbortRef.current.aborted = true;
+        if (aiSearchProgressTimerRef.current != null) {
+            window.clearTimeout(aiSearchProgressTimerRef.current);
+            aiSearchProgressTimerRef.current = null;
+        }
+        aiSearchProgressPendingRef.current = null;
+
+        const searchToken = { gameId: capturedGameId, aborted: false };
+        aiSearchAbortRef.current = searchToken;
+
         // 开始搜索，显示齿轮转动效果
         setIsThinking(true);
         // 清掉上一手分析箭头，避免误判为“正在考虑非法应将”
@@ -1402,6 +1483,7 @@ const App: React.FC = () => {
         
         // 执行走法并处理延迟
         const executeMoveWithDelay = async (move: Move, turn: Color, isAutoMode: boolean, delay: number) => {
+            if (searchToken.aborted) return;
             setIsThinking(false);
             
             // 设置提示移动和自动移动等待状态，无论是AI还是Auto模式
@@ -1411,6 +1493,11 @@ const App: React.FC = () => {
             
             if (delay > 0) {
                 setTimeout(async () => {
+                    if (searchToken.aborted) {
+                        setHintMove(null);
+                        setIsAutoMovePending(false);
+                        return;
+                    }
                     // 对于AI模式，不需要检查isAutoMode，直接执行
                     // 对于Auto模式，仍然需要检查当前颜色的auto状态，防止用户中途取消
                     let currentColorIsAuto;
@@ -1449,33 +1536,9 @@ const App: React.FC = () => {
             return await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
         };
         
-        // 尝试寻找替代走法（当最优和次优走法都导致重复时）
-        const tryAlternativeMoves = async (excludeMoves: Move[]) => {
-            const allMoves = await getAllMoves(currentBoard, currentTurn);
-            const filteredExcludeMoves = excludeMoves.filter(m => m && m.from && m.to);
-            const validMove = await findValidMove(allMoves, filteredExcludeMoves);
-            if (validMove) {
-                await executeMoveWithDelay(validMove, currentTurn, isAutoMode, delay);
-                return;
-            }
-            
-            // 所有走法都会导致重复，随机选择一个
-            console.warn('⚠️ 所有走法都会导致重复！随机选择一个避免死局');
-            const randomMove = allMoves[Math.floor(Math.random() * allMoves.length)];
-            if (randomMove) {
-                console.log('🎲 随机选择走法:', randomMove);
-                await executeMoveWithDelay(randomMove, currentTurn, isAutoMode, delay);
-            } else {
-                console.error('❌ 无法找到任何有效走法！');
-                setIsThinking(false);
-                setTimeout(() => {
-                    setGameId(prev => prev + 1);
-                }, 500);
-            }
-        };
-        
         // Define message handler
         const handleWorkerMessage = async (e: MessageEvent) => {
+            if (searchToken.aborted) return;
             const { type, payload } = e.data;
             if (type === 'SEARCH_STARTED' || type === 'SEARCH_PROGRESS') {
                 if (payload?.gameId !== capturedGameId) return;
@@ -1484,7 +1547,7 @@ const App: React.FC = () => {
                 const bestPreview = best?.from && best?.to
                     ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
                     : '';
-                setAiSearchDebug(prev => ({
+                scheduleAiSearchProgress(prev => ({
                     ...prev,
                     active: true,
                     gameId: payload.gameId,
@@ -1517,6 +1580,13 @@ const App: React.FC = () => {
                 });
                 // 无论gameId是否匹配，都要移除事件监听器
                 workerRef.current?.removeEventListener('message', handleWorkerMessage);
+                if (aiSearchListenerRef.current === handleWorkerMessage) {
+                    aiSearchListenerRef.current = null;
+                }
+                // COMPLETE 前 flush 最后一次进度，避免节流丢掉最新层
+                flushAiSearchProgress();
+
+                if (searchToken.aborted) return;
                 
                 if (payload.gameId === capturedGameId) {
                     {
@@ -1557,13 +1627,14 @@ const App: React.FC = () => {
                     setHiddenBestMove(payload.bestMove);
                     setSuboptimalMove(payload.secondBestMove);
                     
-                    // 填充所有着法到analysisMoves，复用Analysis的着法序列控件
                     const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
                         move: moveData.move,
                         score: moveData.score,
                         moveSequence: moveData.moveSequence || []
                     }));
-                    setAnalysisMoves(formattedAnalysisMoves);
+                    // 对弈路径只保留 best/次优到 React state；全量仍用于本地变招选择
+                    // 分析模式（isAnalysisMode）保留全量列表
+                    setAnalysisMoves(isAnalysisMode ? formattedAnalysisMoves : formattedAnalysisMoves.slice(0, 2));
                     // 重置选中状态
                     setSelectedAnalysisMove(null);
                     // 重置预览状态
@@ -1575,12 +1646,14 @@ const App: React.FC = () => {
                     
                     // 尝试最优走法
                     if (await tryMove(payload.bestMove)) {
+                        if (searchToken.aborted) return;
                         await executeMoveWithDelay(payload.bestMove, currentTurn, isAutoMode, delay);
                         return;
                     }
                     
                     // 尝试次优走法
                     if (await tryMove(payload.secondBestMove)) {
+                        if (searchToken.aborted) return;
                         await executeMoveWithDelay(payload.secondBestMove, currentTurn, isAutoMode, delay);
                         return;
                     }
@@ -1588,6 +1661,7 @@ const App: React.FC = () => {
                     // 最优和次优都违规时，继续按引擎根着法排序寻找棋力最好的变招。
                     const attemptedMoves = [payload.bestMove, payload.secondBestMove].filter(Boolean) as Move[];
                     for (const moveData of payload.allMovesWithScores || []) {
+                        if (searchToken.aborted) return;
                         const candidate = moveData.move as Move | undefined;
                         if (!candidate || attemptedMoves.some(move =>
                             move.from.r === candidate.from.r && move.from.c === candidate.from.c &&
@@ -1602,6 +1676,7 @@ const App: React.FC = () => {
                     
                     // 尝试其他走法
                     const allMoves = await getAllMoves(currentBoard, currentTurn);
+                    if (searchToken.aborted) return;
                     if (allMoves.length === 0) {
                         setIsThinking(false);
                         setTimeout(() => {
@@ -1613,6 +1688,7 @@ const App: React.FC = () => {
                     // 排除已经尝试过的最优和次优走法
                     const excludeMoves = attemptedMoves;
                     const validMove = await findValidMove(allMoves, excludeMoves);
+                    if (searchToken.aborted) return;
                     if (validMove) {
                         await executeMoveWithDelay(validMove, currentTurn, isAutoMode, delay);
                         return;
@@ -1648,11 +1724,33 @@ const App: React.FC = () => {
             }
         };
 
-        // console.log('Worker available?', !!workerRef.current);
-        // console.log('🔍 Current moveHistory.length:', moveHistory.length);
-        // console.log('🔍 moveHistory:', moveHistory);
+        const cleanup = () => {
+            searchToken.aborted = true;
+            const stillListening = aiSearchListenerRef.current === handleWorkerMessage;
+            workerRef.current?.removeEventListener('message', handleWorkerMessage);
+            if (stillListening) {
+                aiSearchListenerRef.current = null;
+            }
+            if (aiSearchProgressTimerRef.current != null) {
+                window.clearTimeout(aiSearchProgressTimerRef.current);
+                aiSearchProgressTimerRef.current = null;
+            }
+            aiSearchProgressPendingRef.current = null;
+            // 仅中止进行中的搜索时重置 UI，避免 COMPLETE 后 turn 变化误标 aborted
+            if (stillListening) {
+                setIsThinking(false);
+                setAiSearchDebug(prev => ({
+                    ...prev,
+                    active: false,
+                    lastEvent: 'SEARCH aborted',
+                    lastProgressAt: Date.now()
+                }));
+            }
+        };
+        aiSearchCleanupRef.current = cleanup;
+
         if (workerRef.current) {
-            // console.log('✅ Using Worker for AI move (non-blocking)');
+            aiSearchListenerRef.current = handleWorkerMessage;
             workerRef.current.addEventListener('message', handleWorkerMessage);
             workerRef.current.postMessage({
                 type: 'SEARCH',
@@ -1669,13 +1767,10 @@ const App: React.FC = () => {
                 }
             });
         } else {
-            // console.warn("⚠️ Worker not available, running on main thread (UI will freeze)");
             setIsThinking(false);
         }
 
-        return () => {
-            workerRef.current?.removeEventListener('message', handleWorkerMessage);
-        };
+        return cleanup;
     };
 
     // AI 搜索调试：刷新耗时显示 + 无进度看门狗
@@ -1730,7 +1825,7 @@ const App: React.FC = () => {
         
         if (shouldAIMove && !gameOver && !isReplaying && !isSetupMode && !isThinking) {
             //console.log('AI should move now!');
-            if (!hasStarted) setHasStarted(true);
+            // hasStarted 由 executeMove 设置；勿写入 deps，否则一开搜就会被 cleanup 掐掉
          
             const capturedGameId = gameId;
             const config = DIFFICULTIES[difficulty];
@@ -1739,13 +1834,22 @@ const App: React.FC = () => {
             console.log('AI config:', { ...config, depth: searchDepth }, 'gameId:', capturedGameId);
 
             // 调用通用的搜索和执行走法函数，为AI走棋添加1秒延迟，使用Setting面板中的TimeLimit开关设置
-            searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 1000, enableTimeLimit);
+            const cleanup = searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 1000, enableTimeLimit);
 
             return () => {
-                // 清理逻辑
+                cleanup();
+                if (aiSearchCleanupRef.current === cleanup) {
+                    aiSearchCleanupRef.current = null;
+                }
             };
         }
-    }, [turn, playerColor, gameOver, isReplaying, isSetupMode, hasStarted, difficulty, gameId, redIsAuto, blackIsAuto]);
+
+        // 换边/关 Auto/卸载等：若仍挂着旧搜索监听，必须摘掉，避免 COMPLETE 写回新局
+        return () => {
+            aiSearchCleanupRef.current?.();
+            aiSearchCleanupRef.current = null;
+        };
+    }, [turn, playerColor, gameOver, isReplaying, isSetupMode, difficulty, gameId, redIsAuto, blackIsAuto]);
 
     const executeMove = async (move: Move, moveTurn?: Color): Promise<boolean> => {
         //console.log('executeMove called with move:', move, 'moveTurn:', moveTurn);
@@ -1769,9 +1873,12 @@ const App: React.FC = () => {
             return false; // 不是当前回合的棋子，不执行移动
         }
         
-        // 移动前评估当前局面
-        //console.log('executeMove: evaluating current board');
-        const preMoveEval = await workerGetDetailedEval(board, turn, isReplaying);
+        // 移动前评估：优先复用上一手 post（同 hash），否则才 RPC
+        const preHash = generateBoardHash(board, turn);
+        const cachedPre = cachedBoardEvalRef.current;
+        const preMoveEval = (cachedPre && cachedPre.hash === preHash)
+            ? { red: cachedPre.red, black: cachedPre.black }
+            : await workerGetDetailedEval(board, turn, isReplaying);
         
         const targetPiece = board[move.to.r][move.to.c];
         //console.log('executeMove: targetPiece:', targetPiece);
@@ -1815,7 +1922,9 @@ const App: React.FC = () => {
         const nextTurn = turn === 'red' ? 'black' : 'red';
         const newHash = generateBoardHash(newBoard, nextTurn);
         
-        // 检测是否是捉子
+        // 注意：以下 await 期间不要 setMoveAnimation/setBoard，否则会出现「动画已开、棋盘未变」的中间帧
+        // 将军/捉子各算一次，供重复检测与历史共用
+        const isCheck = await isBoardInCheck(newBoard, nextTurn);
         const capturingResult = await isCapturingThreat(board, move, turn);
         
         // 长将/长捉检测已在searchAndExecuteMove函数中完成，这里不再重复检测
@@ -1823,7 +1932,10 @@ const App: React.FC = () => {
         
         const currentColorIsManual = (turn === 'red' && !redIsAuto) || (turn === 'black' && !blackIsAuto);
         if (turn === playerColor && currentColorIsManual && positionHistory.length >= 4) {
-            const repetitionCheck = await checkRepetition(newHash, positionHistory, move, board, turn);
+            const repetitionCheck = await checkRepetition(
+                newHash, positionHistory, move, board, turn,
+                { isCheck, capturingResult }
+            );
             
             if (repetitionCheck.violation) {
                 console.log('👤 玩家手动走棋违规，判负');
@@ -1840,9 +1952,6 @@ const App: React.FC = () => {
         setBoardHistory(prev => [...prev, newBoard]);
         setMoveHistory(prev => [...prev, move]);
         
-        // 检查是否构成将军（走棋后对手是否被将军）
-        // 注意：以下 await 期间不要 setMoveAnimation/setBoard，否则会出现「动画已开、棋盘未变」的中间帧
-        const isCheck = await isBoardInCheck(newBoard, nextTurn);
         const isChase = capturingResult.isThreat;
         const initiator = (isCheck || isChase) ? currentTurn : undefined;
         
@@ -1860,12 +1969,11 @@ const App: React.FC = () => {
         // 检查局面重复次数
         const hashCount = updatedPositionHistory.filter(h => h.hash === newHash).length;
         if (hashCount >= 4) {
-            // 检查是否不属于长将和长捉的情况
-            const inCheck = await isBoardInCheck(newBoard, nextTurn);
+            // 复用上面的 isCheck，避免同一步再次 isBoardInCheck
             const isThreat = capturingResult.isThreat;
             const completedLongCheckCycle = isReplyingToOpponentCheck(positionHistory, currentTurn);
             
-            if (!inCheck && !isThreat && !completedLongCheckCycle) {
+            if (!isCheck && !isThreat && !completedLongCheckCycle) {
                 // 调用游戏结束处理函数
                 handleGameOver('draw', null, 'Position repeated 4 times — draw!');
             } else if (completedLongCheckCycle) {
@@ -1890,7 +1998,7 @@ const App: React.FC = () => {
         // 动画与棋盘同一同步段更新，避免 await 拆批导致瞬移/回弹
         setSelectedPos(null);
         setValidMoves([]);
-        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+        setPieceRelations(emptyPieceRelations);
         setSelectedPieceEval(null);
         setMoveAnimation({
             from: move.from,
@@ -1928,8 +2036,13 @@ const App: React.FC = () => {
         setHintMove(null);
         setSelectedPieceEval(null);
         
-        // 移动后评估新局面
+        // 本步只算 post；结果写入缓存供下一手作 pre
         const postMoveEval = await workerGetDetailedEval(newBoard, nextTurn, isReplaying);
+        cachedBoardEvalRef.current = {
+            hash: newHash,
+            red: postMoveEval.red,
+            black: postMoveEval.black
+        };
         
         // 计算红方分数变化
         const redDiff = {
@@ -2367,7 +2480,7 @@ const App: React.FC = () => {
         // 清理所有指示器
         setSelectedPos(null);
         setValidMoves([]);
-        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+        setPieceRelations(emptyPieceRelations);
         setSelectedPieceEval(null);
         setCheckAlert(false);
         setHintMove(null);
@@ -2403,6 +2516,7 @@ const App: React.FC = () => {
                 black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
             }
         });
+        cachedBoardEvalRef.current = null;
         
         // 随机选择新的棋盘和棋子
         const skins: Skin[] = ['stone-board', 'wood-board', 'paper-board', 'glass-board'];
@@ -2507,11 +2621,13 @@ const App: React.FC = () => {
             const checkState = await workerIsCheck(prevBoard, newTurn);
             setCheckAlert(checkState);
             setHintMove(null);
+            // 悔棋后面目变化，丢弃评估缓存以免下一步误用
+            cachedBoardEvalRef.current = null;
             
             // 清理所有指示器
             setSelectedPos(null);
             setValidMoves([]);
-            setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+            setPieceRelations(emptyPieceRelations);
             setSelectedPieceEval(null);
             setHiddenBestMove(null);
             setSuboptimalMove(null);
@@ -4185,7 +4301,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         onMove={handleMove}
                         onRightClick={handleRightClickOnBoard}
                         selectedPos={selectedPos}
-                        validMoves={isSetupMode ? [] : validMoves}
+                        validMoves={isSetupMode ? emptyValidMoves : validMoves}
                         turn={currentTurn}
                         lastMove={isSetupMode ? null : displayLastMove}
                         hintMove={hintMove}
@@ -4197,7 +4313,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         boardBgColor={enableCustomColors ? boardBgColor : undefined}
                         boardLineColor={enableCustomColors ? boardLineColor : undefined}
                         coordinateStyle={coordinateStyle}
-                        onDragStart={(e, pos) => handleDragStart(e, pos)}
+                        onDragStart={handleDragStart}
                         onDrop={handleDropOnBoard}
                         pieceRelations={pieceRelations}
                         moveAnimation={moveAnimation}

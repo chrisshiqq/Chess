@@ -5386,6 +5386,11 @@ const zobristHasher = new ZobristHasher();
 const TT_DEFAULT_SIZE = 1 << 22; // 4194304
 const TT_DEFAULT_EVICTION_BATCH = 512; // API 兼容，定长 TT 不再批量淘汰
 const TT_FLAG_NAMES = ['exact', 'lowerbound', 'upperbound'];
+const TT_BOUND_FLAG_MASK = 0x03;
+// ttKeyFromHash() uses a signed Int32 board hash plus one side-to-move bit,
+// producing a signed 33-bit number. Store its low 32 bits in keys and retain
+// the missing sign/high bit in the otherwise unused third flag bit.
+const TT_KEY_HIGH_FLAG = 0x04;
 
 class TranspositionTable {
     constructor(size = TT_DEFAULT_SIZE, evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
@@ -5403,12 +5408,14 @@ class TranspositionTable {
         this.occupiedApprox = 0;
         this.hasher = zobristHasher;
 
-        this.keys = new Float64Array(n);
-        this.depths = new Int16Array(n);
+        this.keys = new Uint32Array(n);
+        this.depths = new Uint8Array(n);
         this.values = new Int32Array(n);
         this.flags = new Uint8Array(n);
         this.gens = new Uint32Array(n);
-        this.bestMoves = new Array(n);
+        // Internal moves use a 14-bit from/to encoding. Zero is a safe empty
+        // sentinel because a move cannot start and end on square zero.
+        this.bestMoves = new Uint16Array(n);
         // Play does not collect PV sequences. Avoid a second 4M-slot pointer
         // array until Analysis actually stores a sequence.
         this.moveSequences = null;
@@ -5447,7 +5454,9 @@ class TranspositionTable {
     }
 
     store(key, depth, value, flag, bestMove = null, moveSequence = null) {
-        const i = (key >>> 0) & this.mask;
+        const keyLow = key >>> 0;
+        const keyHighFlag = key < 0 ? TT_KEY_HIGH_FLAG : 0;
+        const i = keyLow & this.mask;
         const gen = this.generation;
         const slotGen = this.gens[i];
         const live = this.retainedGenerations === 0
@@ -5455,10 +5464,12 @@ class TranspositionTable {
             : slotGen !== 0 && ((gen - slotGen) >>> 0) <= this.retainedGenerations;
         const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
 
-        if (live && this.keys[i] === key) {
+        if (live && this.keys[i] === keyLow &&
+            (this.flags[i] & TT_KEY_HIGH_FLAG) === keyHighFlag) {
             if (searchContext.collectMetrics) this.stats.updatedStores++;
             // 更深 exact 不被更浅 bound 覆盖
-            if (this.depths[i] > depth && this.flags[i] === 0 && flagCode !== 0) {
+            if (this.depths[i] > depth &&
+                (this.flags[i] & TT_BOUND_FLAG_MASK) === 0 && flagCode !== 0) {
                 if (searchContext.collectMetrics) this.stats.retainedUpdates++;
                 // The matching historical entry is useful in this search; refresh
                 // its generation so it cannot expire while the current search runs.
@@ -5467,8 +5478,10 @@ class TranspositionTable {
             }
             this.depths[i] = depth;
             this.values[i] = value | 0;
-            this.flags[i] = flagCode;
-            this.bestMoves[i] = bestMove;
+            this.flags[i] = flagCode | keyHighFlag;
+            this.bestMoves[i] = bestMove === null
+                ? 0
+                : (isEncodedMove(bestMove) ? bestMove : encodeMove(bestMove.from, bestMove.to));
             if (moveSequence !== null) {
                 if (this.moveSequences === null) this.moveSequences = new Array(this.size);
                 this.moveSequences[i] = moveSequence;
@@ -5502,11 +5515,13 @@ class TranspositionTable {
         }
 
         this.gens[i] = gen;
-        this.keys[i] = key;
+        this.keys[i] = keyLow;
         this.depths[i] = depth;
         this.values[i] = value | 0;
-        this.flags[i] = flagCode;
-        this.bestMoves[i] = bestMove;
+        this.flags[i] = flagCode | keyHighFlag;
+        this.bestMoves[i] = bestMove === null
+            ? 0
+            : (isEncodedMove(bestMove) ? bestMove : encodeMove(bestMove.from, bestMove.to));
         if (moveSequence !== null) {
             if (this.moveSequences === null) this.moveSequences = new Array(this.size);
             this.moveSequences[i] = moveSequence;
@@ -5517,12 +5532,15 @@ class TranspositionTable {
     }
 
     retrieve(key) {
-        const i = (key >>> 0) & this.mask;
+        const keyLow = key >>> 0;
+        const keyHighFlag = key < 0 ? TT_KEY_HIGH_FLAG : 0;
+        const i = keyLow & this.mask;
         const slotGen = this.gens[i];
         const age = this.retainedGenerations === 0
             ? (slotGen === this.generation ? 0 : 0xffffffff)
             : (slotGen === 0 ? 0xffffffff : ((this.generation - slotGen) >>> 0));
-        if (age > this.retainedGenerations || this.keys[i] !== key) {
+        if (age > this.retainedGenerations || this.keys[i] !== keyLow ||
+            (this.flags[i] & TT_KEY_HIGH_FLAG) !== keyHighFlag) {
             if (searchContext.collectMetrics) this.stats.misses++;
             return null;
         }
@@ -5530,7 +5548,7 @@ class TranspositionTable {
             this.stats.hits++;
             if (age > 0) this.stats.historicalHits++;
         }
-        const flagCode = this.flags[i];
+        const flagCode = this.flags[i] & TT_BOUND_FLAG_MASK;
         if (searchContext.profile) {
             if (flagCode === 0) this.stats.exactHits++;
             else if (flagCode === 1) this.stats.lowerboundHits++;
@@ -5540,7 +5558,7 @@ class TranspositionTable {
         e.depth = this.depths[i];
         e.value = this.values[i];
         e.flag = TT_FLAG_NAMES[flagCode];
-        e.bestMove = this.bestMoves[i];
+        e.bestMove = this.bestMoves[i] || null;
         e.moveSequence = this.moveSequences === null ? null : this.moveSequences[i];
         return e;
     }
