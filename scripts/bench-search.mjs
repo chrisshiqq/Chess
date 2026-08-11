@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction) {
+function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStaged
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction
       }
     });
   });
@@ -230,6 +230,8 @@ const currentGenerationTtPriority = process.env.BENCH_CURRENT_GENERATION_TT_PRIO
 const reuseQsMoveBuffers = process.env.BENCH_REUSE_QS_MOVE_BUFFERS !== '0';
 const reusePackedQsCaptures = process.env.BENCH_REUSE_PACKED_QS_CAPTURES !== '0';
 const numericLeafSoA = process.env.BENCH_NUMERIC_LEAF_SOA !== '0';
+const lineOccupancyLookup = process.env.BENCH_LINE_OCCUPANCY_LOOKUP !== '0';
+const verifyLineOccupancyLookup = process.env.BENCH_VERIFY_LINE_OCCUPANCY_LOOKUP === '1';
 const metrics = process.env.BENCH_METRICS !== '0';
 const kingSafetyFastPath = process.env.BENCH_KING_SAFETY_FAST_PATH !== '0';
 const lmr = process.env.BENCH_LMR !== '0';
@@ -246,8 +248,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);

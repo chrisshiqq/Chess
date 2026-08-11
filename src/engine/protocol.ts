@@ -18,6 +18,8 @@ export interface SearchOptions {
   playerRelativeMoveScan?: boolean;
   reuseQsMoveBuffers?: boolean;
   reusePackedQsCaptures?: boolean;
+  lineOccupancyLookup?: boolean;
+  verifyLineOccupancyLookup?: boolean;
   kingSafetyFastPath?: boolean;
   lmr?: boolean;
   lmrMinDepth?: number;

@@ -7,6 +7,8 @@ export const searchContext = {
   reuseQsMoveBuffers: true,
   reusePackedQsCaptures: true,
   numericLeafSoA: true,
+  lineOccupancyLookup: true,
+  verifyLineOccupancyLookup: false,
   kingSafetyFastPath: true,
   // LMR：靠后的安静着先减深空窗搜索，fail-high 再全深回搜
   lmr: true,
@@ -40,6 +42,8 @@ export const configureSearch = ({
   reuseQsMoveBuffers = true,
   reusePackedQsCaptures = true,
   numericLeafSoA = true,
+  lineOccupancyLookup = true,
+  verifyLineOccupancyLookup = false,
   kingSafetyFastPath = true,
   lmr = true,
   lmrMinDepth = 3,
@@ -63,6 +67,8 @@ export const configureSearch = ({
   searchContext.reuseQsMoveBuffers = !!reuseQsMoveBuffers;
   searchContext.reusePackedQsCaptures = !!reusePackedQsCaptures;
   searchContext.numericLeafSoA = !!numericLeafSoA;
+  searchContext.lineOccupancyLookup = !!lineOccupancyLookup;
+  searchContext.verifyLineOccupancyLookup = !!verifyLineOccupancyLookup;
   searchContext.kingSafetyFastPath = !!kingSafetyFastPath;
   searchContext.lmr = !!lmr;
   searchContext.lmrMinDepth = Math.max(2, lmrMinDepth | 0);
