@@ -120,6 +120,19 @@ function printSummary(label, run) {
   console.log(`numericLeafMs=${Math.round(perf.fastLeafEvalMs ?? 0)}`);
   console.log(`prepareSearchInfoMs=${Math.round(perf.prepareSearchInfoMs ?? 0)}`);
 
+  const evalCacheHits = perf.staticEvalCacheHits ?? 0;
+  const evalCacheMisses = perf.staticEvalCacheMisses ?? 0;
+  const evalCacheAccesses = evalCacheHits + evalCacheMisses;
+  const evalCacheHitRate = evalCacheAccesses > 0
+    ? (evalCacheHits / evalCacheAccesses * 100).toFixed(2)
+    : '0.00';
+  console.log('evalCache:');
+  console.log(`  hits=${evalCacheHits}`);
+  console.log(`  misses=${evalCacheMisses}`);
+  console.log(`  hitRate=${evalCacheHitRate}%`);
+  console.log(`  entries=${perf.evalCacheSize ?? 0}`);
+  console.log(`  memoryMiB=${((perf.evalCacheBytes ?? 0) / 1048576).toFixed(2)}`);
+
   console.log('TT:');
   console.log(`  hits=${tt.hits}`);
   console.log(`  misses=${tt.misses}`);

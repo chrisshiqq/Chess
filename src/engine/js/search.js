@@ -5842,6 +5842,11 @@ const snapshotPerfStats = () => {
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         staticEvalCacheHits: perfStats.staticEvalCacheHits,
         staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
+        evalCacheSize: EVAL_CACHE_SIZE,
+        evalCacheBytes: evalCacheKeys.byteLength +
+            evalCacheVerificationKeys.byteLength +
+            evalCacheValues.byteLength +
+            evalCacheGenerations.byteLength,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         moveOrdering: searchContext.collectMetrics ? {
@@ -5893,10 +5898,10 @@ const EVAL_CACHE_MASK = EVAL_CACHE_SIZE - 1;
 const evalCacheKeys = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheVerificationKeys = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheValues = new Float64Array(EVAL_CACHE_SIZE);
-const evalCacheGenerations = new Uint32Array(EVAL_CACHE_SIZE);
+const evalCacheGenerations = new Uint8Array(EVAL_CACHE_SIZE);
 let evalCacheGeneration = 1;
 const clearEvalCache = () => {
-    evalCacheGeneration = (evalCacheGeneration + 1) >>> 0;
+    evalCacheGeneration = (evalCacheGeneration + 1) & 0xff;
     if (evalCacheGeneration === 0) {
         evalCacheGeneration = 1;
         evalCacheGenerations.fill(0);
@@ -6238,10 +6243,10 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
         evalCacheKeys[cacheSlot] === cacheKey &&
         evalCacheVerificationKeys[cacheSlot] === verificationKey) {
-        if (searchContext.profile) perfStats.staticEvalCacheHits++;
+        if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
         return evalCacheValues[cacheSlot];
     }
-    if (searchContext.profile) perfStats.staticEvalCacheMisses++;
+    if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
     let net;
     if (!searchContext.collectMoveSequence) {
         net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
