@@ -278,10 +278,6 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     control: [],
     protect: []
 }));
-const scratchLeafCodes = new Uint8Array(32);
-const scratchLeafSquares = new Uint8Array(32);
-const scratchLeafSlots = new Uint8Array(32);
-const scratchLeafMaterials = new Int16Array(32);
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchLeafTotals = new Float64Array(6);
@@ -342,6 +338,7 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
     const rowOccupancy = new Uint16Array(ROWS);
     const colOccupancy = new Uint16Array(COLS);
     const pieceCodes = new Uint8Array(32);
+    const pieceSquares = new Uint8Array(32);
     const materialValues = searchMaterialTable(gameStage);
     let redMaterial = 0;
     let redPosition = 0;
@@ -350,6 +347,8 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
     let redGeneralSq = -1;
     let blackGeneralSq = -1;
     let evalVerificationHash = 0;
+    let redAliveMask = 0;
+    let blackAliveMask = 0;
     squareToSlot.fill(-1);
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
@@ -364,6 +363,9 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
                 else blackGeneralSq = r * 9 + c;
             }
             pieceCodes[slot] = code;
+            pieceSquares[slot] = r * 9 + c;
+            if (code < 8) redAliveMask = (redAliveMask | (1 << slot)) >>> 0;
+            else blackAliveMask = (blackAliveMask | (1 << slot)) >>> 0;
             squareToSlot[r * 9 + c] = slot;
             squareCodes[r * 9 + c] = code;
             rowOccupancy[r] |= 1 << c;
@@ -388,6 +390,9 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
         rowOccupancy,
         colOccupancy,
         pieceCodes,
+        pieceSquares,
+        redAliveMask,
+        blackAliveMask,
         materialValues,
         redMaterial,
         redPosition,
@@ -437,6 +442,9 @@ const updatePieceStateAfterMake = (board, fromSq, toSq) => {
     else state.blackPosition += moverPositionDelta;
     if (capturedSlot >= 0) {
         const capturedCode = state.pieceCodes[capturedSlot];
+        const capturedBit = 1 << capturedSlot;
+        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
+        else state.blackAliveMask = (state.blackAliveMask & ~capturedBit) >>> 0;
         state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
@@ -449,6 +457,7 @@ const updatePieceStateAfterMake = (board, fromSq, toSq) => {
         }
     }
     mover.sq = toSq;
+    state.pieceSquares[moverSlot] = toSq;
     mover.r = SQ_ROW[toSq];
     mover.c = SQ_COL[toSq];
     state.squareToSlot[fromSq] = -1;
@@ -494,6 +503,9 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
     else state.blackPosition += moverPositionDelta;
     if (capturedSlot >= 0) {
         const capturedCode = state.pieceCodes[capturedSlot];
+        const capturedBit = 1 << capturedSlot;
+        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
+        else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
         state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
@@ -506,6 +518,7 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
         }
     }
     mover.sq = fromSq;
+    state.pieceSquares[moverSlot] = fromSq;
     mover.r = SQ_ROW[fromSq];
     mover.c = SQ_COL[fromSq];
     state.squareToSlot[fromSq] = moverSlot;
@@ -2538,14 +2551,14 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
 };
 
 // Play-only SoA relation builder. Occupied-target relations are indexed by the
-// target's stable piece-state slot (max 32), while attacker bits use compact
-// alive-piece indices so first-attacker and SEE ordering remain unchanged.
+// target and attacker relations both use stable piece-state slots (max 32).
+// Skipping holes preserves the original initial-slot attacker ordering.
 // Fast path omits QS capture packing (majority of leaf evals).
-const calculatePackedSearchLeafRelationsNumericFast = (pieceState, pieceCount) => {
+const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = scratchLeafCodes;
-    const pieceSquares = scratchLeafSquares;
+    const pieceCodes = pieceState.pieceCodes;
+    const pieceSquares = pieceState.pieceSquares;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_PLAY_ATTACK_TARGET;
@@ -2567,14 +2580,16 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, pieceCount) =
     let redMobility = 0;
     let blackMobility = 0;
 
-    for (let pi = 0; pi < pieceCount; pi++) {
-        const fromSq = pieceSquares[pi];
-        const pieceCode = pieceCodes[pi];
+    const slotCount = pieceState.records.length;
+    for (let slot = 0; slot < slotCount; slot++) {
+        const bit = 1 << slot;
+        if ((aliveMask & bit) === 0) continue;
+        const fromSq = pieceSquares[slot];
+        const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
-        const bit = 1 << pi;
         const attackBits = isRed ? redAttack : blackAttack;
         let mobilityValue = 0;
 
@@ -2815,12 +2830,12 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, pieceCount) =
 };
 
 const calculatePackedSearchLeafRelationsNumericWithCaptures = (
-    pieceState, pieceCount, capturePlayer
+    pieceState, aliveMask, capturePlayer
 ) => {
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = scratchLeafCodes;
-    const pieceSquares = scratchLeafSquares;
+    const pieceCodes = pieceState.pieceCodes;
+    const pieceSquares = pieceState.pieceSquares;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_PLAY_ATTACK_TARGET;
@@ -2850,14 +2865,16 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     let redMobility = 0;
     let blackMobility = 0;
 
-    for (let pi = 0; pi < pieceCount; pi++) {
-        const fromSq = pieceSquares[pi];
-        const pieceCode = pieceCodes[pi];
+    const slotCount = pieceState.records.length;
+    for (let slot = 0; slot < slotCount; slot++) {
+        const bit = 1 << slot;
+        if ((aliveMask & bit) === 0) continue;
+        const fromSq = pieceSquares[slot];
+        const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
-        const bit = 1 << pi;
         const attackBits = isRed ? redAttack : blackAttack;
         const recordCaptures = isRed === captureIsRed;
         let mobilityValue = 0;
@@ -3208,14 +3225,14 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
 };
 
 const calculatePackedSearchLeafRelationsNumeric = (
-    pieceState, pieceCount, capturePlayer = null
+    pieceState, aliveMask, capturePlayer = null
 ) => {
     const withCaptures = searchContext.reusePackedQsCaptures && capturePlayer != null;
     if (!searchContext.verifyLineOccupancyLookup) {
         if (withCaptures) {
-            calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, pieceCount, capturePlayer);
+            calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
         } else {
-            calculatePackedSearchLeafRelationsNumericFast(pieceState, pieceCount);
+            calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
         }
         return;
     }
@@ -3241,9 +3258,9 @@ const calculatePackedSearchLeafRelationsNumeric = (
     const requestedLookup = searchContext.lineOccupancyLookup;
     searchContext.lineOccupancyLookup = false;
     if (withCaptures) {
-        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, pieceCount, capturePlayer);
+        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
     } else {
-        calculatePackedSearchLeafRelationsNumericFast(pieceState, pieceCount);
+        calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
     }
     verifyLeafAttackBySlot.set(scratchLeafAttackBySlot);
     verifyLeafGuardBySlot.set(scratchLeafGuardBySlot);
@@ -3256,9 +3273,9 @@ const calculatePackedSearchLeafRelationsNumeric = (
 
     searchContext.lineOccupancyLookup = true;
     if (withCaptures) {
-        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, pieceCount, capturePlayer);
+        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
     } else {
-        calculatePackedSearchLeafRelationsNumericFast(pieceState, pieceCount);
+        calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
     }
     searchContext.lineOccupancyLookup = requestedLookup;
     for (let i = 0; i < 32; i++) {
@@ -3287,9 +3304,9 @@ const calculatePackedSearchLeafRelationsNumeric = (
     }
     if (!requestedLookup) {
         if (withCaptures) {
-            calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, pieceCount, capturePlayer);
+            calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
         } else {
-            calculatePackedSearchLeafRelationsNumericFast(pieceState, pieceCount);
+            calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
         }
     }
 };
@@ -6109,27 +6126,12 @@ const evaluatePlayLeafNumericLegacy = (
 const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePlayer = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
-    const records = pieceState.records;
     const stateCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
     const squareCodes = pieceState.squareCodes;
-    const leafCodes = scratchLeafCodes;
-    const leafSquares = scratchLeafSquares;
-    const leafSlots = scratchLeafSlots;
-    const leafMaterials = scratchLeafMaterials;
-    let count = 0;
-    for (let slot = 0, slotCount = records.length; slot < slotCount; slot++) {
-        const record = records[slot];
-        if (!record.alive) continue;
-        const code = stateCodes[slot];
-        leafCodes[count] = code;
-        leafSquares[count] = record.sq;
-        leafSlots[count] = slot;
-        leafMaterials[count] = materialValues[code & 7];
-        count++;
-    }
+    const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
 
-    calculatePackedSearchLeafRelationsNumeric(pieceState, count, capturePlayer);
+    calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
 
     if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = EVALUATION_PARAMETERS.check.bonus;
@@ -6139,32 +6141,34 @@ const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePl
     const redAttack = scratchRedAttack;
     let redThreat = 0;
     let blackThreat = 0;
-    for (let i = 0; i < count; i++) {
-        const targetSlot = leafSlots[i];
+    const slotCount = pieceState.records.length;
+    for (let targetSlot = 0; targetSlot < slotCount; targetSlot++) {
+        const targetBit = 1 << targetSlot;
+        if ((aliveMask & targetBit) === 0) continue;
         const attackers = attackBySlot[targetSlot] >>> 0;
         if (attackers === 0) continue;
         const firstBit = attackers & -attackers;
         const attackerIndex = 31 - Math.clz32(firstBit);
-        const targetCode = leafCodes[i];
+        const targetCode = stateCodes[targetSlot];
         let threatValue = 0;
         if ((targetCode & 7) === 1) {
             threatValue = checkBonus;
         } else {
-            const targetValue = leafMaterials[i];
+            const targetValue = materialValues[targetCode & 7];
             const guards = guardBySlot[targetSlot] >>> 0;
             if (guards === 0) {
                 threatValue = targetValue;
             } else if (attackers === (firstBit >>> 0)) {
-                const sseScore = targetValue - leafMaterials[attackerIndex];
+                const sseScore = targetValue - materialValues[stateCodes[attackerIndex] & 7];
                 if (sseScore > 0) threatValue = sseScore * 0.5;
             } else {
                 const sseScore = calculateStaticExchangeScoreNumeric(
-                    targetValue, attackers, guards, leafCodes, materialValues
+                    targetValue, attackers, guards, stateCodes, materialValues
                 );
                 if (sseScore > 0) threatValue = sseScore * 0.5;
             }
         }
-        if (leafCodes[attackerIndex] < 8) redThreat += threatValue;
+        if (stateCodes[attackerIndex] < 8) redThreat += threatValue;
         else blackThreat += threatValue;
     }
 
