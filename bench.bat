@@ -9,7 +9,7 @@ if errorlevel 1 (
 
 REM Usage: bench.bat [depth] [play^|analysis^|both] [latest^|cpuperf^|profile]
 set "DEPTH=%~1"
-if "%DEPTH%"=="" set "DEPTH=10"
+if "%DEPTH%"=="" set "DEPTH=12"
 set "MODE=%~2"
 if "%MODE%"=="" set "MODE=play"
 set "PATHMODE=%~3"

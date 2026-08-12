@@ -102,6 +102,7 @@ function printSummary(label, run) {
   const top = perf.moveOrdering?.topMoveSources || {};
   const staged = perf.stagedGeneration;
   const ks = perf.kingSafety;
+  const relations = perf.leafRelations;
   const lmr = perf.lmr;
   const pvs = perf.pvs;
   const nmp = perf.nmp;
@@ -174,6 +175,18 @@ function printSummary(label, run) {
     console.log(`  fullChecks=${ks.fullChecks}`);
     console.log(`  fastSkips=${ks.fastSkips}`);
     console.log(`  skipRate=${ks.skipRate}%`);
+    console.log(`  fullReasons=${JSON.stringify(ks.fullReasons ?? {})}`);
+  }
+
+  if (relations) {
+    console.log('leafRelations:');
+    console.log(`  calls=${relations.calls}`);
+    console.log(`  captureCalls=${relations.captureCalls}`);
+    console.log(`  relationMs=${Math.round(relations.relationMs ?? 0)}`);
+    console.log(`  tacticalMs=${Math.round(relations.tacticalMs ?? 0)}`);
+    console.log(`  piecesByType=${JSON.stringify(relations.piecesByType ?? [])}`);
+    console.log(`  attackedTargets=${relations.attackedTargets}`);
+    console.log(`  averageAttackedTargets=${relations.averageAttackedTargets}`);
   }
 
   if (lmr) {

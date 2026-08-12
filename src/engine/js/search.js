@@ -282,6 +282,7 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchLeafTotals = new Float64Array(6);
+let scratchLeafAttackedTargetMask = 0;
 const scratchSliderTargets = new Uint8Array(4);
 const verifyLeafAttackBySlot = new Uint32Array(32);
 const verifyLeafGuardBySlot = new Uint32Array(32);
@@ -538,6 +539,13 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
 };
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
+
+const countSetBits = (mask) => {
+    let value = mask >>> 0;
+    value -= (value >>> 1) & 0x55555555;
+    value = (value & 0x33333333) + ((value >>> 2) & 0x33333333);
+    return (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+};
 
 const forEachSetBit = (mask, fn) => {
     let m = mask >>> 0;
@@ -912,15 +920,17 @@ const isCheckRawFromPieceStateAfterSafeNonKingMove = (state, color, fromSq, toSq
         }
     }
 
-    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-    for (let i = 0; i < horseCheckers.length; i++) {
-        const entry = horseCheckers[i];
-        const legSq = entry >>> 7;
-        if (fromSq !== legSq) continue;
-        if (squareCodes[legSq] !== 0) continue;
-        const horseSq = entry & MOVE_TO_MASK;
-        const pieceCode = squareCodes[horseSq];
-        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
+    if (Math.abs(fromR - gr) + Math.abs(fromC - gc) === 1) {
+        const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+        for (let i = 0; i < horseCheckers.length; i++) {
+            const entry = horseCheckers[i];
+            const legSq = entry >>> 7;
+            if (fromSq !== legSq) continue;
+            if (squareCodes[legSq] !== 0) continue;
+            const horseSq = entry & MOVE_TO_MASK;
+            const pieceCode = squareCodes[horseSq];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
+        }
     }
 
     return false;
@@ -942,15 +952,21 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
             const toSq = moveToSq(move);
             const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
             // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
+            if (searchContext.collectMetrics) {
+                if (generalSq === toSq) perfStats.kingSafetyFullReasons.generalMove++;
+                else perfStats.kingSafetyFullReasons.lineOrHorse++;
+            }
             unsafe = generalSq === toSq
                 ? isCheckRawFromPieceState(pieceState, color)
                 : isCheckRawFromPieceStateAfterSafeNonKingMove(
                     pieceState, color, moveFromSq(move), toSq
                 );
         } else {
+            if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.inCheck++;
             unsafe = isCheckRawFromPieceState(pieceState, color);
         }
     } else {
+        if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.noState++;
         unsafe = isFlyingGeneral(board) || isCheckRaw(board, color);
     }
     if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
@@ -2556,6 +2572,8 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
 // Skipping holes preserves the original initial-slot attacker ordering.
 // Fast path omits QS capture packing (majority of leaf evals).
 const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
+    const profileRelations = searchContext.profile;
+    const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -2580,6 +2598,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     const blackAttack = scratchBlackAttack;
     let redMobility = 0;
     let blackMobility = 0;
+    let attackedTargetMask = 0;
 
     const slotCount = pieceState.records.length;
     for (let slot = 0; slot < slotCount; slot++) {
@@ -2588,6 +2607,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
+        if (searchContext.collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -2607,7 +2627,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         mobilityValue += baseMoveValue;
                     } else {
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
@@ -2625,7 +2648,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         mobilityValue += baseMoveValue;
                     } else {
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
@@ -2643,7 +2669,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         mobilityValue += baseMoveValue;
                     } else {
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
@@ -2663,7 +2692,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         mobilityValue += baseMoveValue;
                     } else {
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
@@ -2683,7 +2715,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         mobilityValue += baseMoveValue;
                     } else {
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
@@ -2707,7 +2742,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
                         const targetCode = squareCodes[sq];
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                     const rankControl = SEARCH_RANK_LOOKUP.rookControl[rankKey];
@@ -2746,7 +2784,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                             continue;
                         }
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                         break;
                     }
@@ -2771,7 +2812,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
                         const targetCode = squareCodes[sq];
                         const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                        }
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                     const rankControl = SEARCH_RANK_LOOKUP.cannonControl[rankKey];
@@ -2812,7 +2856,10 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                             }
                         } else {
                             const targetSlot = squareToSlot[sq];
-                            if ((targetCode < 8) !== isRed) attackBySlot[targetSlot] |= bit;
+                            if ((targetCode < 8) !== isRed) {
+                                attackedTargetMask |= 1 << targetSlot;
+                                attackBySlot[targetSlot] |= bit;
+                            }
                             else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                             break;
                         }
@@ -2828,11 +2875,19 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
+    scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+    if (searchContext.collectMetrics) {
+        perfStats.leafRelationCalls++;
+        perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
+    }
+    if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
 };
 
 const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     pieceState, aliveMask, capturePlayer
 ) => {
+    const profileRelations = searchContext.profile;
+    const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -2865,6 +2920,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     const blackAttack = scratchBlackAttack;
     let redMobility = 0;
     let blackMobility = 0;
+    let attackedTargetMask = 0;
 
     const slotCount = pieceState.records.length;
     for (let slot = 0; slot < slotCount; slot++) {
@@ -2873,6 +2929,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
+        if (searchContext.collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -2894,6 +2951,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -2922,6 +2980,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -2950,6 +3009,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -2980,6 +3040,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -3010,6 +3071,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -3044,6 +3106,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         const targetCode = squareCodes[sq];
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -3093,6 +3156,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -3128,6 +3192,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         const targetCode = squareCodes[sq];
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                             if (recordCaptures) {
                                 if (captureCounts[fromSq] === 0) {
@@ -3179,6 +3244,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         } else {
                             const targetSlot = squareToSlot[sq];
                             if ((targetCode < 8) !== isRed) {
+                                attackedTargetMask |= 1 << targetSlot;
                                 attackBySlot[targetSlot] |= bit;
                                 if (recordCaptures) {
                                     if (captureCounts[fromSq] === 0) {
@@ -3204,6 +3270,13 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
+    scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+    if (searchContext.collectMetrics) {
+        perfStats.leafRelationCalls++;
+        perfStats.leafRelationCaptureCalls++;
+        perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
+    }
+    if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
 
     const packedCaptures = scratchPackedCaptures;
     packedCaptures.length = 0;
@@ -5694,6 +5767,7 @@ let perfStats = {
     legalityChecks: 0,
     kingSafetyFullChecks: 0,
     kingSafetyFastSkips: 0,
+    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, noState: 0 },
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
@@ -5708,6 +5782,12 @@ let perfStats = {
     incrementalHashUpdates: 0,
     fastLeafEvalCount: 0,
     fastLeafEvalMs: 0,
+    leafRelationsMs: 0,
+    leafTacticalMs: 0,
+    leafRelationCalls: 0,
+    leafRelationCaptureCalls: 0,
+    leafRelationPiecesByType: new Array(8).fill(0),
+    leafAttackedTargets: 0,
     prepareCheckMs: 0,
     prepareMoveGenMs: 0,
     sortMovesCount: 0,
@@ -5750,6 +5830,7 @@ const resetPerfStats = () => {
     perfStats.legalityChecks = 0;
     perfStats.kingSafetyFullChecks = 0;
     perfStats.kingSafetyFastSkips = 0;
+    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, noState: 0 };
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
@@ -5763,6 +5844,12 @@ const resetPerfStats = () => {
     perfStats.incrementalHashUpdates = 0;
     perfStats.fastLeafEvalCount = 0;
     perfStats.fastLeafEvalMs = 0;
+    perfStats.leafRelationsMs = 0;
+    perfStats.leafTacticalMs = 0;
+    perfStats.leafRelationCalls = 0;
+    perfStats.leafRelationCaptureCalls = 0;
+    perfStats.leafRelationPiecesByType = new Array(8).fill(0);
+    perfStats.leafAttackedTargets = 0;
     perfStats.prepareCheckMs = 0;
     perfStats.prepareMoveGenMs = 0;
     perfStats.sortMovesCount = 0;
@@ -5806,6 +5893,18 @@ const snapshotPerfStats = () => {
             fastSkips: perfStats.kingSafetyFastSkips,
             skipRate: perfStats.legalityChecks
                 ? Number((perfStats.kingSafetyFastSkips / perfStats.legalityChecks * 100).toFixed(2))
+                : 0,
+            fullReasons: { ...perfStats.kingSafetyFullReasons }
+        } : null,
+        leafRelations: searchContext.collectMetrics ? {
+            calls: perfStats.leafRelationCalls,
+            captureCalls: perfStats.leafRelationCaptureCalls,
+            relationMs: perfStats.leafRelationsMs,
+            tacticalMs: perfStats.leafTacticalMs,
+            piecesByType: [...perfStats.leafRelationPiecesByType],
+            attackedTargets: perfStats.leafAttackedTargets,
+            averageAttackedTargets: perfStats.leafRelationCalls
+                ? Number((perfStats.leafAttackedTargets / perfStats.leafRelationCalls).toFixed(2))
                 : 0
         } : null,
         illegalMovesSkipped: perfStats.illegalMovesSkipped,
@@ -6158,12 +6257,13 @@ const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePl
     const redAttack = scratchRedAttack;
     let redThreat = 0;
     let blackThreat = 0;
-    const slotCount = pieceState.records.length;
-    for (let targetSlot = 0; targetSlot < slotCount; targetSlot++) {
-        const targetBit = 1 << targetSlot;
-        if ((aliveMask & targetBit) === 0) continue;
+    const tacticalStart = searchContext.profile ? performance.now() : 0;
+    let attackedTargets = scratchLeafAttackedTargetMask >>> 0;
+    while (attackedTargets !== 0) {
+        const targetBit = attackedTargets & -attackedTargets;
+        const targetSlot = 31 - Math.clz32(targetBit);
+        attackedTargets ^= targetBit;
         const attackers = attackBySlot[targetSlot] >>> 0;
-        if (attackers === 0) continue;
         const firstBit = attackers & -attackers;
         const attackerIndex = 31 - Math.clz32(firstBit);
         const targetCode = stateCodes[targetSlot];
@@ -6176,18 +6276,19 @@ const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePl
             if (guards === 0) {
                 threatValue = targetValue;
             } else if (attackers === (firstBit >>> 0)) {
-                const sseScore = targetValue - materialValues[stateCodes[attackerIndex] & 7];
-                if (sseScore > 0) threatValue = sseScore * 0.5;
+                const seeScore = targetValue - materialValues[stateCodes[attackerIndex] & 7];
+                if (seeScore > 0) threatValue = seeScore * 0.5;
             } else {
-                const sseScore = calculateStaticExchangeScoreNumeric(
+                const seeScore = calculateStaticExchangeScoreNumeric(
                     targetValue, attackers, guards, stateCodes, materialValues
                 );
-                if (sseScore > 0) threatValue = sseScore * 0.5;
+                if (seeScore > 0) threatValue = seeScore * 0.5;
             }
         }
         if (stateCodes[attackerIndex] < 8) redThreat += threatValue;
         else blackThreat += threatValue;
     }
+    if (searchContext.profile) perfStats.leafTacticalMs += performance.now() - tacticalStart;
 
     let redSafety = 0;
     let blackSafety = 0;
