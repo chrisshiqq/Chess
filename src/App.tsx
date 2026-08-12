@@ -2319,6 +2319,8 @@ const App: React.FC = () => {
         setAppScreen('lobby');
         clearRoomQuery();
         applyingRemoteRef.current = false;
+        // 与 Restart 相同：清掉上一局棋盘/历史/指示器等残留状态
+        handleRestartRef.current();
     };
 
     const prepareFreshGame = (mode: 'ai' | 'local' | 'online') => {
@@ -2464,6 +2466,11 @@ const App: React.FC = () => {
             gameOverTimerRef.current = null;
         }
         setPendingGameOver(null);
+        if (selectInspectTimerRef.current) {
+            clearTimeout(selectInspectTimerRef.current);
+            selectInspectTimerRef.current = null;
+        }
+        selectInspectIdRef.current += 1;
         
         const initialBoard = createInitialBoard();
         setBoard(initialBoard);
@@ -2477,7 +2484,7 @@ const App: React.FC = () => {
         setBoardHistory([initialBoard]);
         setMoveHistory([]);
         
-        // 清理所有指示器
+        // 清理所有指示器与动画残留
         setSelectedPos(null);
         setValidMoves([]);
         setPieceRelations(emptyPieceRelations);
@@ -2485,7 +2492,11 @@ const App: React.FC = () => {
         setCheckAlert(false);
         setHintMove(null);
         setIsReplaying(false);
+        setReplayIndex(0);
+        setReplayNotation([]);
         setFlyingPiece(null);
+        setMoveAnimation(null);
+        setRecentlyCaptured(null);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
         setIsSetupMode(false);
@@ -2493,6 +2504,7 @@ const App: React.FC = () => {
         setBlackTime(0);
         setHasStarted(false);
         setIsThinking(false);
+        setIsAutoMovePending(false);
         setGameId(prev => prev + 1);
         // 重置连续无吃子回合计数器
         setDrawMoveCounter(0);
@@ -2500,6 +2512,22 @@ const App: React.FC = () => {
         // 清除重复检测
         setPositionHistory([]);
         setRepetitionWarning(null);
+
+        // 清理分析 / Try / 搜索面板残留（结算 Rematch 与 Restart 共用）
+        setIsAnalysisMode(false);
+        setIsAnalyzing(false);
+        setAnalysisMoves([]);
+        setSelectedAnalysisMove(null);
+        setIsRetryMode(false);
+        setHasMovedInRetryMode(false);
+        setIsPreviewing(false);
+        setOriginalBoardForPreview(null);
+        setLastSearchBench(null);
+        setBestMoveSequence([]);
+        setSecondBestMoveSequence([]);
+        setBestMoveScore(0);
+        setSecondBestMoveScore(0);
+        setActiveTab('game');
         
         // 重置moveEvaluation为所有0的对象，确保Restart后显示EVALUATION UI
         setMoveEvaluation({
@@ -4434,7 +4462,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     {pendingGameOver.status === 'checkmate' ? '🏁 Checkmate!' : '🏁 Stalemate!'}
                                 </div>
                                 <div className="text-sm text-amber-100 text-center">
-                                    Game ending in 5s... Press Undo to continue
+                                    Game ending in 5s.
                                 </div>
                             </div>
                         </div>
@@ -4471,6 +4499,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     type="button"
                                     onClick={() => {
                                         if (onlineInfo) {
+                                            // leaveToLobby 内部会走与 Restart 相同的清理
                                             leaveToLobby();
                                             return;
                                         }
