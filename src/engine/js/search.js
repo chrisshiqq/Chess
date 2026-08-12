@@ -211,6 +211,7 @@ const scratchPackedCaptureCounts = new Uint8Array(REL_SQUARES);
 const scratchPackedCaptureMoves = new Uint16Array(REL_SQUARES * PACKED_CAPTURE_STRIDE);
 const scratchPackedCaptureSources = new Uint8Array(16);
 const scratchPackedCaptures = [];
+const verifyPackedCaptureOrder = [];
 let scratchPackedCaptureSourceCount = 0;
 let packedCaptureCacheKey = 0;
 let packedCaptureVerificationKey = 0;
@@ -3207,10 +3208,21 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     const packedCaptures = scratchPackedCaptures;
     packedCaptures.length = 0;
     const sourceCount = scratchPackedCaptureSourceCount;
+    // Match generateQuiescenceMoves: black scans from its own back rank toward red.
+    // QS behavior must not depend on whether static eval supplied the capture list.
+    const relativeBlackScan = searchContext.playerRelativeMoveScan && !captureIsRed;
     for (let i = 1; i < sourceCount; i++) {
         const sq = captureSources[i];
+        const sqOrder = relativeBlackScan
+            ? (ROWS - 1 - SEARCH_SQ_ROWS[sq]) * COLS + SEARCH_SQ_COLS[sq]
+            : sq;
         let j = i - 1;
-        while (j >= 0 && captureSources[j] > sq) {
+        while (j >= 0) {
+            const candidate = captureSources[j];
+            const candidateOrder = relativeBlackScan
+                ? (ROWS - 1 - SEARCH_SQ_ROWS[candidate]) * COLS + SEARCH_SQ_COLS[candidate]
+                : candidate;
+            if (candidateOrder <= sqOrder) break;
             captureSources[j + 1] = captureSources[j];
             j--;
         }
@@ -6284,6 +6296,21 @@ const copyPackedRelationCaptures = (
     if (packedCapturePlayer !== currentPlayer) return false;
     const captures = scratchPackedCaptures;
     for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
+    if (searchContext.verifyLineOccupancyLookup) {
+        generateQuiescenceMoves(board, currentPlayer, true, verifyPackedCaptureOrder);
+        if (moves.length !== verifyPackedCaptureOrder.length) {
+            throw new Error(
+                `Packed QS capture count mismatch: ${moves.length}/${verifyPackedCaptureOrder.length}`
+            );
+        }
+        for (let i = 0; i < moves.length; i++) {
+            if (moves[i] !== verifyPackedCaptureOrder[i]) {
+                throw new Error(
+                    `Packed QS capture order mismatch at ${i}: ${moves[i]}/${verifyPackedCaptureOrder[i]}`
+                );
+            }
+        }
+    }
     return true;
 };
 
