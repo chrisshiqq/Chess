@@ -347,6 +347,104 @@ const VICTORY_SOUND = generateTone(600, 0.4, 'triangle');
 const CLICK_SOUND_URI = generateTone(600, 0.05, 'square'); 
 const BOARD_HEIGHT_PX = 570; 
 
+/** 程序化 BGM 变体：慢速轻量氛围，Restart 时随机换一套 */
+type MusicVariant = {
+    chords: number[][];
+    beatDuration: number;
+    wave: OscillatorType;
+};
+
+const MUSIC_VARIANTS: MusicVariant[] = [
+    // Am – F – C – G（原版）
+    {
+        chords: [
+            [220.00, 261.63, 329.63],
+            [174.61, 220.00, 261.63],
+            [130.81, 164.81, 196.00],
+            [196.00, 246.94, 293.66],
+        ],
+        beatDuration: 0.8,
+        wave: 'triangle',
+    },
+    // C – G – Am – F
+    {
+        chords: [
+            [130.81, 164.81, 196.00],
+            [196.00, 246.94, 293.66],
+            [220.00, 261.63, 329.63],
+            [174.61, 220.00, 261.63],
+        ],
+        beatDuration: 0.85,
+        wave: 'sine',
+    },
+    // Dm – Bb – F – C
+    {
+        chords: [
+            [146.83, 174.61, 220.00],
+            [116.54, 146.83, 174.61],
+            [174.61, 220.00, 261.63],
+            [130.81, 164.81, 196.00],
+        ],
+        beatDuration: 0.9,
+        wave: 'triangle',
+    },
+    // Em – C – G – D
+    {
+        chords: [
+            [164.81, 196.00, 246.94],
+            [130.81, 164.81, 196.00],
+            [196.00, 246.94, 293.66],
+            [146.83, 185.00, 220.00],
+        ],
+        beatDuration: 0.75,
+        wave: 'sine',
+    },
+    // F – C – Dm – Am
+    {
+        chords: [
+            [174.61, 220.00, 261.63],
+            [130.81, 164.81, 196.00],
+            [146.83, 174.61, 220.00],
+            [220.00, 261.63, 329.63],
+        ],
+        beatDuration: 0.82,
+        wave: 'triangle',
+    },
+    // G – Em – C – D
+    {
+        chords: [
+            [196.00, 246.94, 293.66],
+            [164.81, 196.00, 246.94],
+            [130.81, 164.81, 196.00],
+            [146.83, 185.00, 220.00],
+        ],
+        beatDuration: 0.78,
+        wave: 'sine',
+    },
+    // Am – Dm – G – C
+    {
+        chords: [
+            [220.00, 261.63, 329.63],
+            [146.83, 174.61, 220.00],
+            [196.00, 246.94, 293.66],
+            [130.81, 164.81, 196.00],
+        ],
+        beatDuration: 0.88,
+        wave: 'triangle',
+    },
+    // C – Am – F – G
+    {
+        chords: [
+            [130.81, 164.81, 196.00],
+            [220.00, 261.63, 329.63],
+            [174.61, 220.00, 261.63],
+            [196.00, 246.94, 293.66],
+        ],
+        beatDuration: 0.8,
+        wave: 'sine',
+    },
+];
+
 const INITIAL_SUPPLY: Record<Color, Record<PieceType, number>> = {
     red: { general: 1, advisor: 2, elephant: 2, horse: 2, chariot: 2, cannon: 2, soldier: 5 },
     black: { general: 1, advisor: 2, elephant: 2, horse: 2, chariot: 2, cannon: 2, soldier: 5 }
@@ -432,6 +530,9 @@ const App: React.FC = () => {
     const [isMuted, setIsMuted] = useState<boolean>(false);
     const [isMusicEnabled, setIsMusicEnabled] = useState<boolean>(true); // 默认打开
     const [musicTrigger, setMusicTrigger] = useState<number>(0); // 用于触发音乐循环启动
+    const [musicVariant, setMusicVariant] = useState<number>(
+        () => Math.floor(Math.random() * MUSIC_VARIANTS.length)
+    );
 
     const musicRef = useRef<HTMLAudioElement | null>(null);
     const sfxRef = useRef<HTMLAudioElement | null>(null);
@@ -996,31 +1097,25 @@ const App: React.FC = () => {
         
         //console.log('🎵 Starting background music loop');
 
-        // 生成简单的背景音乐段落
+        // 按当前变体生成背景音乐段落
+        const variant = MUSIC_VARIANTS[musicVariant % MUSIC_VARIANTS.length];
         const generateMusicPass = () => {
             if (!isMusicPlayingRef.current) return 0;
             
             const currentTime = ctx.currentTime;
             let time = currentTime + 0.1;
-            const beatDuration = 0.8; // 慢速，75 BPM 左右
-
-            // 简单的和弦进行
-            const chords = [
-                [220.00, 261.63, 329.63],  // Am
-                [174.61, 220.00, 261.63],  // F
-                [130.81, 164.81, 196.00],  // C
-                [196.00, 246.94, 293.66]   // G
-            ];
+            const beatDuration = variant.beatDuration;
+            const chords = variant.chords;
 
             // 播放单个和弦
             const playChord = (chordNotes: number[], startTime: number, duration: number) => {
                 if (!isMusicPlayingRef.current) return;
                 
-                chordNotes.forEach((freq, index) => {
+                chordNotes.forEach((freq) => {
                     const osc = ctx.createOscillator();
                     const noteGain = ctx.createGain();
                     
-                    osc.type = 'triangle';
+                    osc.type = variant.wave;
                     osc.frequency.value = freq;
                     
                     // 简单的包络
@@ -1037,7 +1132,7 @@ const App: React.FC = () => {
             };
 
             // 播放4个和弦，每个和弦4拍
-            chords.forEach((chord, index) => {
+            chords.forEach((chord) => {
                 playChord(chord, time, beatDuration * 4);
                 time += beatDuration * 4;
             });
@@ -1077,7 +1172,7 @@ const App: React.FC = () => {
                 musicTimeoutRef.current = null;
             }
         };
-    }, [isMusicEnabled, hasStarted, gameOver]); // 依赖游戏状态和音乐开关
+    }, [isMusicEnabled, hasStarted, gameOver, musicVariant]); // 依赖游戏状态、音乐开关与曲目变体
 
     // Timer Logic
     useEffect(() => {
@@ -2551,6 +2646,15 @@ const App: React.FC = () => {
         const materials: PieceMaterial[] = ['wood', 'stone', 'metal', 'glass'];
         setSkin(skins[Math.floor(Math.random() * skins.length)]);
         setMaterial(materials[Math.floor(Math.random() * materials.length)]);
+
+        // 换一套 BGM 变体（尽量不与当前相同）
+        setMusicVariant((prev) => {
+            const count = MUSIC_VARIANTS.length;
+            if (count <= 1) return 0;
+            let next = Math.floor(Math.random() * (count - 1));
+            if (next >= prev) next += 1;
+            return next;
+        });
     };
     handleRestartRef.current = handleRestart;
 
