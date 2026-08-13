@@ -20,6 +20,9 @@
     "allowJs": true,
     "jsx": "react-jsx",
     "paths": {
+      "@chess-worker": [
+        "./src/worker/chess-worker-constructor.ts"
+      ],
       "@/*": [
         "./*"
       ]

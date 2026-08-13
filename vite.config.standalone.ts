@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
       },
       resolve: {
         alias: {
+          '@chess-worker': path.resolve(__dirname, 'src/worker/chess-worker-constructor-inline.ts'),
           '@': path.resolve(__dirname, '.'),
         }
       }

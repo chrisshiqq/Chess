@@ -1,28 +1,22 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ChessBoard, CELL_SIZE, BOARD_OFFSET, SKINS } from './components/ChessBoard';
+import { ChessBoard, SKINS } from './components/ChessBoard';
 import { SidePanel } from './components/CapturedPiecesPanel';
-import { ChessPiece } from './components/ChessPiece';
 import { EvaluationPanel } from './components/EvaluationPanel';
 import { 
     ArrowPathIcon, 
     BarChartIcon,
-    BookOpenIcon,
     GearIcon, 
     LightBulbIcon, 
     PlayIcon, 
     StopIcon, 
     UndoIcon, 
     SparklesIcon,
-    QuestionMarkCircleIcon,
-    MagicWandIcon,
     SpeakerWaveIcon,
-    RocketLaunchIcon,
     ChevronLeftIcon,
     ChevronRightIcon,
     FirstPageIcon,
     LastPageIcon,
-    CheckIcon,
     SaveIcon,
     LoadIcon,
     PaletteIcon,
@@ -31,16 +25,17 @@ import {
     AdjustmentsIcon,
     BoltIcon
 } from './components/Icons';
-import { ClockDisplay, FlyingPiece, formatTime } from './AppUI';
+import { ClockDisplay, FlyingPiece } from './AppUI';
 import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
-import { PeerSession, generateRoomCode } from './net/PeerSession';
+import type { PeerSession } from './net/PeerSession';
+import { generateRoomCode } from './net/roomCode';
 import type { AppScreen, ConnectionStatus, NetMessage, OnlineSessionInfo } from './net/types';
 import {
     isReplyingToOpponentCheck,
     violatesRepeatedCheckCycle,
     type PositionHistoryEntry
 } from './domain/repetition';
-import ChessWorker from './worker/chess-worker.ts?worker&inline';
+import ChessWorker from '@chess-worker';
 
 /*
 import { 
@@ -464,7 +459,7 @@ const App: React.FC = () => {
     const onlineInfoRef = useRef<OnlineSessionInfo | null>(null);
     const executeMoveRef = useRef<(move: Move, moveTurn?: Color) => Promise<boolean>>(async () => false);
     const onNetMessageRef = useRef<(msg: NetMessage) => void>(() => {});
-    const handleRestartRef = useRef<() => void>(() => {});
+    const resetGameStateRef = useRef<() => void>(() => {});
     const boardSnapshotRef = useRef<Board>(createInitialBoard());
     const moveHistorySnapshotRef = useRef<Move[]>([]);
 
@@ -785,13 +780,6 @@ const App: React.FC = () => {
         );
     }).current;
 
-    // 获取单个棋子的评估分数
-    const workerGetPieceEval = useRef((board: Board, pos: Position, turn: Color): Promise<any> => {
-        const worker = workerRef.current;
-        if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'evaluatePiece', { board, pos, turn }, 'pieceEvaluation', data => data.evaluation);
-    }).current;
-
     // 一次 worker 调用完成：合法着法 + 单子评估 + 关系（内部只跑一遍 evaluateBoard）
     const workerInspectSquare = useRef((
         board: Board,
@@ -843,47 +831,8 @@ const App: React.FC = () => {
 
 
 
-    const workerGetBestMove = useRef((board: Board, color: Color, depth: number, gameId: number, openingBookEnabled: boolean, randomness: number = 0, ply: number = 0, enableTimeLimit: boolean = true): Promise<{ bestMove: Move | null; secondMove: Move | null; moveSequence: Move[], bestMoveScore: number, secondBestMoveScore: number, allMovesWithScores: Array<{move: Move, score: number, moveSequence: Move[]}> }> => {
-        return new Promise((resolve, reject) => {
-            if (!workerRef.current) {
-                reject(new Error('Worker not initialized'));
-                return;
-            }
-
-            const handleMessage = (e: MessageEvent) => {
-                if (e.data.type === 'SEARCH_COMPLETE') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve({ 
-                        bestMove: e.data.payload.bestMove, 
-                        secondMove: e.data.payload.secondBestMove,
-                        moveSequence: e.data.payload.moveSequence || [],
-                        bestMoveScore: e.data.payload.bestMoveScore || 0,
-                        secondBestMoveScore: e.data.payload.secondBestMoveScore || 0,
-                        allMovesWithScores: e.data.payload.allMovesWithScores || []
-                    });
-                } else if (e.data.type === 'bestMove') {
-                    workerRef.current?.removeEventListener('message', handleMessage);
-                    resolve({ 
-                        bestMove: e.data.move, 
-                        secondMove: e.data.secondMove,
-                        moveSequence: e.data.moveSequence || [],
-                        bestMoveScore: e.data.bestMoveScore || 0,
-                        secondBestMoveScore: e.data.secondBestMoveScore || 0,
-                        allMovesWithScores: []
-                    });
-                }
-            };
-
-            workerRef.current.addEventListener('message', handleMessage);
-            workerRef.current.postMessage({
-                type: 'SEARCH',
-                payload: { board, turn: color, depth, randomness, ply, gameId, openingBookEnabled, enableTimeLimit, exactRootScores: false }
-            });
-        });
-    }).current;
-
-    const recreateWorker = useRef(() => {
-        // 旧 worker 将被 terminate，先丢掉主线程上的 listener 引用，避免指向已死 worker
+    const terminateWorker = useRef(() => {
+        // Termination must also release every main-thread reference to the old worker.
         if (aiSearchListenerRef.current && workerRef.current) {
             workerRef.current.removeEventListener('message', aiSearchListenerRef.current);
         }
@@ -899,7 +848,10 @@ const App: React.FC = () => {
         const previousWorker = workerRef.current;
         workerRef.current = null;
         previousWorker?.terminate();
+    }).current;
 
+    const ensureWorker = useRef(() => {
+        if (workerRef.current) return workerRef.current;
         try {
             const worker = new ChessWorker();
             workerRef.current = worker;
@@ -932,20 +884,23 @@ const App: React.FC = () => {
                     console.error('❌ Failed to import opening book data:', error);
                 }
             });
+            return worker;
         } catch (e) {
             console.error("❌ Failed to load worker:", e);
+            return null;
         }
     }).current;
 
-    // Initialize Worker - ENABLED (Inline Worker to avoid SecurityError)
+    const recreateWorker = useRef(() => {
+        terminateWorker();
+        return ensureWorker();
+    }).current;
+
+    // The lobby does not need the 64 MiB TT and 17 MiB eval cache. Keep the
+    // worker absent until a game starts, and release it when App unmounts.
     useEffect(() => {
-        recreateWorker();
-        return () => {
-            const worker = workerRef.current;
-            workerRef.current = null;
-            worker?.terminate();
-        };
-    }, [recreateWorker]);
+        return terminateWorker;
+    }, [terminateWorker]);
 
     // 发送权重到worker
     const sendWeightsToWorker = useCallback(() => {
@@ -2382,6 +2337,7 @@ const App: React.FC = () => {
             peerSessionRef.current?.send({ type: 'ready' });
             setConnectionStatus('connected');
             setLobbyStatusMessage(null);
+            ensureWorker();
             setAppScreen('game');
             setHasStarted(true);
             return;
@@ -2389,6 +2345,7 @@ const App: React.FC = () => {
         if (msg.type === 'ready') {
             setConnectionStatus('connected');
             setLobbyStatusMessage(null);
+            ensureWorker();
             setAppScreen('game');
             setHasStarted(true);
             return;
@@ -2414,12 +2371,16 @@ const App: React.FC = () => {
         setAppScreen('lobby');
         clearRoomQuery();
         applyingRemoteRef.current = false;
-        // 与 Restart 相同：清掉上一局棋盘/历史/指示器等残留状态
-        handleRestartRef.current();
+        // The lobby must not retain the engine's large TT/eval buffers.
+        terminateWorker();
+        resetGameStateRef.current();
     };
 
     const prepareFreshGame = (mode: 'ai' | 'local' | 'online') => {
-        handleRestartRef.current();
+        // Entering from the lobby creates one worker. Do not recreate an
+        // already-fresh worker and temporarily overlap two large backing stores.
+        if (mode !== 'online') ensureWorker();
+        resetGameStateRef.current();
         if (mode === 'ai') {
             setRedIsAuto(false);
             setBlackIsAuto(true);
@@ -2468,6 +2429,7 @@ const App: React.FC = () => {
         setRoomQuery(roomCode);
 
         let joinTimer: ReturnType<typeof setTimeout> | null = null;
+        const { PeerSession } = await import('./net/PeerSession');
         const session = new PeerSession(roomCode, role, {
             onOpen: () => {
                 setConnectionStatus(role === 'host' ? 'waiting' : 'connecting');
@@ -2550,11 +2512,7 @@ const App: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const handleRestart = () => {
-        // A true new game cannot reuse the previous search generation. Recreate
-        // the Worker so its TT, eval cache and any pending listeners are released.
-        recreateWorker();
-
+    const resetGameState = () => {
         // 清除游戏结束定时器
         if (gameOverTimerRef.current) {
             clearTimeout(gameOverTimerRef.current);
@@ -2656,8 +2614,13 @@ const App: React.FC = () => {
             return next;
         });
     };
-    handleRestartRef.current = handleRestart;
+    resetGameStateRef.current = resetGameState;
 
+    const handleRestart = () => {
+        // Restart inside an active game intentionally drops all search state.
+        recreateWorker();
+        resetGameState();
+    };
     const handleSwitchSide = () => {
         setPlayerColor(prev => prev === 'red' ? 'black' : 'red');
         setSelectedPos(null);
@@ -3055,7 +3018,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             const { type, color } = data;
             if (color !== panelColor) return;
             
-            const newBoard = board.map(row => [...row]);
             const newSupply = JSON.parse(JSON.stringify(setupSupply));
             
             // 检查是否有足够的棋子可以放置
@@ -3542,127 +3504,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setIsAnalyzing(false);
     };
     
-    // 为点击的着法计算其着法序列
-    const calculateMoveSequence = async (move: Move, index: number) => {
-        try {
-            let currentBoard;
-            let currentTurn;
-            
-            if (isReplaying && allReplayBoards.length > 0) {
-                // Replay模式
-                currentBoard = allReplayBoards[replayIndex];
-                currentTurn = replayIndex % 2 === 0 ? 'red' : 'black';
-            } else if (isSetupMode) {
-                // Setup模式
-                currentBoard = board;
-                currentTurn = turn;
-            } else if (isAnalysisMode) {
-                // Analysis模式
-                currentBoard = board;
-                currentTurn = turn;
-            } else {
-                return;
-            }
-            
-            // 创建应用该着法后的棋盘
-            const newBoard = JSON.parse(JSON.stringify(currentBoard)) as Board;
-            newBoard[move.to.r][move.to.c] = newBoard[move.from.r][move.from.c];
-            newBoard[move.from.r][move.from.c] = null;
-            
-            // 为这个新棋盘计算着法序列
-            const nextTurn = currentTurn === 'red' ? 'black' : 'red';
-            const config = DIFFICULTIES[difficulty];
-            const searchDepth = aiDepth - 1; // 减少深度以加快计算
-            const capturedGameId = gameId;
-            
-            const searchResult = await new Promise<{
-                moveSequence: Move[];
-            }>((resolve) => {
-                if (!workerRef.current) {
-                    resolve({ moveSequence: [] });
-                    return;
-                }
-
-                const handleWorkerMessage = (e: MessageEvent) => {
-                    if (e.data.type === 'SEARCH_COMPLETE') {
-                        workerRef.current?.removeEventListener('message', handleWorkerMessage);
-                        resolve({
-                            moveSequence: e.data.payload.moveSequence || []
-                        });
-                    } else if (e.data.type === 'bestMove') {
-                        workerRef.current?.removeEventListener('message', handleWorkerMessage);
-                        resolve({
-                            moveSequence: e.data.moveSequence || []
-                        });
-                    }
-                };
-
-                workerRef.current.addEventListener('message', handleWorkerMessage);
-                workerRef.current.postMessage({
-                    type: 'SEARCH',
-                    payload: {
-                        board: newBoard,
-                        turn: nextTurn,
-                        depth: searchDepth,
-                        randomness: config.randomness,
-                        ply: moveHistory.length + 1,
-                        gameId: capturedGameId,
-                        openingBookEnabled: openingBookEnabled,
-                        enableTimeLimit: enableTimeLimit,
-                        exactRootScores: false // 只补单条 PV，无需全根精确分
-                    }
-                });
-            });
-            
-            // 更新分析结果中的着法序列
-            setAnalysisMoves(prevMoves => 
-                prevMoves.map((item, i) => 
-                    i === index ? { ...item, moveSequence: [move, ...searchResult.moveSequence] } : item
-                )
-            );
-        } catch (error) {
-            console.error('Error calculating move sequence:', error);
-        }
-    };
-    
-    // 获取所有合法走法的辅助函数
-    const getAllValidMoves = async (board: Board, color: Color): Promise<Move[]> => {
-        const moves: Move[] = [];
-        
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const piece = board[r][c];
-                if (piece && piece.color === color) {
-                    const pieceMoves = await workerGetValidMoves(board, { r, c });
-                    moves.push(...pieceMoves.map(to => ({ from: { r, c }, to })));
-                }
-            }
-        }
-        
-        return moves;
-    };
-    
-    // 格式化移动为简单文本
-    const formatMove = (move: Move): string => {
-        const pieceTypeMap = {
-            'general': '将',
-            'advisor': '士', 
-            'elephant': '象',
-            'horse': '马',
-            'chariot': '车',
-            'cannon': '炮',
-            'soldier': '兵'
-        };
-        
-        const colMap = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
-        const rowMap = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-        
-        // 简单格式：棋子类型 + 起始位置 -> 目标位置
-        return `${colMap[move.from.c]}${rowMap[move.from.r]} -> ${colMap[move.to.c]}${rowMap[move.to.r]}`;
-    };
-
-
-    
     const startReplay = async () => {
         setIsReplaying(true);
         setActiveTab('replay'); // 切换到Replay页签
@@ -3812,65 +3653,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         
         // 增加 gameId 以重置 AI 状态
         setGameId(prev => prev + 1);
-    };
-
-    // 将单个移动转换为中文棋谱格式
-    const convertSingleMoveToNotation = (move: Move, board?: Board): string => {
-        const { from, to } = move;
-        
-        // 棋子类型中文名称
-        const pieceNames: Record<PieceType, string> = {
-            'general': '将',
-            'advisor': '士',
-            'elephant': '象',
-            'horse': '马',
-            'chariot': '车',
-            'cannon': '炮',
-            'soldier': '兵'
-        };
-        
-        // 列坐标中文名称（从右到左：1-9）
-        const columnNames = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
-        
-        // 行坐标（红方从下到上：1-5，黑方从上到下：1-5）
-        const fromRow = 10 - from.r; // 棋盘底部为1，顶部为10
-        const toRow = 10 - to.r;
-        
-        // 确定棋子类型（如果有棋盘信息）
-        let pieceType: PieceType = 'soldier'; // 默认兵
-        if (board && board[from.r] && board[from.r][from.c]) {
-            pieceType = board[from.r][from.c]!.type;
-        }
-        
-        const pieceName = pieceNames[pieceType];
-        const fromColName = columnNames[from.c];
-        const toColName = columnNames[to.c];
-        
-        // 判断移动方向
-        const isHorizontal = from.r === to.r; // 同一行
-        const isVertical = from.c === to.c;   // 同一列
-        
-        let direction = '';
-        if (isHorizontal) {
-            // 平：同一行移动
-            direction = '平';
-        } else if (isVertical) {
-            // 进或退：同一列移动
-            direction = fromRow > toRow ? '进' : '退';
-        } else {
-            // 斜向移动（马、象、士）
-            direction = fromRow > toRow ? '进' : '退';
-        }
-        
-        // 构建棋谱
-        if (isHorizontal) {
-            return `${pieceName}${fromColName}平${toColName}`;
-        } else if (isVertical) {
-            const step = Math.abs(fromRow - toRow);
-            return `${pieceName}${fromColName}${direction}${step}`;
-        } else {
-            return `${pieceName}${fromColName}${direction}${toColName}`;
-        }
     };
 
     // 将坐标移动转换为传统棋谱格式
@@ -4603,7 +4385,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     type="button"
                                     onClick={() => {
                                         if (onlineInfo) {
-                                            // leaveToLobby 内部会走与 Restart 相同的清理
+                                            // 返回大厅会重置棋局并释放 Worker，不会立即重建引擎。
                                             leaveToLobby();
                                             return;
                                         }

@@ -8,17 +8,6 @@ export function roomCodeToPeerId(roomCode: string): string {
   return `${PEER_PREFIX}${roomCode.toLowerCase()}`;
 }
 
-export function generateRoomCode(length = 6): string {
-  const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
-  let code = '';
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  for (let i = 0; i < length; i++) {
-    code += alphabet[bytes[i]! % alphabet.length];
-  }
-  return code;
-}
-
 export type PeerSessionHandlers = {
   onOpen?: () => void;
   onConnected?: () => void;
