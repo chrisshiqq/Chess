@@ -893,28 +893,56 @@ const isCheckRawFromPieceStateAfterSafeNonKingMove = (state, color, fromSq, toSq
     const toOnRank = toR === gr;
     const toOnFile = toC === gc;
 
-    if (fromOnRank || toOnRank || fromOnFile || toOnFile) {
-        for (let dir = 0, rayIndex = generalSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-            let need = false;
-            if (dir === 0) need = (fromOnRank && fromC > gc) || (toOnRank && toC > gc);
-            else if (dir === 1) need = (fromOnRank && fromC < gc) || (toOnRank && toC < gc);
-            else if (dir === 2) need = (fromOnFile && fromR > gr) || (toOnFile && toR > gr);
-            else need = (fromOnFile && fromR < gr) || (toOnFile && toR < gr);
-            if (!need) continue;
-
-            let seen = 0;
-            const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-            for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-                const pieceCode = squareCodes[SEARCH_RAY_SQUARES[rayPos]];
-                if (pieceCode === 0) continue;
-                seen++;
-                const isEnemy = (pieceCode < 8) === enemyIsRed;
-                const pieceType = pieceCode & 7;
-                if (seen === 1) {
-                    if (isEnemy && (pieceType === 2 || pieceType === 1)) return true;
-                } else {
-                    if (isEnemy && pieceType === 6) return true;
-                    break;
+    if (fromOnRank || toOnRank) {
+        const rankKey = gc * SEARCH_RANK_LOOKUP.occupancyCount + state.rowOccupancy[gr];
+        if ((fromOnRank && fromC > gc) || (toOnRank && toC > gc)) {
+            const first = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
+            if (first !== 255) {
+                let pieceCode = squareCodes[gr * COLS + first];
+                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                const second = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
+                if (second !== 255) {
+                    pieceCode = squareCodes[gr * COLS + second];
+                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                }
+            }
+        }
+        if ((fromOnRank && fromC < gc) || (toOnRank && toC < gc)) {
+            const first = SEARCH_RANK_LOOKUP.firstLow[rankKey];
+            if (first !== 255) {
+                let pieceCode = squareCodes[gr * COLS + first];
+                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                const second = SEARCH_RANK_LOOKUP.secondLow[rankKey];
+                if (second !== 255) {
+                    pieceCode = squareCodes[gr * COLS + second];
+                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                }
+            }
+        }
+    }
+    if (fromOnFile || toOnFile) {
+        const fileKey = gr * SEARCH_FILE_LOOKUP.occupancyCount + state.colOccupancy[gc];
+        if ((fromOnFile && fromR > gr) || (toOnFile && toR > gr)) {
+            const first = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
+            if (first !== 255) {
+                let pieceCode = squareCodes[first * COLS + gc];
+                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                const second = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
+                if (second !== 255) {
+                    pieceCode = squareCodes[second * COLS + gc];
+                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                }
+            }
+        }
+        if ((fromOnFile && fromR < gr) || (toOnFile && toR < gr)) {
+            const first = SEARCH_FILE_LOOKUP.firstLow[fileKey];
+            if (first !== 255) {
+                let pieceCode = squareCodes[first * COLS + gc];
+                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                const second = SEARCH_FILE_LOOKUP.secondLow[fileKey];
+                if (second !== 255) {
+                    pieceCode = squareCodes[second * COLS + gc];
+                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
                 }
             }
         }
@@ -5263,7 +5291,7 @@ const isFlyingGeneral = (board) => {
   return true;
 };
 
-// 无 boardInfo 时的快速将军检测：将位缓存 + 从将位四向射线（车/将/炮合并）
+// 搜索局面的快速将军检测：occupancy 查找车/将/炮阻塞子，再检查马和兵。
 const isCheckRawFromPieceState = (state, color) => {
     const ownIsRed = color === 'red';
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
@@ -5274,21 +5302,58 @@ const isCheckRawFromPieceState = (state, color) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    for (let dir = 0, rayIndex = generalSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-        let seen = 0;
-        const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-        for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-            const pieceCode = squareCodes[SEARCH_RAY_SQUARES[rayPos]];
-            if (pieceCode === 0) continue;
-            seen++;
-            const isEnemy = (pieceCode < 8) === enemyIsRed;
+    const rankKey = gc * SEARCH_RANK_LOOKUP.occupancyCount + state.rowOccupancy[gr];
+    const fileKey = gr * SEARCH_FILE_LOOKUP.occupancyCount + state.colOccupancy[gc];
+    let first = SEARCH_RANK_LOOKUP.firstLow[rankKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[gr * COLS + first];
+        if ((pieceCode < 8) === enemyIsRed) {
             const pieceType = pieceCode & 7;
-            if (seen === 1) {
-                if (isEnemy && (pieceType === 2 || pieceType === 1)) return true;
-            } else {
-                if (isEnemy && pieceType === 6) return true;
-                break;
-            }
+            if (pieceType === 2 || pieceType === 1) return true;
+        }
+        const second = SEARCH_RANK_LOOKUP.secondLow[rankKey];
+        if (second !== 255) {
+            pieceCode = squareCodes[gr * COLS + second];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+        }
+    }
+    first = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[gr * COLS + first];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) return true;
+        }
+        const second = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
+        if (second !== 255) {
+            pieceCode = squareCodes[gr * COLS + second];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+        }
+    }
+    first = SEARCH_FILE_LOOKUP.firstLow[fileKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[first * COLS + gc];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) return true;
+        }
+        const second = SEARCH_FILE_LOOKUP.secondLow[fileKey];
+        if (second !== 255) {
+            pieceCode = squareCodes[second * COLS + gc];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+        }
+    }
+    first = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[first * COLS + gc];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) return true;
+        }
+        const second = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
+        if (second !== 255) {
+            pieceCode = squareCodes[second * COLS + gc];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
 
@@ -5298,12 +5363,6 @@ const isCheckRawFromPieceState = (state, color) => {
         if (squareCodes[entry >>> 7] !== 0) continue;
         const pieceCode = squareCodes[entry & 127];
         if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
-    }
-
-    const advisorSquares = SEARCH_ADVISOR_DEST[ownIsRed ? 0 : 1][generalSq];
-    for (let i = 0; i < advisorSquares.length; i++) {
-        const pieceCode = squareCodes[advisorSquares[i]];
-        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 5) return true;
     }
 
     const enemyForward = enemyIsRed ? 1 : -1;
