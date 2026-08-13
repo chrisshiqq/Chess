@@ -6022,6 +6022,10 @@ const clearEvalCache = () => {
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
 const NULL_WINDOW_EPS = 1e-6;
+// True staged generation owns one move list per active alpha-beta stack level.
+// Depth always decreases on recursion, including LMR/NMP probes, so siblings
+// and re-searches can safely reuse the list after the previous call returns.
+const playStagedMoveBuffers = [];
 // 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
 
 // Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
@@ -6653,12 +6657,6 @@ const alphaBetaPlay = (
             (currentPlayer === 'red' && abBoardInfo.redIsInCheck) ||
             (currentPlayer === 'black' && abBoardInfo.blackIsInCheck);
     }
-    const terminalScore = () => {
-        const isInitiatorWinner = currentPlayer !== searchInitiator;
-        const baseScore = isInitiatorWinner ? 100000 : -100000;
-        return baseScore + (isInitiatorWinner ? d : (searchDepth - d));
-    };
-
     if (!useTrueStagedGeneration &&
         (!searchInfo.legalMoveList || searchInfo.legalMoveList.length === 0)) {
         const gameState = abBoardInfo.gameState;
@@ -6667,7 +6665,9 @@ const alphaBetaPlay = (
             const baseScore = isInitiatorWinner ? 100000 : -100000;
             return baseScore + (isInitiatorWinner ? d : (searchDepth - d));
         }
-        return terminalScore();
+        const isInitiatorWinner = currentPlayer !== searchInitiator;
+        return (isInitiatorWinner ? 100000 : -100000) +
+            (isInitiatorWinner ? d : (searchDepth - d));
     }
 
     // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
@@ -6706,13 +6706,24 @@ const alphaBetaPlay = (
         }
     }
 
-    let moves = useTrueStagedGeneration ? [] : searchInfo.legalMoveList;
+    const plyFromRoot = searchDepth - d;
+    let moves;
+    if (useTrueStagedGeneration) {
+        moves = playStagedMoveBuffers[plyFromRoot];
+        if (!moves) {
+            moves = [];
+            playStagedMoveBuffers[plyFromRoot] = moves;
+        } else {
+            moves.length = 0;
+        }
+    } else {
+        moves = searchInfo.legalMoveList;
+    }
     if (searchContext.collectMetrics && !useTrueStagedGeneration) {
         if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
         perfStats.movesGenerated[d] += moves.length;
     }
 
-    const plyFromRoot = searchDepth - d;
     const killersAtDepth = killerMoves[plyFromRoot] || [null, null];
     let stagedPlan = (!useTrueStagedGeneration && !inCheck && searchContext.stagedMovePicker)
         ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
@@ -6951,7 +6962,11 @@ const alphaBetaPlay = (
         perfStats.stagedGeneration.quietSkipped++;
     }
 
-    if (legalMovesFound === 0) return terminalScore();
+    if (legalMovesFound === 0) {
+        const isInitiatorWinner = currentPlayer !== searchInitiator;
+        return (isInitiatorWinner ? 100000 : -100000) +
+            (isInitiatorWinner ? d : (searchDepth - d));
+    }
 
     let flag;
     if (bestEval <= originalAlpha) flag = 'upperbound';
