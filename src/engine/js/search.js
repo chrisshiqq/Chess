@@ -270,7 +270,6 @@ const scratchLeafPieceSlots = Array.from({ length: 32 }, (_, pieceIndex) => ({
     positionValue: 0,
     threatValue: 0,
     safetyValue: 0,
-    tacticValue: 0,
     mobilityValue: 0,
     threat: [],
     threatenedBy: [],
@@ -601,7 +600,6 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
                 positionValue,
                 threatValue: 0,
                 safetyValue: 0,
-                tacticValue: 0,
                 mobilityValue: 0,
                 threat: [],
                 threatenedBy: [],
@@ -637,20 +635,18 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
     calculateDerivedValues(board, piecesInfo, currentPlayer, boardInfo, forSearchLeaf);
     
     // 第三步：计算总分（只计算剩余分数，基础分数已在棋盘遍历时计算）
-    let redThreat = 0, redTactic = 0, redSafety = 0, redMobility = 0;
-    let blackThreat = 0, blackTactic = 0, blackSafety = 0, blackMobility = 0;
+    let redThreat = 0, redSafety = 0, redMobility = 0;
+    let blackThreat = 0, blackSafety = 0, blackMobility = 0;
     
     for (const info of piecesInfo) {
-        const { piece, threatValue, tacticValue, safetyValue, mobilityValue } = info;
+        const { piece, threatValue, safetyValue, mobilityValue } = info;
         
         if (piece.color === 'red') {
             redThreat += threatValue;
-            redTactic += tacticValue;
             redSafety += safetyValue;
             redMobility += mobilityValue;
         } else {
             blackThreat += threatValue;
-            blackTactic += tacticValue;
             blackSafety += safetyValue;
             blackMobility += mobilityValue;
         }
@@ -661,7 +657,6 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         redMaterial * VALUE_WEIGHTS.material +
         redPosition * VALUE_WEIGHTS.position +
         redThreat * VALUE_WEIGHTS.threat +
-        redTactic * VALUE_WEIGHTS.tactic +
         redSafety * VALUE_WEIGHTS.safety +
         redMobility * VALUE_WEIGHTS.mobility; 
     
@@ -669,7 +664,6 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         blackMaterial * VALUE_WEIGHTS.material +
         blackPosition * VALUE_WEIGHTS.position +
         blackThreat * VALUE_WEIGHTS.threat +
-        blackTactic * VALUE_WEIGHTS.tactic +
         blackSafety * VALUE_WEIGHTS.safety +
         blackMobility * VALUE_WEIGHTS.mobility;
     
@@ -680,14 +674,12 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
             material: redMaterial * VALUE_WEIGHTS.material,
             position: redPosition * VALUE_WEIGHTS.position,
             threat: redThreat * VALUE_WEIGHTS.threat,
-            tactic: redTactic * VALUE_WEIGHTS.tactic,
             safety: redSafety * VALUE_WEIGHTS.safety,
             mobility: redMobility * VALUE_WEIGHTS.mobility,
             phase: outputPhase,
             weights: {
                 material: 0.4,
                 position: 0.2,
-                tactic: 0.1,
                 safety: 0.1,
                 mobility: 0.05,
                 threat: 0.15
@@ -698,14 +690,12 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
             material: blackMaterial * VALUE_WEIGHTS.material,
             position: blackPosition * VALUE_WEIGHTS.position,
             threat: blackThreat * VALUE_WEIGHTS.threat,
-            tactic: blackTactic * VALUE_WEIGHTS.tactic,
             safety: blackSafety * VALUE_WEIGHTS.safety,
             mobility: blackMobility * VALUE_WEIGHTS.mobility,
             phase: outputPhase,
             weights: {
                 material: 0.4,
                 position: 0.2,
-                tactic: 0.1,
                 safety: 0.1,
                 mobility: 0.05,
                 threat: 0.15
@@ -739,7 +729,6 @@ const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
                 positionValue: getPositionValue(piece, r, c),
                 threatValue: 0,
                 safetyValue: 0,
-                tacticValue: 0,
                 mobilityValue: 0,
                 threat: [],
                 threatenedBy: [],
@@ -1521,7 +1510,6 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
     for (const info of piecesInfo) {
         info.threatValue = 0;
         info.safetyValue = 0;
-        info.tacticValue = 0;
         // 保留机动值，因为已在收集棋子信息时计算
     }
     
@@ -2433,7 +2421,6 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
         // visiting each piece to build its packed attack and guard relations.
         info.threatValue = 0;
         info.safetyValue = 0;
-        info.tacticValue = 0;
         const fromSq = info.sq;
         const pieceCode = info.pieceCode;
         const pieceType = pieceCode & 7;
@@ -6424,7 +6411,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     }
     if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
     let net;
-    if (!searchContext.collectMoveSequence) {
+    if (searchContext.leafEvaluator === 'numeric') {
         net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
         if (searchContext.reusePackedQsCaptures && capturePlayer != null) {
             packedCaptureCacheKey = cacheKey;
@@ -6451,7 +6438,7 @@ const quiescenceMoveBuffers = [];
 const copyPackedRelationCaptures = (
     moves, currentPlayer, boardHash, searchInitiator, gameStage, board
 ) => {
-    if (!searchContext.reusePackedQsCaptures || searchContext.collectMoveSequence) return false;
+    if (!searchContext.reusePackedQsCaptures || searchContext.leafEvaluator !== 'numeric') return false;
     const pieceState = activePieceStateFor(board);
     if (!pieceState || packedCaptureGeneration !== evalCacheGeneration) return false;
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
@@ -7374,7 +7361,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
         VALUE_WEIGHTS.material,
         VALUE_WEIGHTS.position,
         VALUE_WEIGHTS.threat,
-        VALUE_WEIGHTS.tactic,
         VALUE_WEIGHTS.safety,
         VALUE_WEIGHTS.mobility
       ].join(':');
@@ -7388,6 +7374,7 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
   syncGeneralPosCache(board);
+  searchContext.leafEvaluator = exactRootScores ? 'detailed' : 'numeric';
   searchContext.collectMoveSequence = typeof collectMoveSequenceOverride === 'boolean'
     ? collectMoveSequenceOverride
     : !!exactRootScores;
@@ -7635,9 +7622,8 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   return result;
 };
 
-// Play keeps root fail-low probes as bounds; analysis re-searches every final
-// root move and retains PV data. Keeping their entry points separate prevents
-// future play-path work from silently changing analysis semantics.
+// Play keeps root fail-low probes and the numeric SoA evaluator; analysis
+// re-searches every final root move with detailed evaluation and PV data.
 const getBestMoveForPlay = (board, turn, depth, ply, enableTimeLimit) =>
   getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, false, false);
 

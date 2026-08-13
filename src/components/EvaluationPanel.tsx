@@ -7,7 +7,6 @@ interface PlayerEvaluation {
   mobility: number;
   threat: number;
   safety: number;
-  tactic: number;
 }
 
 interface EvaluationPanelProps {
@@ -35,16 +34,16 @@ export const EvaluationPanel: React.FC<EvaluationPanelProps> = ({
   // 添加空值检查和默认值处理
   const safeEvaluation = {
     pre: evaluation?.pre || { 
-      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 },
-      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 }
+      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 },
+      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 }
     },
     post: evaluation?.post || { 
-      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 },
-      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 }
+      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 },
+      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 }
     },
     diff: evaluation?.diff || { 
-      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 },
-      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0, tactic: 0 }
+      red: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 },
+      black: { total: 0, material: 0, position: 0, mobility: 0, threat: 0, safety: 0 }
     }
   };
   
@@ -92,7 +91,7 @@ export const EvaluationPanel: React.FC<EvaluationPanelProps> = ({
         {/* Score Breakdown */}
         <div className="space-y-0.5 pt-0.5">
           {/* 按指定顺序渲染评估项 */}
-          {['material', 'position', 'mobility', 'threat', 'safety', 'tactic'].map((key) => {
+          {['material', 'position', 'mobility', 'threat', 'safety'].map((key) => {
             // 确保所有值都是数字类型，添加默认值
             const preValue = Number(playerEval.pre[key as keyof PlayerEvaluation] || 0);
             const postValue = Number(playerEval.post[key as keyof PlayerEvaluation] || 0);

@@ -2,7 +2,6 @@ export const VALUE_WEIGHTS = {
   material: 1,
   position: 1,
   threat: 1,
-  tactic: 1,
   safety: 1,
   mobility: 1
 };
@@ -16,8 +15,7 @@ export const evaluatePieceInfo = (pieceInfo) => ({
   position: pieceInfo.positionValue * VALUE_WEIGHTS.position,
   mobility: pieceInfo.mobilityValue * VALUE_WEIGHTS.mobility,
   threat: pieceInfo.threatValue * VALUE_WEIGHTS.threat,
-  safety: pieceInfo.safetyValue * VALUE_WEIGHTS.safety,
-  tactic: pieceInfo.tacticValue * VALUE_WEIGHTS.tactic
+  safety: pieceInfo.safetyValue * VALUE_WEIGHTS.safety
 });
 
 export {

@@ -56,7 +56,7 @@ export type WorkerRequest =
   | { type: 'addOpeningLineFromString'; payload: { moves: string; weights?: number[] } }
   | { type: 'movesToNotation'; payload: { boardHistory: Board[]; moveHistory: Move[]; requestId: string } }
   | { type: 'notationToMoves'; payload: { notation: string | string[]; initialBoard?: WireBoard; requestId: string } }
-  | { type: 'setValueWeights'; payload: Partial<Record<'material' | 'position' | 'threat' | 'tactic' | 'safety' | 'mobility', number>> };
+  | { type: 'setValueWeights'; payload: Partial<Record<'material' | 'position' | 'threat' | 'safety' | 'mobility', number>> };
 
 export interface SearchMoveScore {
   move: Move;

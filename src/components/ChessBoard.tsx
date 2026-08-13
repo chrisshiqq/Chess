@@ -45,7 +45,6 @@ interface ChessBoardProps {
     mobility: number;
     threat: number;
     safety: number;
-    tactic: number;
   } | null;
   // 是否处于将军状态
   isCheck?: boolean;
@@ -983,27 +982,6 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
                         {pieceEval.safety.toFixed(2)}
                     </text>
                     
-                    {/* Tactic */}
-                    <text 
-                        x={tooltipX + 20} 
-                        y={tooltipY + 125} 
-                        textAnchor="start" 
-                        fill="#d1d5db" 
-                        fontSize="10" 
-                        fontWeight="bold"
-                    >
-                        Tactic:
-                    </text>
-                    <text 
-                        x={tooltipX + 145} 
-                        y={tooltipY + 125} 
-                        textAnchor="end" 
-                        fill="#6ee7b7" 
-                        fontSize="10" 
-                        fontWeight="bold"
-                    >
-                        {pieceEval.tactic.toFixed(2)}
-                    </text>
                 </g>
             );
         }

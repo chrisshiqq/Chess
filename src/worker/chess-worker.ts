@@ -33,8 +33,7 @@ const emptyPieceEvaluation = () => ({
   position: 0,
   mobility: 0,
   threat: 0,
-  safety: 0,
-  tactic: 0
+  safety: 0
 });
 
 const emptyRelations = () => ({

@@ -28,6 +28,9 @@ export const searchContext = {
   ttMaxAge: 1,
   ttReuseScope: 'default',
   ttSearchPly: 0,
+  // Leaf evaluator is independent of PV collection. Play uses numeric SoA;
+  // analysis retains the detailed object evaluator for its exact output path.
+  leafEvaluator: 'detailed',
   collectMoveSequence: true,
   /** @type {null | ((info: Record<string, unknown>) => void)} */
   reportSearchProgress: null

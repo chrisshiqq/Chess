@@ -487,7 +487,6 @@ const App: React.FC = () => {
         mobility: number;
         threat: number;
         safety: number;
-        tactic: number;
     } | null>(null);
     
     const [boardHistory, setBoardHistory] = useState<Board[]>([createInitialBoard()]);
@@ -630,7 +629,6 @@ const App: React.FC = () => {
         total: number;
         material: number;
         position: number;
-        tactic: number;
         safety: number;
         mobility: number;
         threat: number;
@@ -653,16 +651,16 @@ const App: React.FC = () => {
     // 初始化moveEvaluation为所有0的对象，确保首次游戏时显示EVALUATION UI
     const [moveEvaluation, setMoveEvaluation] = useState<MoveEvaluation>({
         pre: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         },
         post: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         },
         diff: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         }
     });
     // 缓存上一手 post 评估，供下一步作 pre，避免每步双次整盘评估
@@ -723,7 +721,6 @@ const App: React.FC = () => {
         material: 1,
         position: 1,
         threat: 1,
-        tactic: 1,
         safety: 1,
         mobility: 1
     });
@@ -2099,7 +2096,6 @@ const App: React.FC = () => {
             total: postMoveEval.red.total - preMoveEval.red.total,
             material: postMoveEval.red.material - preMoveEval.red.material,
             position: postMoveEval.red.position - preMoveEval.red.position,
-            tactic: postMoveEval.red.tactic - preMoveEval.red.tactic,
             safety: postMoveEval.red.safety - preMoveEval.red.safety,
             mobility: postMoveEval.red.mobility - preMoveEval.red.mobility,
             threat: postMoveEval.red.threat - preMoveEval.red.threat
@@ -2110,7 +2106,6 @@ const App: React.FC = () => {
             total: postMoveEval.black.total - preMoveEval.black.total,
             material: postMoveEval.black.material - preMoveEval.black.material,
             position: postMoveEval.black.position - preMoveEval.black.position,
-            tactic: postMoveEval.black.tactic - preMoveEval.black.tactic,
             safety: postMoveEval.black.safety - preMoveEval.black.safety,
             mobility: postMoveEval.black.mobility - preMoveEval.black.mobility,
             threat: postMoveEval.black.threat - preMoveEval.black.threat
@@ -2144,7 +2139,6 @@ const App: React.FC = () => {
         console.log(`- 机动性(mobility): ${redDiff.mobility.toFixed(2)}`);
         console.log(`- 安全(safety): ${redDiff.safety.toFixed(2)}`);
         console.log(`- 威胁(threat): ${redDiff.threat.toFixed(2)}`);
-        console.log(`- 战术(tactic): ${redDiff.tactic.toFixed(2)}`);
         console.log('');
         console.log(`黑方移动前总评: ${preMoveEval.black.total.toFixed(2)}`);
         console.log(`黑方移动后总评: ${postMoveEval.black.total.toFixed(2)}`);
@@ -2155,7 +2149,6 @@ const App: React.FC = () => {
         console.log(`- 机动性(mobility): ${blackDiff.mobility.toFixed(2)}`);        
         console.log(`- 安全(safety): ${blackDiff.safety.toFixed(2)}`);
         console.log(`- 威胁(threat): ${blackDiff.threat.toFixed(2)}`);
-        console.log(`- 战术(tactic): ${blackDiff.tactic.toFixed(2)}`);
         console.log('==================');
         */
         // 为了用户能更直观地看到，我们可以考虑在界面上显示这些信息
@@ -2585,16 +2578,16 @@ const App: React.FC = () => {
         // 重置moveEvaluation为所有0的对象，确保Restart后显示EVALUATION UI
         setMoveEvaluation({
             pre: {
-                red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-                black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+                red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
             },
             post: {
-                red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-                black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+                red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
             },
             diff: {
-                red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-                black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+                red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
             }
         });
         cachedBoardEvalRef.current = null;
@@ -3186,16 +3179,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     // Replay Evaluation Logic
     const [replayEvaluation, setReplayEvaluation] = useState<MoveEvaluation>({
         pre: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         },
         post: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         },
         diff: {
-            red: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 },
-            black: { total: 0, material: 0, position: 0, tactic: 0, safety: 0, mobility: 0, threat: 0 }
+            red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 }
         }
     });
 
@@ -3226,7 +3219,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: 0,
                     material: 0,
                     position: 0,
-                    tactic: 0,
                     safety: 0,
                     mobility: 0,
                     threat: 0
@@ -3236,7 +3228,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: 0,
                     material: 0,
                     position: 0,
-                    tactic: 0,
                     safety: 0,
                     mobility: 0,
                     threat: 0
@@ -3251,7 +3242,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: postEvalRed.total - 0,
                     material: postEvalRed.material - 0,
                     position: postEvalRed.position - 0,
-                    tactic: postEvalRed.tactic - 0,
                     safety: postEvalRed.safety - 0,
                     mobility: postEvalRed.mobility - 0,
                     threat: postEvalRed.threat - 0
@@ -3261,7 +3251,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: postEvalBlack.total - 0,
                     material: postEvalBlack.material - 0,
                     position: postEvalBlack.position - 0,
-                    tactic: postEvalBlack.tactic - 0,
                     safety: postEvalBlack.safety - 0,
                     mobility: postEvalBlack.mobility - 0,
                     threat: postEvalBlack.threat - 0
@@ -3288,7 +3277,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: postEvalRed.total - preEvalRed.total,
                     material: postEvalRed.material - preEvalRed.material,
                     position: postEvalRed.position - preEvalRed.position,
-                    tactic: postEvalRed.tactic - preEvalRed.tactic,
                     safety: postEvalRed.safety - preEvalRed.safety,
                     mobility: postEvalRed.mobility - preEvalRed.mobility,
                     threat: postEvalRed.threat - preEvalRed.threat
@@ -3298,7 +3286,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     total: postEvalBlack.total - preEvalBlack.total,
                     material: postEvalBlack.material - preEvalBlack.material,
                     position: postEvalBlack.position - preEvalBlack.position,
-                    tactic: postEvalBlack.tactic - preEvalBlack.tactic,
                     safety: postEvalBlack.safety - preEvalBlack.safety,
                     mobility: postEvalBlack.mobility - preEvalBlack.mobility,
                     threat: postEvalBlack.threat - preEvalBlack.threat
@@ -3474,7 +3461,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 total: 0,
                                 material: 0,
                                 position: 0,
-                                tactic: 0,
                                 safety: 0,
                                 mobility: 0,
                                 threat: 0
@@ -3483,7 +3469,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 total: 0,
                                 material: 0,
                                 position: 0,
-                                tactic: 0,
                                 safety: 0,
                                 mobility: 0,
                                 threat: 0
@@ -4669,22 +4654,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     />
                                 </div>
                                 
-                                {/* Tactic Weight */}
-                                <div className="mb-1">
-                                    <div className="flex justify-between items-center mb-1">
-                                        <span className="text-xs text-stone-400">Tactic</span>
-                                        <span className="text-xs text-stone-300 font-mono">{valueWeights.tactic.toFixed(2)}</span>
-                                    </div>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="2"
-                                        step="0.01"
-                                        value={valueWeights.tactic}
-                                        onChange={(e) => setValueWeights(prev => ({ ...prev, tactic: parseFloat(e.target.value) }))}
-                                        className="w-full h-2 bg-stone-700 rounded-lg appearance-none cursor-pointer"
-                                    />
-                                </div>
                                 
                                 {/* Safety Weight */}
                                 <div className="mb-1">
@@ -5034,7 +5003,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                                         total: 0,
                                                                                                         material: 0,
                                                                                                         position: 0,
-                                                                                                        tactic: 0,
                                                                                                         safety: 0,
                                                                                                         mobility: 0,
                                                                                                         threat: 0
@@ -5043,7 +5011,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                                         total: 0,
                                                                                                         material: 0,
                                                                                                         position: 0,
-                                                                                                        tactic: 0,
                                                                                                         safety: 0,
                                                                                                         mobility: 0,
                                                                                                         threat: 0
@@ -5167,7 +5134,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                 total: 0,
                                                                 material: 0,
                                                                 position: 0,
-                                                                tactic: 0,
                                                                 safety: 0,
                                                                 mobility: 0,
                                                                 threat: 0
@@ -5176,7 +5142,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                 total: 0,
                                                                 material: 0,
                                                                 position: 0,
-                                                                tactic: 0,
                                                                 safety: 0,
                                                                 mobility: 0,
                                                                 threat: 0
@@ -5428,7 +5393,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                                 total: 0,
                                                                                                 material: 0,
                                                                                                 position: 0,
-                                                                                                tactic: 0,
                                                                                                 safety: 0,
                                                                                                 mobility: 0,
                                                                                                 threat: 0
@@ -5437,7 +5401,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                                 total: 0,
                                                                                                 material: 0,
                                                                                                 position: 0,
-                                                                                                tactic: 0,
                                                                                                 safety: 0,
                                                                                                 mobility: 0,
                                                                                                 threat: 0
@@ -5491,7 +5454,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                             total: 0,
                                                             material: 0,
                                                             position: 0,
-                                                            tactic: 0,
                                                             safety: 0,
                                                             mobility: 0,
                                                             threat: 0
@@ -5500,7 +5462,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                             total: 0,
                                                             material: 0,
                                                             position: 0,
-                                                            tactic: 0,
                                                             safety: 0,
                                                             mobility: 0,
                                                             threat: 0
