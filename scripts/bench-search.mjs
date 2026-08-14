@@ -111,6 +111,7 @@ function printSummary(label, run) {
   console.log(`thinkingTimeMs=${payload.thinkingTime}`);
   console.log(`best=${formatMove(payload.bestMove)}`);
   console.log(`score=${payload.bestMoveScore}`);
+  console.log(`completedDepth=${payload.completedDepth ?? 0}`);
   console.log(`allMoves=${payload.allMovesWithScores?.length ?? 0}`);
   console.log(`alphaBeta=${perf.alphaBetaCalls}`);
   console.log(`legalityChecks=${perf.legalityChecks}`);
@@ -228,7 +229,15 @@ function printSummary(label, run) {
     console.log(`  quiescenceCalls=${perf.quiescenceCalls}`);
   }
 
-  return { label, wallMs, thinkingTimeMs: payload.thinkingTime, bestMove: formatMove(payload.bestMove), score: payload.bestMoveScore, perf };
+  return {
+    label,
+    wallMs,
+    thinkingTimeMs: payload.thinkingTime,
+    bestMove: formatMove(payload.bestMove),
+    score: payload.bestMoveScore,
+    completedDepth: payload.completedDepth ?? 0,
+    perf
+  };
 }
 
 const depth = Number(process.argv[2]) || 8;
