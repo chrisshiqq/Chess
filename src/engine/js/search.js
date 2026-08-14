@@ -1664,6 +1664,10 @@ const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKERS = new Array(REL_SQUARES);
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
+const SEARCH_RELATIVE_SCAN_SQUARES = [
+    new Uint8Array(REL_SQUARES),
+    new Uint8Array(REL_SQUARES)
+];
 // Play numeric safety only queries empty destinations in the opposing general's palace.
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
 const SEARCH_PLAY_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
@@ -1698,6 +1702,8 @@ const SEARCH_PLAY_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
         const c = sq % 9;
         SEARCH_SQ_ROWS[sq] = r;
         SEARCH_SQ_COLS[sq] = c;
+        SEARCH_RELATIVE_SCAN_SQUARES[0][sq] = sq;
+        SEARCH_RELATIVE_SCAN_SQUARES[1][sq] = (ROWS - 1 - r) * COLS + c;
         if (c >= 3 && c <= 5) {
             if (r <= 2) SEARCH_PLAY_ATTACK_TARGET[sq] = 2;
             else if (r >= 7) SEARCH_PLAY_ATTACK_TARGET[sq] = 1;
@@ -6472,19 +6478,18 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     moves.length = 0;
     const pieceState = activePieceStateFor(board);
     if (pieceState) {
-        const records = pieceState.records;
         const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
+        const isRed = currentPlayer === 'red';
+        const scanSquares = SEARCH_RELATIVE_SCAN_SQUARES[
+            searchContext.playerRelativeMoveScan && !isRed ? 1 : 0
+        ];
         for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
-            const scanRow = (scanSq / COLS) | 0;
-            const sq = searchContext.playerRelativeMoveScan && currentPlayer === 'black'
-                ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
-                : scanSq;
+            const sq = scanSquares[scanSq];
             const slot = squareToSlot[sq];
             if (slot < 0) continue;
-            const record = records[slot];
-            if (!record.alive || record.piece.color !== currentPlayer) continue;
+            if ((pieceCodes[slot] < 8) !== isRed) continue;
             const generated = appendSearchPseudoMovesForPiece(
                 moves, sq, pieceCodes[slot], squareCodes, capturesOnly
             );
@@ -7635,6 +7640,12 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
     ? getBestMoveForAnalysis(board, turn, depth, ply, enableTimeLimit)
     : getBestMoveForPlay(board, turn, depth, ply, enableTimeLimit);
 
+const searchTestApi = {
+  collectPackedCaptures(board, capturePlayer) {
+    return generateQuiescenceMoves(board, capturePlayer, true, []).slice();
+  }
+};
+
 export {
   checkGameState,
   evaluateBoard,
@@ -7647,6 +7658,7 @@ export {
   isValidPlacement,
   logPerfStats,
   openingBook,
+  searchTestApi,
   snapshotPerfStats,
   syncGeneralPosCache
 };
