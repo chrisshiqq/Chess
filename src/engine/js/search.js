@@ -5535,16 +5535,27 @@ const getGamePhase = () => {
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
 
-// 定长槽位 TT：TypedArray 热字段 + generation O(1) clear。
+// 定长槽位 TT：8 字节 AoS + generation O(1) clear。
 // 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
 const TT_DEFAULT_SIZE = 1 << 22; // 4194304
 const TT_DEFAULT_EVICTION_BATCH = 512; // API 兼容，定长 TT 不再批量淘汰
 const TT_FLAG_NAMES = ['exact', 'lowerbound', 'upperbound'];
-const TT_BOUND_FLAG_MASK = 0x03;
-// ttKeyFromHash() uses a signed Int32 board hash plus one side-to-move bit,
-// producing a signed 33-bit number. Store its low 32 bits in keys and retain
-// the missing sign/high bit in the otherwise unused third flag bit.
-const TT_KEY_HIGH_FLAG = 0x04;
+// word0: key16:0-15 | gen:16-23 | flag:24-25 | keyHigh:26 | depth:27-31
+// word1: value18:0-17 | move:18-31
+// 索引已用 key 低 22 位；key16 只存高 16 位，校验强度与原先满 32 位 key 相同。
+const TT_W0_KEY_MASK = 0xFFFF;
+const TT_W0_GEN_SHIFT = 16;
+const TT_W0_GEN_CLEAR = 0xFF00FFFF;
+const TT_W0_FLAG_SHIFT = 24;
+const TT_W0_KEYHIGH = 0x04000000;
+const TT_W0_DEPTH_SHIFT = 27;
+const TT_W1_VALUE_MASK = 0x3FFFF;
+const TT_W1_MOVE_SHIFT = 18;
+const TT_W1_MOVE_MASK = 0x3FFF;
+const TT_VALUE_MIN = -131072;
+const TT_VALUE_MAX = 131071;
+const TT_DEPTH_MAX = 31;
+const TT_GEN_MASK8 = 0xFF;
 
 class TranspositionTable {
     constructor(size = TT_DEFAULT_SIZE, evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
@@ -5562,14 +5573,7 @@ class TranspositionTable {
         this.occupiedApprox = 0;
         this.hasher = zobristHasher;
 
-        this.keys = new Uint32Array(n);
-        this.depths = new Uint8Array(n);
-        this.values = new Int32Array(n);
-        this.flags = new Uint8Array(n);
-        this.gens = new Uint32Array(n);
-        // Internal moves use a 14-bit from/to encoding. Zero is a safe empty
-        // sentinel because a move cannot start and end on square zero.
-        this.bestMoves = new Uint16Array(n);
+        this.data = new Uint32Array(n << 1);
         // retrieve 复用，避免每次分配；调用方须在下一次 retrieve/递归前读完字段
         this.entryScratch = {
             depth: 0,
@@ -5603,46 +5607,60 @@ class TranspositionTable {
         this.evictionBatch = Math.max(1, batch | 0);
     }
 
+    _writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move) {
+        const d = depth > TT_DEPTH_MAX ? TT_DEPTH_MAX : (depth < 0 ? 0 : depth);
+        let v = value | 0;
+        if (v > TT_VALUE_MAX) v = TT_VALUE_MAX;
+        else if (v < TT_VALUE_MIN) v = TT_VALUE_MIN;
+        this.data[base] = key16
+            | (gen << TT_W0_GEN_SHIFT)
+            | (flagCode << TT_W0_FLAG_SHIFT)
+            | (keyHigh ? TT_W0_KEYHIGH : 0)
+            | (d << TT_W0_DEPTH_SHIFT);
+        this.data[base + 1] = (v & TT_W1_VALUE_MASK) | ((move & TT_W1_MOVE_MASK) << TT_W1_MOVE_SHIFT);
+    }
+
     store(key, depth, value, flag, bestMove = null) {
         const keyLow = key >>> 0;
-        const keyHighFlag = key < 0 ? TT_KEY_HIGH_FLAG : 0;
-        const i = keyLow & this.mask;
+        const key16 = keyLow >>> 16;
+        const keyHigh = key < 0;
+        const base = (keyLow & this.mask) << 1;
+        const word0 = this.data[base];
         const gen = this.generation;
-        const slotGen = this.gens[i];
+        const slotGen = (word0 >>> TT_W0_GEN_SHIFT) & TT_GEN_MASK8;
         const live = this.retainedGenerations === 0
             ? slotGen === gen
             : slotGen !== 0 && ((gen - slotGen) >>> 0) <= this.retainedGenerations;
         const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
+        const move = bestMove === null
+            ? 0
+            : (isEncodedMove(bestMove) ? bestMove : encodeMove(bestMove.from, bestMove.to));
 
-        if (live && this.keys[i] === keyLow &&
-            (this.flags[i] & TT_KEY_HIGH_FLAG) === keyHighFlag) {
+        if (live && (word0 & TT_W0_KEY_MASK) === key16 &&
+            !!(word0 & TT_W0_KEYHIGH) === keyHigh) {
             if (searchContext.collectMetrics) this.stats.updatedStores++;
+            const slotDepth = word0 >>> TT_W0_DEPTH_SHIFT;
             // 更深 exact 不被更浅 bound 覆盖
-            if (this.depths[i] > depth &&
-                (this.flags[i] & TT_BOUND_FLAG_MASK) === 0 && flagCode !== 0) {
+            if (slotDepth > depth &&
+                ((word0 >>> TT_W0_FLAG_SHIFT) & 3) === 0 && flagCode !== 0) {
                 if (searchContext.collectMetrics) this.stats.retainedUpdates++;
                 // The matching historical entry is useful in this search; refresh
                 // its generation so it cannot expire while the current search runs.
-                this.gens[i] = gen;
+                this.data[base] = (word0 & TT_W0_GEN_CLEAR) | (gen << TT_W0_GEN_SHIFT);
                 return;
             }
-            this.depths[i] = depth;
-            this.values[i] = value | 0;
-            this.flags[i] = flagCode | keyHighFlag;
-            this.bestMoves[i] = bestMove === null
-                ? 0
-                : (isEncodedMove(bestMove) ? bestMove : encodeMove(bestMove.from, bestMove.to));
-            this.gens[i] = gen;
+            this._writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move);
             if (searchContext.collectMetrics) this.stats.stores++;
             return;
         }
 
         if (live) {
             const historicalSlot = slotGen !== gen;
+            const slotDepth = word0 >>> TT_W0_DEPTH_SHIFT;
             // Current-search entries remain depth preferred. A different-key
             // historical entry must never block the current generation.
             if ((!historicalSlot || !searchContext.currentGenerationTtPriority) &&
-                this.depths[i] > depth) {
+                slotDepth > depth) {
                 if (searchContext.collectMetrics) {
                     this.stats.retainedUpdates++;
                     this.stats.depthPreferredEvictions++;
@@ -5658,27 +5676,21 @@ class TranspositionTable {
             this.occupiedApprox++;
         }
 
-        this.gens[i] = gen;
-        this.keys[i] = keyLow;
-        this.depths[i] = depth;
-        this.values[i] = value | 0;
-        this.flags[i] = flagCode | keyHighFlag;
-        this.bestMoves[i] = bestMove === null
-            ? 0
-            : (isEncodedMove(bestMove) ? bestMove : encodeMove(bestMove.from, bestMove.to));
+        this._writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move);
         if (searchContext.collectMetrics) this.stats.stores++;
     }
 
     retrieve(key) {
         const keyLow = key >>> 0;
-        const keyHighFlag = key < 0 ? TT_KEY_HIGH_FLAG : 0;
-        const i = keyLow & this.mask;
-        const slotGen = this.gens[i];
+        const base = (keyLow & this.mask) << 1;
+        const word0 = this.data[base];
+        const slotGen = (word0 >>> TT_W0_GEN_SHIFT) & TT_GEN_MASK8;
         const age = this.retainedGenerations === 0
             ? (slotGen === this.generation ? 0 : 0xffffffff)
             : (slotGen === 0 ? 0xffffffff : ((this.generation - slotGen) >>> 0));
-        if (age > this.retainedGenerations || this.keys[i] !== keyLow ||
-            (this.flags[i] & TT_KEY_HIGH_FLAG) !== keyHighFlag) {
+        if (age > this.retainedGenerations ||
+            (word0 & TT_W0_KEY_MASK) !== (keyLow >>> 16) ||
+            !!(word0 & TT_W0_KEYHIGH) !== (key < 0)) {
             if (searchContext.collectMetrics) this.stats.misses++;
             return null;
         }
@@ -5686,17 +5698,18 @@ class TranspositionTable {
             this.stats.hits++;
             if (age > 0) this.stats.historicalHits++;
         }
-        const flagCode = this.flags[i] & TT_BOUND_FLAG_MASK;
+        const flagCode = (word0 >>> TT_W0_FLAG_SHIFT) & 3;
         if (searchContext.profile) {
             if (flagCode === 0) this.stats.exactHits++;
             else if (flagCode === 1) this.stats.lowerboundHits++;
             else this.stats.upperboundHits++;
         }
+        const word1 = this.data[base + 1];
         const e = this.entryScratch;
-        e.depth = this.depths[i];
-        e.value = this.values[i];
+        e.depth = word0 >>> TT_W0_DEPTH_SHIFT;
+        e.value = (word1 << 14) >> 14;
         e.flag = TT_FLAG_NAMES[flagCode];
-        e.bestMove = this.bestMoves[i] || null;
+        e.bestMove = (word1 >>> TT_W1_MOVE_SHIFT) || null;
         return e;
     }
 
@@ -5706,10 +5719,10 @@ class TranspositionTable {
             reuseScope === this.reuseScope &&
             this.lastSearchPly != null &&
             searchPly === this.lastSearchPly + 2;
-        this.generation = (this.generation + 1) >>> 0;
+        this.generation = (this.generation + 1) & TT_GEN_MASK8;
         if (this.generation === 0) {
             this.generation = 1;
-            this.gens.fill(0);
+            this.data.fill(0);
             this.occupiedApprox = 0;
         }
         this.retainedGenerations = canRetain ? Math.max(1, maxAge | 0) : 0;
@@ -7039,7 +7052,7 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false) => {
+const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false) => {
   const timeLimit = 5000;
 
   // First try to get move from opening book
@@ -7322,18 +7335,6 @@ const getBestMoveInternal = (board, turn, depth = 8, ply = 0, enableTimeLimit = 
   activeSearchPieceState = null;
   return result;
 };
-
-// 对弈：根 fail-low 不回搜。分析：同一热路径，最后一层全根展开，PV 从 TT 回放。
-const getBestMoveForPlay = (board, turn, depth, ply, enableTimeLimit) =>
-  getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, false);
-
-const getBestMoveForAnalysis = (board, turn, depth, ply, enableTimeLimit) =>
-  getBestMoveInternal(board, turn, depth, ply, enableTimeLimit, true);
-
-const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false) =>
-  exactRootScores
-    ? getBestMoveForAnalysis(board, turn, depth, ply, enableTimeLimit)
-    : getBestMoveForPlay(board, turn, depth, ply, enableTimeLimit);
 
 const searchTestApi = {
   collectPackedCaptures(board, capturePlayer) {
