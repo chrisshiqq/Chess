@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch) {
+function runSearch(depth, exactRootScores, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStaged
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction
       }
     });
   });
@@ -169,7 +169,6 @@ function printSummary(label, run) {
 
   if (staged) {
     console.log('stagedGen:');
-    console.log(`  enabled=${staged.enabled}`);
     console.log(`  nodes=${staged.nodes}`);
     console.log(`  stages=${JSON.stringify(staged.stages)}`);
     console.log(`  generated=${JSON.stringify(staged.generated)}`);
@@ -179,7 +178,6 @@ function printSummary(label, run) {
 
   if (ks) {
     console.log('kingSafety:');
-    console.log(`  fastPath=${ks.fastPathEnabled}`);
     console.log(`  fullChecks=${ks.fullChecks}`);
     console.log(`  fastSkips=${ks.fastSkips}`);
     console.log(`  skipRate=${ks.skipRate}%`);
@@ -199,7 +197,6 @@ function printSummary(label, run) {
 
   if (lmr) {
     console.log('lmr:');
-    console.log(`  enabled=${lmr.enabled}`);
     console.log(`  minDepth=${lmr.minDepth}`);
     console.log(`  minMove=${lmr.minMove}`);
     console.log(`  attempts=${lmr.attempts}`);
@@ -209,7 +206,6 @@ function printSummary(label, run) {
 
   if (pvs) {
     console.log('pvs:');
-    console.log(`  enabled=${pvs.enabled}`);
     console.log(`  attempts=${pvs.attempts}`);
     console.log(`  reSearches=${pvs.reSearches}`);
     console.log(`  reSearchRate=${pvs.reSearchRate}%`);
@@ -217,7 +213,6 @@ function printSummary(label, run) {
 
   if (nmp) {
     console.log('nmp:');
-    console.log(`  enabled=${nmp.enabled}`);
     console.log(`  minDepth=${nmp.minDepth}`);
     console.log(`  reduction=${nmp.reduction}`);
     console.log(`  attempts=${nmp.attempts}`);
@@ -265,24 +260,10 @@ if (pathMode === 'cpuperf' && process.env.BENCH_CPU_PROF_CHILD !== '1') {
 }
 
 const profile = pathMode === 'profile';
-const stagedMovePicker = process.env.BENCH_STAGED_MOVE_PICKER !== '0';
-const trueStagedGeneration = process.env.BENCH_TRUE_STAGED_GENERATION !== '0';
-const playerRelativeMoveScan = process.env.BENCH_PLAYER_RELATIVE_MOVE_SCAN !== '0';
-const currentGenerationTtPriority = process.env.BENCH_CURRENT_GENERATION_TT_PRIORITY !== '0';
-const reuseQsMoveBuffers = process.env.BENCH_REUSE_QS_MOVE_BUFFERS !== '0';
-const reusePackedQsCaptures = process.env.BENCH_REUSE_PACKED_QS_CAPTURES !== '0';
-const numericLeafSoA = process.env.BENCH_NUMERIC_LEAF_SOA !== '0';
-const lineOccupancyLookup = process.env.BENCH_LINE_OCCUPANCY_LOOKUP !== '0';
-const verifyLineOccupancyLookup = process.env.BENCH_VERIFY_LINE_OCCUPANCY_LOOKUP === '1';
 const metrics = process.env.BENCH_METRICS !== '0';
-const kingSafetyFastPath = process.env.BENCH_KING_SAFETY_FAST_PATH !== '0';
-const lmr = process.env.BENCH_LMR !== '0';
 const lmrMinMove = Number(process.env.BENCH_LMR_MIN_MOVE ?? 5);
-const internalPvs = process.env.BENCH_INTERNAL_PVS !== '0';
-const nmp = process.env.BENCH_NMP !== '0';
 const nmpMinDepth = Number(process.env.BENCH_NMP_MIN_DEPTH ?? 3);
 const nmpReduction = Number(process.env.BENCH_NMP_REDUCTION ?? 2);
-const analysisReusePlaySearch = process.env.BENCH_ANALYSIS_REUSE_PLAY_SEARCH !== '0';
 const jobs = [];
 if (mode === 'play' || mode === 'both') jobs.push({ label: 'play', exact: false });
 if (mode === 'analysis' || mode === 'both') jobs.push({ label: 'analysis', exact: true });
@@ -291,8 +272,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);
