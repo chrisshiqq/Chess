@@ -1902,8 +1902,8 @@ const App: React.FC = () => {
             const searchDepth = playDepth;
             console.log('AI config:', { ...config, depth: searchDepth }, 'gameId:', capturedGameId);
 
-            // 调用通用的搜索和执行走法函数，为AI走棋添加1秒延迟，使用Setting面板中的TimeLimit开关设置
-            const cleanup = searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 1000, enableTimeLimit);
+            // 调用通用的搜索和执行走法函数，为AI走棋添加0.1秒延迟，使用Setting面板中的TimeLimit开关设置
+            const cleanup = searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 100, enableTimeLimit);
 
             return () => {
                 cleanup();
