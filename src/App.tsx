@@ -497,6 +497,9 @@ const App: React.FC = () => {
     const [pendingGameOver, setPendingGameOver] = useState<GameStatusResult | null>(null);
     const gameOverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const moveAnimActiveRef = useRef(false);
+    const pendingMoveEvalRef = useRef<MoveEvaluation | null>(null);
+    const moveEvalGenRef = useRef(0);
 
     const [hintMove, setHintMove] = useState<Move | null>(null);
     const [redIsAuto, setRedIsAuto] = useState<boolean>(false);
@@ -625,6 +628,22 @@ const App: React.FC = () => {
     const [isPreviewing, setIsPreviewing] = useState<boolean>(false);
     // Analysis模式状态
     const [isAnalysisMode, setIsAnalysisMode] = useState<boolean>(false);
+
+    useEffect(() => {
+        const autoTurn = turn === 'red' ? redIsAuto : blackIsAuto;
+        if (!autoTurn) return;
+        setAnalysisMoves([]);
+        setSelectedAnalysisMove(null);
+        setIsAnalyzing(false);
+        setIsPreviewing(false);
+        setOriginalBoardForPreview(null);
+    }, [turn, redIsAuto, blackIsAuto]);
+
+    useEffect(() => {
+        const autoTurn = turn === 'red' ? redIsAuto : blackIsAuto;
+        if (!autoTurn || !isAnalysisMode || analysisMoves.length > 0) return;
+        setIsAnalysisMode(false);
+    }, [turn, redIsAuto, blackIsAuto, isAnalysisMode, analysisMoves.length]);
     // 修改moveEvaluation状态结构，存储走棋前后的完整分数数据，支持红黑双方
     interface PlayerEvaluation {
         total: number;
@@ -2061,6 +2080,9 @@ const App: React.FC = () => {
         if (animationTimeoutRef.current) {
             clearTimeout(animationTimeoutRef.current);
         }
+        const evalGen = ++moveEvalGenRef.current;
+        moveAnimActiveRef.current = true;
+        pendingMoveEvalRef.current = null;
         animationTimeoutRef.current = setTimeout(() => {
             if (hasCapture) {
                 playCaptureSound();
@@ -2068,6 +2090,11 @@ const App: React.FC = () => {
                 playMoveSound();
             }
             setMoveAnimation(null);
+            moveAnimActiveRef.current = false;
+            if (pendingMoveEvalRef.current) {
+                setMoveEvaluation(pendingMoveEvalRef.current);
+                pendingMoveEvalRef.current = null;
+            }
         }, 300);
         
         // 在棋盘状态更新后设置最近被吃的棋子
@@ -2127,7 +2154,14 @@ const App: React.FC = () => {
                 black: blackDiff
             }
         };
-        setMoveEvaluation(evaluationData);
+        if (evalGen !== moveEvalGenRef.current) {
+            return true;
+        }
+        if (moveAnimActiveRef.current) {
+            pendingMoveEvalRef.current = evaluationData;
+        } else {
+            setMoveEvaluation(evaluationData);
+        }
         /*
         // 打印走棋评估结果
         console.log('=== 走棋评估结果 ===');
@@ -2163,7 +2197,7 @@ const App: React.FC = () => {
     };
     executeMoveRef.current = executeMove;
 
-    const handlePieceSelect = (pos: Position) => {
+    const handlePieceSelect = useCallback((pos: Position) => {
         if (selectedPos?.r === pos.r && selectedPos?.c === pos.c) {
             selectInspectIdRef.current += 1;
             if (selectInspectTimerRef.current) {
@@ -2177,7 +2211,7 @@ const App: React.FC = () => {
             return;
         }
 
-        const currentBoard = isReplaying ? allReplayBoards[replayIndex] : board;
+        const currentBoard = isReplaying ? (boardHistory[replayIndex] || board) : board;
         const piece = currentBoard[pos.r][pos.c];
         const currentTurn = isSetupMode
             ? turn
@@ -2227,9 +2261,9 @@ const App: React.FC = () => {
                 setPieceRelations(emptyPieceRelations);
                 setSelectedPieceEval(null);
             });
-    };
+    }, [selectedPos, isReplaying, boardHistory, replayIndex, board, isSetupMode, turn, onlineInfo]);
 
-    const handleMove = async (to: Position) => {
+    const handleMove = useCallback(async (to: Position) => {
         //console.log('handleMove called with to:', to);
         //console.log('handleMove: selectedPos:', selectedPos, 'isThinking:', isThinking);
         
@@ -2258,14 +2292,14 @@ const App: React.FC = () => {
             const from = selectedPos;
             const ply = moveHistory.length;
             const moveTurn = turn;
-            const applied = await executeMove({ from, to }, moveTurn);
+            const applied = await executeMoveRef.current({ from, to }, moveTurn);
             if (applied && onlineInfo && !applyingRemoteRef.current) {
                 peerSessionRef.current?.send({ type: 'move', from, to, ply });
             }
         } else {
             console.log('handleMove: invalid move, not executing');
         }
-    };
+    }, [selectedPos, onlineInfo, turn, board, validMoves, moveHistory]);
 
     const clearRoomQuery = () => {
         const url = new URL(window.location.href);
@@ -2936,13 +2970,13 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         e.target.value = '';
     };
 
-    const handleDragStart = (e: React.DragEvent, data: any) => {
+    const handleDragStart = useCallback((e: React.DragEvent, data: any) => {
         e.stopPropagation();
         e.dataTransfer.setData('text/plain', JSON.stringify(data));
         e.dataTransfer.effectAllowed = 'move';
-    };
+    }, []);
 
-    const handleDropOnBoard = async (e: React.DragEvent, toPos: Position) => {
+    const handleDropOnBoard = useCallback(async (e: React.DragEvent, toPos: Position) => {
         e.preventDefault();
         const dataStr = e.dataTransfer.getData('text/plain');
         if (!dataStr) return;
@@ -2974,10 +3008,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setBoard(newBoard);
         setSetupSupply(newSupply);
         playMoveSound();
-    };
+    }, [board, setupSupply]);
     
     // 处理棋盘上的右键点击事件，用于在Setup模式下将棋子放回Capture Panel
-    const handleRightClickOnBoard = (pos: Position) => {
+    const handleRightClickOnBoard = useCallback((pos: Position) => {
         if (!isSetupMode) return;
         
         const newBoard = board.map(row => [...row]);
@@ -2994,7 +3028,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setBoard(newBoard);
         setSetupSupply(newSupply);
         playMoveSound();
-    };
+    }, [isSetupMode, board, setupSupply]);
 
     const handleDropOnPanel = (e: React.DragEvent, panelColor: Color) => {
         e.preventDefault();
@@ -3928,6 +3962,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const currentTurn = useMemo(() => {
         return isReplaying ? (replayIndex % 2 === 0 ? 'red' : 'black') : turn;
     }, [isReplaying, replayIndex, turn]);
+    const isAutoTurn = (isReplaying ? currentTurn : turn) === 'red' ? redIsAuto : blackIsAuto;
     
     const displayLastMove = isReplaying 
         ? (replayIndex > 0 ? moveHistory[replayIndex - 1] : null)
@@ -4861,14 +4896,20 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     <span className="text-xs">Try</span>
                                 </button>
                                 
-                                {/* Analysis按钮 - 分析当前局面并显示推荐着法 */}
-                                <button 
+                                {/* Analysis按钮 - 仅 Manual 行棋时显示 */}
+                                {!isAutoTurn && <button 
                                     onClick={() => {
-                                        // 切换Analysis模式
-                                        setIsAnalysisMode(!isAnalysisMode);
-                                        
-                                        if (!isAnalysisMode) {
+                                        if (isAnalysisMode) {
+                                            setAnalysisMoves([]);
+                                            setSelectedAnalysisMove(null);
+                                            setIsPreviewing(false);
+                                            setOriginalBoardForPreview(null);
+                                            setIsAnalysisMode(false);
+                                            return;
+                                        }
+                                        {
                                             // 进入Analysis模式，触发分析
+                                            setIsAnalysisMode(true);
                                             setIsThinking(true);
                                             
                                             // 创建一个新的游戏ID，确保不会处理旧的AI响应
@@ -4939,16 +4980,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             }, DIFFICULTIES[difficulty].timeLimit + 1000);
                                         }
                                     }} 
-                                    disabled={(redIsAuto || blackIsAuto) || isThinking || !!gameOver}
+                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
                                     style={getButtonStyle()}
                                     className={`px-3 py-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-blue-500 ring-2 ring-blue-500/30' : ''}`}
                                 >
                                     <BarChartIcon className="w-4 h-4" />
                                     <span className="text-xs">Analysis</span>
-                                </button>
+                                </button>}
                                 
                                 {/* 着法序列棋谱控件 - 与Replay模式完全一致 (Analysis模式下显示，或者在Game模式下搜索完成后显示) */}
-                                {isAnalysisMode && (
+                                {isAnalysisMode && (analysisMoves.length > 0 || isThinking) && (
                                     <div className="col-span-2 mt-2">
                                         {/* 所有着法序列 - 与Replay模式完全一致 */}
                                         {analysisMoves.length > 0 ? (

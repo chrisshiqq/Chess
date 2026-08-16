@@ -321,7 +321,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         stroke={config.stroke} 
                         strokeWidth={isDark ? 1 : 3} 
                         className="transition-all duration-300"
-                        filter="blur(0.5px)"
                     />
                     
                     {/* 玻璃高光效果 */}
@@ -332,7 +331,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         ry={r * 0.25} 
                         fill="rgba(255, 255, 255, 0.7)" 
                         transform="rotate(-20)"
-                        filter="blur(2px)"
                     />
                     
                     {/* 玻璃边缘高光 */}
@@ -341,10 +339,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         stroke="rgba(255, 255, 255, 0.9)" 
                         strokeWidth="2" 
                         fill="none" 
-                        filter="blur(1px)"
                     />
-                    
-
                     
                     {/* 玻璃纹理效果 */}
                     <ellipse 
@@ -354,7 +349,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         ry={r * 0.15} 
                         fill="rgba(255, 255, 255, 0.2)" 
                         transform="rotate(25)"
-                        filter="blur(3px)"
                     />
                 </>
             ) : material === 'stone' ? (
