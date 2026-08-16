@@ -31,7 +31,6 @@ export interface SearchOptions {
   preserveTtAcrossSearches?: boolean;
   currentGenerationTtPriority?: boolean;
   ttMaxAge?: number;
-  collectMoveSequence?: boolean;
 }
 
 export type WorkerRequest =

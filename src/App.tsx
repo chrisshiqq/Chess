@@ -608,7 +608,8 @@ const App: React.FC = () => {
     const aiSearchCleanupRef = useRef<(() => void) | null>(null);
     const aiSearchAbortRef = useRef<{ gameId: number; aborted: boolean } | null>(null);
 
-    const [aiDepth, setAiDepth] = useState<number>(10);
+    const [playDepth, setPlayDepth] = useState<number>(10);
+    const [analysisDepth, setAnalysisDepth] = useState<number>(8);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
     const [bestMoveSequence, setBestMoveSequence] = useState<Move[]>([]);
     const [secondBestMoveSequence, setSecondBestMoveSequence] = useState<Move[]>([]);
@@ -771,7 +772,7 @@ const App: React.FC = () => {
         return requestWorker(
             worker,
             'evaluateBoard',
-            { board, turn, isReplay, depth: aiDepth },
+            { board, turn, isReplay, depth: playDepth },
             'detailedEvaluation',
             data => data.evaluation
         );
@@ -1837,7 +1838,7 @@ const App: React.FC = () => {
                 sinceProgressMs: sinceProgress,
                 isThinking: true,
                 turn,
-                aiDepth,
+                playDepth,
                 enableTimeLimit,
                 hint: sinceProgress >= 8000 && dbg.phase === 'posted'
                     ? '已 post SEARCH 但未收到 SEARCH_STARTED：Worker 可能未跑/被阻塞/监听器丢失'
@@ -1854,7 +1855,7 @@ const App: React.FC = () => {
             ...aiSearchDebugRef.current,
             isThinking: true,
             turn,
-            aiDepth,
+            playDepth,
             enableTimeLimit,
             now: Date.now()
         });
@@ -1862,7 +1863,7 @@ const App: React.FC = () => {
             window.clearInterval(tickId);
             window.clearInterval(watchId);
         };
-    }, [isThinking, turn, aiDepth, enableTimeLimit]);
+    }, [isThinking, turn, playDepth, enableTimeLimit]);
 
     // AI Turn Logic
     useEffect(() => {
@@ -1877,7 +1878,7 @@ const App: React.FC = () => {
             const capturedGameId = gameId;
             const config = DIFFICULTIES[difficulty];
             // 使用用户设置的AI深度，覆盖难度级别的默认深度
-            const searchDepth = aiDepth;
+            const searchDepth = playDepth;
             console.log('AI config:', { ...config, depth: searchDepth }, 'gameId:', capturedGameId);
 
             // 调用通用的搜索和执行走法函数，为AI走棋添加1秒延迟，使用Setting面板中的TimeLimit开关设置
@@ -2022,7 +2023,7 @@ const App: React.FC = () => {
             
             if (!isCheck && !isThreat && !completedLongCheckCycle) {
                 // 调用游戏结束处理函数
-                handleGameOver('draw', null, 'Position repeated 4 times — draw!');
+                handleGameOver('draw', null, 'REPETITION!');
             } else if (completedLongCheckCycle) {
                 console.log('⚠️ 长将循环已完成3次，等待将军方下一回合变招');
             }
@@ -3348,7 +3349,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             
             // 模拟调用Game模式的搜索流程，直接向Worker发送SEARCH消息
             const config = DIFFICULTIES[difficulty];
-            const searchDepth = aiDepth; // 使用aiDepth作为搜索深度
+            const searchDepth = analysisDepth;
             const capturedGameId = gameId;
             
             // 使用与searchAndExecuteMove相同的方式向Worker发送SEARCH消息
@@ -4575,21 +4576,38 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             <div className="flex items-center justify-between mb-3">
                                 <div className="flex items-center gap-2">
                                     <AdjustmentsIcon className="w-5 h-5 text-amber-400" />
-                                    <span className="text-xs font-semibold text-stone-300 uppercase tracking-wide">AI Depth</span>
+                                    <span className="text-xs font-semibold text-stone-300 uppercase tracking-wide">Search Depth</span>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <select
-                                    value={aiDepth}
-                                    onChange={(e) => setAiDepth(parseInt(e.target.value))}
-                                    className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
-                                >
-                                    {[8, 9, 10, 11, 12].map((depth) => (
-                                        <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
-                                            Depth {depth}
-                                        </option>
-                                    ))}
-                                </select>
+                            <div className="flex flex-col gap-2">
+                                <label className="flex items-center gap-2">
+                                    <span className="w-16 shrink-0 text-xs text-stone-400">Play</span>
+                                    <select
+                                        value={playDepth}
+                                        onChange={(e) => setPlayDepth(parseInt(e.target.value))}
+                                        className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
+                                    >
+                                        {[8, 9, 10, 11, 12].map((depth) => (
+                                            <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
+                                                Depth {depth}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="flex items-center gap-2">
+                                    <span className="w-16 shrink-0 text-xs text-stone-400">Analysis</span>
+                                    <select
+                                        value={analysisDepth}
+                                        onChange={(e) => setAnalysisDepth(parseInt(e.target.value))}
+                                        className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
+                                    >
+                                        {[6, 7, 8, 9, 10].map((depth) => (
+                                            <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
+                                                Depth {depth}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
                             </div>
                         </div>
 
@@ -4904,7 +4922,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     payload: { 
                                                         board, 
                                                         turn: currentTurn, 
-                                                        depth: aiDepth, 
+                                                        depth: analysisDepth, 
                                                         randomness: DIFFICULTIES[difficulty].randomness,
                                                         ply: 0,
                                                         gameId: newGameId,
@@ -5054,8 +5072,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         <div className="space-y-1">
                                             <div>
                                                 Depth: {isThinking
-                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || aiDepth}`
-                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? aiDepth}`}
+                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || playDepth}`
+                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? playDepth}`}
                                             </div>
                                             <div>
                                                 Time: {isThinking

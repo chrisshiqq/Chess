@@ -55,7 +55,7 @@ function makeInitialBoard() {
   return board;
 }
 
-function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction) {
+function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerPath, { type: 'module' });
     const started = Date.now();
@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, stagedMovePicker, trueStaged
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction
+        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch
       }
     });
   });
@@ -113,6 +113,13 @@ function printSummary(label, run) {
   console.log(`score=${payload.bestMoveScore}`);
   console.log(`completedDepth=${payload.completedDepth ?? 0}`);
   console.log(`allMoves=${payload.allMovesWithScores?.length ?? 0}`);
+  const scoredMoves = payload.allMovesWithScores || [];
+  if (scoredMoves.length) {
+    const withPv = scoredMoves.filter((item) => (item.moveSequence || []).length > 1).length;
+    const topPv = (scoredMoves[0]?.moveSequence || []).map((move) => formatMove(move)).slice(0, 6);
+    console.log(`rootPvMoves=${withPv}/${scoredMoves.length}`);
+    console.log(`topPv=${topPv.join(' | ') || 'empty'}`);
+  }
   console.log(`alphaBeta=${perf.alphaBetaCalls}`);
   console.log(`legalityChecks=${perf.legalityChecks}`);
   console.log(`legalSearched=${perf.legalMovesSearched}`);
@@ -275,6 +282,7 @@ const internalPvs = process.env.BENCH_INTERNAL_PVS !== '0';
 const nmp = process.env.BENCH_NMP !== '0';
 const nmpMinDepth = Number(process.env.BENCH_NMP_MIN_DEPTH ?? 3);
 const nmpReduction = Number(process.env.BENCH_NMP_REDUCTION ?? 2);
+const analysisReusePlaySearch = process.env.BENCH_ANALYSIS_REUSE_PLAY_SEARCH !== '0';
 const jobs = [];
 if (mode === 'play' || mode === 'both') jobs.push({ label: 'play', exact: false });
 if (mode === 'analysis' || mode === 'both') jobs.push({ label: 'analysis', exact: true });
@@ -283,8 +291,8 @@ if (!jobs.length) throw new Error(`Unknown mode: ${mode}`);
 const results = [];
 for (const job of jobs) {
   console.log(`\n=== Bench depth=${depth} ${job.label} (opening book off) ===`);
-  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction)));
+  results.push(printSummary(job.label, await runSearch(depth, job.exact, profile, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, metrics, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch)));
 }
 const outPath = join(__dirname, `bench-d${depth}-${profile ? 'profile' : 'latest'}.json`);
-writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, results }, null, 2));
+writeFileSync(outPath, JSON.stringify({ depth, mode, profile, metrics, stagedMovePicker, trueStagedGeneration, playerRelativeMoveScan, currentGenerationTtPriority, reuseQsMoveBuffers, reusePackedQsCaptures, numericLeafSoA, lineOccupancyLookup, verifyLineOccupancyLookup, kingSafetyFastPath, lmr, lmrMinMove, internalPvs, nmp, nmpMinDepth, nmpReduction, analysisReusePlaySearch, results }, null, 2));
 console.log(`\nSaved JSON: ${outPath}`);
