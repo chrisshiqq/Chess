@@ -413,6 +413,20 @@ const activePieceStateFor = (board) => {
     return state && state.board === board ? state : null;
 };
 
+// 点棋/根着法/终局判定没有搜索 pieceState 时临时建一份，使 isCheck 走占位表。
+// 已有 state 则直接用；不得覆盖搜索中的 workBoard state。
+const runWithPieceState = (board, fn) => {
+    if (activePieceStateFor(board)) return fn();
+    const previous = activeSearchPieceState;
+    const created = createSearchPieceState(board, 'mid');
+    if (created) activeSearchPieceState = created;
+    try {
+        return fn();
+    } finally {
+        activeSearchPieceState = previous;
+    }
+};
+
 const updatePieceStateAfterMake = (board, fromSq, toSq) => {
     const state = activePieceStateFor(board);
     if (!state) return;
@@ -770,7 +784,7 @@ const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
     };
 };
 
-// 将/帅位置缓存：供 post-move isCheck / 飞将快速查询，由 make/unmake 维护
+// 将/帅位置缓存：由 make/unmake 维护，供 syncGeneralPosCache 与走子同步
 let generalPosCache = { red: null, black: null };
 
 // 将帅仅在九宫内，按九宫扫描即可
@@ -791,19 +805,6 @@ const findGeneralPos = (board, color) => {
 const syncGeneralPosCache = (board) => {
     generalPosCache.red = findGeneralPos(board, 'red');
     generalPosCache.black = findGeneralPos(board, 'black');
-};
-
-const getGeneralPos = (board, color) => {
-    const cached = generalPosCache[color];
-    if (cached) {
-        const p = board[cached.r]?.[cached.c];
-        if (p && p.type === 'general' && p.color === color) {
-            return cached;
-        }
-    }
-    const pos = findGeneralPos(board, color);
-    generalPosCache[color] = pos;
-    return pos;
 };
 
 // 搜索用原地走子 / 恢复（避免每次递归 board.map）；同步维护将位缓存
@@ -864,7 +865,7 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 };
 
 // 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
-const isCheckRawFromPieceStateAfterSafeNonKingMove = (state, color, fromSq, toSq) => {
+const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     const ownIsRed = color === 'red';
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
@@ -974,17 +975,17 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
                 else perfStats.kingSafetyFullReasons.lineOrHorse++;
             }
             unsafe = generalSq === toSq
-                ? isCheckRawFromPieceState(pieceState, color)
-                : isCheckRawFromPieceStateAfterSafeNonKingMove(
+                ? isCheckFromState(pieceState, color)
+                : isCheckAfterSafeMove(
                     pieceState, color, moveFromSq(move), toSq
                 );
         } else {
             if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.inCheck++;
-            unsafe = isCheckRawFromPieceState(pieceState, color);
+            unsafe = isCheckFromState(pieceState, color);
         }
     } else {
         if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.noState++;
-        unsafe = isFlyingGeneral(board) || isCheckRaw(board, color);
+        unsafe = isCheck(board, color);
     }
     if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
@@ -1261,10 +1262,9 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     return moves;
 };
 
-// Play-only normal-node ordering. prepareSearchInfo has no relation lists, so
-// its non-check path is exactly the simple branch of sortMovesFast without the
-// generic UI/analysis bookkeeping. Checked positions retain the generic order.
-const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, ttMove, killers, inCheck) => {
+// 普通节点着法排序。prepareSearchInfo 没有关系列表，
+// 未将军路径就是 sortMovesFast 的简单分支；将军局面仍走通用排序。
+const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, ttMove, killers, inCheck) => {
     if (inCheck) {
         return sortMovesFast(moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, { ttMove, killers });
     }
@@ -1335,10 +1335,9 @@ const sortMovesPlay = (moves, board, currentPlayer, piecesInfo, gameStage, board
     return moves;
 };
 
-// Non-check Play nodes consume moves in stages. Partitioning is stable, and a
-// stage is sorted only when search reaches it, so an early cutoff avoids work
-// on all later stages. Packed boundaries use one byte per stage end.
-const prepareStagedMovesPlay = (moves, board, ttMove, killers) => {
+// 未将军节点分阶段消耗着法。划分稳定，某阶段只在搜到时才排序，
+// 早截断可跳过后续阶段。packed 边界每个阶段结束用一字节。
+const prepareStagedMoves = (moves, board, ttMove, killers) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.sortMovesCount++;
     const pieceState = activePieceStateFor(board);
@@ -1387,7 +1386,7 @@ const prepareStagedMovesPlay = (moves, board, ttMove, killers) => {
     return ttEnd | (killerEnd << 8) | (captureEnd << 16);
 };
 
-const sortStagedMoveRangePlay = (moves, start, end, board, currentPlayer, killers) => {
+const sortStagedMoveRange = (moves, start, end, board, currentPlayer, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
@@ -1434,11 +1433,10 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.collectMetrics) perfStats.prepareSearchInfoCount[currentPlayer]++;
 
-    const inCheck = isCheckRaw(board, currentPlayer);
+    const inCheck = isCheck(board, currentPlayer);
     if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - __t0;
     const __movesT0 = searchContext.profile ? performance.now() : 0;
-    // The Play non-check sorter only uses packed state. Avoid per-piece objects
-    // unless the checked-position fallback actually needs relation metadata.
+    // 未将军排序只用 packed state。除非将军回退需要关系元数据，否则不建 per-piece 对象。
     const piecesInfo = (collectPiecesInfo || inCheck) ? [] : null;
     const legalMoveList = [];
     const pieceState = activePieceStateFor(board);
@@ -1668,9 +1666,9 @@ const SEARCH_RELATIVE_SCAN_SQUARES = [
     new Uint8Array(REL_SQUARES),
     new Uint8Array(REL_SQUARES)
 ];
-// Play numeric safety only queries empty destinations in the opposing general's palace.
+// 数值安全只查询对方将所在九宫的空格。
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
-const SEARCH_PLAY_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
+const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
 
 (() => {
     const searchRaySquares = [];
@@ -1705,8 +1703,8 @@ const SEARCH_PLAY_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
         SEARCH_RELATIVE_SCAN_SQUARES[0][sq] = sq;
         SEARCH_RELATIVE_SCAN_SQUARES[1][sq] = (ROWS - 1 - r) * COLS + c;
         if (c >= 3 && c <= 5) {
-            if (r <= 2) SEARCH_PLAY_ATTACK_TARGET[sq] = 2;
-            else if (r >= 7) SEARCH_PLAY_ATTACK_TARGET[sq] = 1;
+            if (r <= 2) SEARCH_ATTACK_TARGET[sq] = 2;
+            else if (r >= 7) SEARCH_ATTACK_TARGET[sq] = 1;
         }
         for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
             SEARCH_RAY_OFFSETS[(sq << 2) | dir] = searchRaySquares.length;
@@ -1929,7 +1927,7 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
 
 // Appends exactly one stage: TT, quiet killers, captures, then quiets.
 // Later stages exclude only specials that were actually validated and appended.
-const appendTrueStagedMovesPlay = (
+const appendTrueStagedMoves = (
     moves, stage, board, currentPlayer, pieceState, ttMove, killers
 ) => {
     const start = moves.length;
@@ -1993,17 +1991,17 @@ const appendTrueStagedMovesPlay = (
         }
     }
 
-    sortStagedMoveRangePlay(moves, start, moves.length, board, currentPlayer, killers);
+    sortStagedMoveRange(moves, start, moves.length, board, currentPlayer, killers);
     return moves.length - start;
 };
 
-const advanceTrueStagedMovesPlay = (
+const advanceTrueStagedMoves = (
     moves, nextStage, board, currentPlayer, pieceState, ttMove, killers, depth
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
         const started = searchContext.profile ? performance.now() : 0;
-        const added = appendTrueStagedMovesPlay(
+        const added = appendTrueStagedMoves(
             moves, stage, board, currentPlayer, pieceState, ttMove, killers
         );
         if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - started;
@@ -2451,7 +2449,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
                     const sq = dests[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                        if (SEARCH_ATTACK_TARGET[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                         mobilityValue += baseMoveValue;
@@ -2481,7 +2479,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                        if (SEARCH_ATTACK_TARGET[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                         mobilityValue += baseMoveValue;
@@ -2507,7 +2505,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
                         const sq = SEARCH_RAY_SQUARES[rayPos];
                         const targetCode = squareCodes[sq];
                         if (targetCode === 0) {
-                            if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                            if (SEARCH_ATTACK_TARGET[sq] & attackTargetBit) {
                                 attackBits[sq >>> 5] |= 1 << (sq & 31);
                             }
                             mobilityValue += baseMoveValue;
@@ -2542,7 +2540,7 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
                                 screenFound = true;
                             }
                         } else if (targetCode === 0) {
-                            if (SEARCH_PLAY_ATTACK_TARGET[sq] & attackTargetBit) {
+                            if (SEARCH_ATTACK_TARGET[sq] & attackTargetBit) {
                                 attackBits[sq >>> 5] |= 1 << (sq & 31);
                             }
                         } else {
@@ -2588,10 +2586,8 @@ const calculatePackedSearchLeafRelations = (piecesInfo, squareCodes, capturePlay
     }
 };
 
-// Play-only SoA relation builder. Occupied-target relations are indexed by the
-// target and attacker relations both use stable piece-state slots (max 32).
-// Skipping holes preserves the original initial-slot attacker ordering.
-// Fast path omits QS capture packing (majority of leaf evals).
+// SoA 关系构建。占位目标关系按目标索引，攻击关系用稳定的 piece-state 槽（最多 32）。
+// 跳过空槽以保持初始槽的攻击方顺序。快路径省略 QS 吃子打包（多数叶评估）。
 const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
     const profileRelations = searchContext.profile;
     const relationStart = profileRelations ? performance.now() : 0;
@@ -2601,7 +2597,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     const pieceSquares = pieceState.pieceSquares;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
-    const attackTarget = SEARCH_PLAY_ATTACK_TARGET;
+    const attackTarget = SEARCH_ATTACK_TARGET;
     const rayOffsets = SEARCH_RAY_OFFSETS;
     const raySquares = SEARCH_RAY_SQUARES;
     const generalDest = SEARCH_GENERAL_DEST;
@@ -2915,7 +2911,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     const pieceSquares = pieceState.pieceSquares;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
-    const attackTarget = SEARCH_PLAY_ATTACK_TARGET;
+    const attackTarget = SEARCH_ATTACK_TARGET;
     const rayOffsets = SEARCH_RAY_OFFSETS;
     const raySquares = SEARCH_RAY_SQUARES;
     const generalDest = SEARCH_GENERAL_DEST;
@@ -5269,23 +5265,8 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
   return moves;
 };
 
-const isFlyingGeneral = (board) => {
-  const redG = getGeneralPos(board, 'red');
-  const blackG = getGeneralPos(board, 'black');
-  if (!redG || !blackG || redG.c !== blackG.c) return false;
-  
-  // 确保循环方向正确，从较小的r到较大的r
-  const startR = Math.min(blackG.r, redG.r) + 1;
-  const endR = Math.max(blackG.r, redG.r) - 1;
-  
-  for (let r = startR; r <= endR; r++) {
-    if (board[r][redG.c] !== null) return false;
-  }
-  return true;
-};
-
-// 搜索局面的快速将军检测：occupancy 查找车/将/炮阻塞子，再检查马和兵。
-const isCheckRawFromPieceState = (state, color) => {
+// 占位表将军检测：occupancy 查车/将/炮，再查马和兵。白脸将算第一子为敌将。
+const isCheckFromState = (state, color) => {
     const ownIsRed = color === 'red';
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
@@ -5379,111 +5360,19 @@ const isCheckRawFromPieceState = (state, color) => {
     return false;
 };
 
-const isCheckRaw = (board, color) => {
-    const pieceState = activePieceStateFor(board);
-    if (pieceState) return isCheckRawFromPieceState(pieceState, color);
-    const generalPos = getGeneralPos(board, color);
-    if (!generalPos) return true;
-
-    const enemyColor = color === 'red' ? 'black' : 'red';
-    const { r: gr, c: gc } = generalPos;
-
-    // 直线：第一子为敌车/将则将军；越过炮架后第二子为敌炮则将军
-    for (let i = 0; i < ORTH_DIRS.length; i++) {
-        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
-        let nr = gr + dr;
-        let nc = gc + dc;
-        let seen = 0;
-
-        while (isValidPos(nr, nc)) {
-            const p = board[nr][nc];
-            if (p) {
-                seen++;
-                if (seen === 1) {
-                    if (p.color === enemyColor && (p.type === 'chariot' || p.type === 'general')) {
-                        return true;
-                    }
-                } else {
-                    if (p.color === enemyColor && p.type === 'cannon') {
-                        return true;
-                    }
-                    break;
-                }
-            }
-            nr += dr;
-            nc += dc;
-        }
-    }
-
-    // 马：从将位反推，马腿在马一侧（与 getPieceMoves / HORSE_DIRS 一致）
-    for (let i = 0; i < HORSE_DIRS.length; i++) {
-        const d = HORSE_DIRS[i];
-        const nr = gr + d.dr;
-        const nc = gc + d.dc;
-        if (isValidPos(nr, nc)) {
-            const legR = nr - d.legDr;
-            const legC = nc - d.legDc;
-            if (board[legR][legC] === null) {
-                const p = board[nr][nc];
-                if (p && p.color === enemyColor && p.type === 'horse') {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 士（九宫内）
-    for (let i = 0; i < DIAG_DIRS.length; i++) {
-        const dr = DIAG_DIRS[i][0], dc = DIAG_DIRS[i][1];
-        const nr = gr + dr;
-        const nc = gc + dc;
-        if (isValidPos(nr, nc) &&
-            ((color === 'red' && nr >= 0 && nr <= 2) || (color === 'black' && nr >= 7 && nr <= 9)) &&
-            nc >= 3 && nc <= 5) {
-            const p = board[nr][nc];
-            if (p && p.color === enemyColor && p.type === 'advisor') {
-                return true;
-            }
-        }
-    }
-
-    // 兵：正前方始终可攻；左右仅过河兵
-    const enemyForward = enemyColor === 'red' ? 1 : -1;
-    const forwardFromR = gr - enemyForward;
-    if (isValidPos(forwardFromR, gc)) {
-        const p = board[forwardFromR][gc];
-        if (p && p.color === enemyColor && p.type === 'soldier') {
-            return true;
-        }
-    }
-    for (const dc of [1, -1]) {
-        const nc = gc + dc;
-        if (isValidPos(gr, nc)) {
-            const p = board[gr][nc];
-            if (p && p.color === enemyColor && p.type === 'soldier') {
-                const crossedRiver = enemyColor === 'red' ? gr >= 5 : gr <= 4;
-                if (crossedRiver) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-};
-
 const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
-    // 优先使用预计算的将军状态
     if (boardInfo) {
         return color === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
     }
-
-    // 如果有piecesInfo，也可以从中获取将军状态
     if (piecesInfo && piecesInfo.length > 0) {
         return color === 'red' ? piecesInfo[0].redIsInCheck : piecesInfo[0].blackIsInCheck;
     }
-
-    return isCheckRaw(board, color);
+    const state = activePieceStateFor(board);
+    if (state) return isCheckFromState(state, color);
+    return runWithPieceState(board, () => {
+        const created = activePieceStateFor(board);
+        return created ? isCheckFromState(created, color) : true;
+    });
 };
 
 // 合法着法：伪合法 + 不送将/不飞将（make/unmake）
@@ -5491,7 +5380,7 @@ const getValidMoves = (board, pos) => {
   const piece = board[pos.r][pos.c];
   if (!piece) return [];
   const pseudoMoves = getPieceMoves(board, pos, piece);
-  return filterLegalMoves(board, pos, piece, pseudoMoves);
+  return runWithPieceState(board, () => filterLegalMoves(board, pos, piece, pseudoMoves));
 };
 
 const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
@@ -5502,17 +5391,18 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     
     // 没有预计算结果时，执行原始计算
     let hasMoves = false;
-    for(let r=0; r<ROWS; r++) {
-        for(let c=0; c<COLS; c++) {
-            if (board[r][c]?.color === turn) {
-                if (getValidMoves(board, {r,c}).length > 0) {
-                    hasMoves = true;
-                    break;
+    runWithPieceState(board, () => {
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                if (board[r][c]?.color === turn) {
+                    if (getValidMoves(board, { r, c }).length > 0) {
+                        hasMoves = true;
+                        return;
+                    }
                 }
             }
         }
-        if (hasMoves) break;
-    }
+    });
 
     if (hasMoves) return { status: 'playing' };
 
@@ -6180,7 +6070,7 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
 };
 
 // 对弈 numeric 叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluatePlayLeafNumericLegacy = (
+const evaluateLeafNumericLegacy = (
     board, searchInitiator, gameStage, capturePlayer = null
 ) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
@@ -6291,7 +6181,7 @@ const evaluatePlayLeafNumericLegacy = (
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
-const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePlayer = null) => {
+const evaluateLeafNumericSoA = (board, searchInitiator, gameStage, capturePlayer = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const stateCodes = pieceState.pieceCodes;
@@ -6392,11 +6282,11 @@ const evaluatePlayLeafNumericSoA = (board, searchInitiator, gameStage, capturePl
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
-const evaluatePlayLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
+const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
     if (!searchContext.numericLeafSoA) {
-        return evaluatePlayLeafNumericLegacy(board, searchInitiator, gameStage, capturePlayer);
+        return evaluateLeafNumericLegacy(board, searchInitiator, gameStage, capturePlayer);
     }
-    return evaluatePlayLeafNumericSoA(board, searchInitiator, gameStage, capturePlayer);
+    return evaluateLeafNumericSoA(board, searchInitiator, gameStage, capturePlayer);
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
@@ -6412,7 +6302,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
         return evalCacheValues[cacheSlot];
     }
     if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
-    const net = evaluatePlayLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
+    const net = evaluateLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
     if (searchContext.reusePackedQsCaptures && capturePlayer != null) {
         packedCaptureCacheKey = cacheKey;
         packedCaptureVerificationKey = verificationKey;
@@ -6516,9 +6406,7 @@ const quiescenceMateValue = (currentPlayer, searchInitiator) =>
     currentPlayer === searchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
-// Play search has no PV to retain, so keep its recursive hot path primitive-only.
-// Analysis continues to use the object-returning functions below.
-const sortCapturesPlay = (captures, board, gameStage) => {
+const sortCaptures = (captures, board, gameStage) => {
     const pieceState = activePieceStateFor(board);
     const squareToSlot = pieceState && pieceState.squareToSlot;
     const pieceCodes = pieceState && pieceState.pieceCodes;
@@ -6556,12 +6444,12 @@ const sortCapturesPlay = (captures, board, gameStage) => {
     return captures;
 };
 
-const quiescencePlay = (
+const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
     searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
-    const inCheck = isCheckRaw(b, currentPlayer);
+    const inCheck = isCheck(b, currentPlayer);
     let standPat;
     if (!inCheck) {
         standPat = staticSearchEval(
@@ -6596,9 +6484,9 @@ const quiescencePlay = (
         : standPat;
 
     if (inCheck) {
-        sortMovesPlay(moves, b, currentPlayer, null, gameStage, null, null, null, false);
+        sortMoves(moves, b, currentPlayer, null, gameStage, null, null, null, false);
     } else {
-        sortCapturesPlay(moves, b, gameStage);
+        sortCaptures(moves, b, gameStage);
     }
 
     let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
@@ -6616,7 +6504,7 @@ const quiescencePlay = (
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        const value = quiescencePlay(
+        const value = quiescence(
             b, alpha, beta, nextPlayer === searchInitiator, nextPlayer,
             searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
         );
@@ -6637,7 +6525,7 @@ const quiescencePlay = (
     return bestEval;
 };
 
-const alphaBetaPlay = (
+const alphaBeta = (
     b, d, alpha, beta, maximizing, currentPlayer,
     searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid', boardHash = 0,
     allowNull = true
@@ -6652,7 +6540,7 @@ const alphaBetaPlay = (
     }
 
     if (d === 0) {
-        return quiescencePlay(
+        return quiescence(
             b, alpha, beta, maximizing, currentPlayer,
             searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash
         );
@@ -6680,7 +6568,7 @@ const alphaBetaPlay = (
     let inCheck;
     if (useTrueStagedGeneration) {
         const checkStarted = searchContext.profile ? performance.now() : 0;
-        inCheck = isCheckRaw(b, currentPlayer);
+        inCheck = isCheck(b, currentPlayer);
         if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
         if (inCheck) {
             useTrueStagedGeneration = false;
@@ -6729,11 +6617,11 @@ const alphaBetaPlay = (
         const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
         if (searchContext.collectMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
-            ? alphaBetaPlay(
+            ? alphaBeta(
                 b, nullDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             )
-            : alphaBetaPlay(
+            : alphaBeta(
                 b, nullDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             );
@@ -6766,14 +6654,14 @@ const alphaBetaPlay = (
 
     const killersAtDepth = killerMoves[plyFromRoot] || [null, null];
     let stagedPlan = (!useTrueStagedGeneration && !inCheck && searchContext.stagedMovePicker)
-        ? prepareStagedMovesPlay(moves, b, ttMove, killersAtDepth)
+        ? prepareStagedMoves(moves, b, ttMove, killersAtDepth)
         : -1;
     let stagedStage = 0;
     let stagedEnd = moves.length;
     let nextTrueStagedStage = 0;
     if (useTrueStagedGeneration) {
         if (searchContext.collectMetrics) perfStats.stagedGeneration.nodes++;
-        nextTrueStagedStage = advanceTrueStagedMovesPlay(
+        nextTrueStagedStage = advanceTrueStagedMoves(
             moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth, d
         );
@@ -6788,10 +6676,10 @@ const alphaBetaPlay = (
                     : moves.length;
         }
         if (stagedStage > 0) {
-            sortStagedMoveRangePlay(moves, 0, stagedEnd, b, currentPlayer, killersAtDepth);
+            sortStagedMoveRange(moves, 0, stagedEnd, b, currentPlayer, killersAtDepth);
         }
     } else {
-        moves = sortMovesPlay(
+        moves = sortMoves(
             moves, b, currentPlayer, abPiecesInfo, gameStage, abBoardInfo,
             ttMove, killersAtDepth, inCheck
         );
@@ -6809,7 +6697,7 @@ const alphaBetaPlay = (
         if (moveIndex >= moves.length) {
             if (!useTrueStagedGeneration) break;
             const before = moves.length;
-            nextTrueStagedStage = advanceTrueStagedMovesPlay(
+            nextTrueStagedStage = advanceTrueStagedMoves(
                 moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
                 ttMove, killersAtDepth, d
             );
@@ -6824,7 +6712,7 @@ const alphaBetaPlay = (
                         ? (stagedPlan >>> 16) & 0xff
                         : moves.length;
             } while (stagedEnd === moveIndex && stagedStage < 3);
-            sortStagedMoveRangePlay(moves, moveIndex, stagedEnd, b, currentPlayer, killersAtDepth);
+            sortStagedMoveRange(moves, moveIndex, stagedEnd, b, currentPlayer, killersAtDepth);
         }
         const move = moves[moveIndex];
         const isCapture = !!b[moveToR(move)][moveToC(move)];
@@ -6873,7 +6761,7 @@ const alphaBetaPlay = (
         let value;
         if (maximizing) {
             if (canLmr) {
-                value = alphaBetaPlay(
+                value = alphaBeta(
                     b, reducedDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
@@ -6881,19 +6769,19 @@ const alphaBetaPlay = (
                     if (searchContext.collectMetrics) perfStats.lmrReSearches++;
                     if (pvsEligible) {
                         if (searchContext.collectMetrics) perfStats.pvsAttempts++;
-                        value = alphaBetaPlay(
+                        value = alphaBeta(
                             b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                         if (value > alpha) {
                             if (searchContext.collectMetrics) perfStats.pvsReSearches++;
-                            value = alphaBetaPlay(
+                            value = alphaBeta(
                                 b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                                 searchDepth, searchInitiator, gameStage, nextHash
                             );
                         }
                     } else {
-                        value = alphaBetaPlay(
+                        value = alphaBeta(
                             b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
@@ -6901,25 +6789,25 @@ const alphaBetaPlay = (
                 }
             } else if (pvsEligible) {
                 if (searchContext.collectMetrics) perfStats.pvsAttempts++;
-                value = alphaBetaPlay(
+                value = alphaBeta(
                     b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.pvsReSearches++;
-                    value = alphaBetaPlay(
+                    value = alphaBeta(
                         b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                 }
             } else {
-                value = alphaBetaPlay(
+                value = alphaBeta(
                     b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
             }
         } else if (canLmr) {
-            value = alphaBetaPlay(
+            value = alphaBeta(
                 b, reducedDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
@@ -6927,19 +6815,19 @@ const alphaBetaPlay = (
                 if (searchContext.collectMetrics) perfStats.lmrReSearches++;
                 if (pvsEligible) {
                     if (searchContext.collectMetrics) perfStats.pvsAttempts++;
-                    value = alphaBetaPlay(
+                    value = alphaBeta(
                         b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                     if (value < beta) {
                         if (searchContext.collectMetrics) perfStats.pvsReSearches++;
-                        value = alphaBetaPlay(
+                        value = alphaBeta(
                             b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                     }
                 } else {
-                    value = alphaBetaPlay(
+                    value = alphaBeta(
                         b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
@@ -6947,19 +6835,19 @@ const alphaBetaPlay = (
             }
         } else if (pvsEligible) {
             if (searchContext.collectMetrics) perfStats.pvsAttempts++;
-            value = alphaBetaPlay(
+            value = alphaBeta(
                 b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.pvsReSearches++;
-                value = alphaBetaPlay(
+                value = alphaBeta(
                     b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
             }
         } else {
-            value = alphaBetaPlay(
+            value = alphaBeta(
                 b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
@@ -7129,19 +7017,21 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
   //const rootInCheck = (turn === 'red' && rootBoardInfo.redIsInCheck) ||
   //                    (turn === 'black' && rootBoardInfo.blackIsInCheck);
 
-  for (let scanRow = 0; scanRow < ROWS; scanRow++) {
-    const r = searchContext.playerRelativeMoveScan && turn === 'black'
-      ? ROWS - 1 - scanRow
-      : scanRow;
-    for (let c = 0; c < COLS; c++) {
-      if (board[r][c]?.color === turn) {
-        const validDestinations = getValidMoves(board, { r, c });
-        validDestinations.forEach(to => {
-          rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
-        });
+  runWithPieceState(board, () => {
+    for (let scanRow = 0; scanRow < ROWS; scanRow++) {
+      const r = searchContext.playerRelativeMoveScan && turn === 'black'
+        ? ROWS - 1 - scanRow
+        : scanRow;
+      for (let c = 0; c < COLS; c++) {
+        if (board[r][c]?.color === turn) {
+          const validDestinations = getValidMoves(board, { r, c });
+          validDestinations.forEach(to => {
+            rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
+          });
+        }
       }
     }
-  }
+  });
 
   if (rootMoves.length === 0) {
     return {
@@ -7237,23 +7127,23 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
       let score;
       let scoreIsExact = true;
       if (i === 0 || rootAlpha === -Infinity) {
-        score = alphaBetaPlay(
+        score = alphaBeta(
           workBoard, currentDepth - 1, -Infinity, Infinity,
           false, nextTurn, currentDepth, turn, gameStage, childHash
         );
       } else {
-        const probe = alphaBetaPlay(
+        const probe = alphaBeta(
           workBoard, currentDepth - 1,
           rootAlpha, rootAlpha + NULL_WINDOW_EPS,
           false, nextTurn, currentDepth, turn, gameStage, childHash
         );
         if (probe > rootAlpha) {
-          score = alphaBetaPlay(
+          score = alphaBeta(
             workBoard, currentDepth - 1, rootAlpha, Infinity,
             false, nextTurn, currentDepth, turn, gameStage, childHash
           );
         } else if (useExactRoot) {
-          score = alphaBetaPlay(
+          score = alphaBeta(
             workBoard, currentDepth - 1, -Infinity, Infinity,
             false, nextTurn, currentDepth, turn, gameStage, childHash
           );
