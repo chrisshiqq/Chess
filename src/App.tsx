@@ -578,6 +578,7 @@ const App: React.FC = () => {
         turn: Color | null;
         targetDepth: number;
         completedDepth: number;
+        currentDepth: number;
         rootMoves: number;
         phase: string;
         bestPreview: string;
@@ -592,6 +593,7 @@ const App: React.FC = () => {
         turn: null,
         targetDepth: 0,
         completedDepth: -2,
+        currentDepth: 0,
         rootMoves: 0,
         phase: '',
         bestPreview: '',
@@ -3127,6 +3129,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     // 异步检查游戏状态（移动到allReplayBoards声明之后）
     useEffect(() => {
         if (isSetupMode) return;
+        if (appScreen !== 'game') return;
 
         // 防止旧请求在 AI SEARCH 排队后晚到，把 executeMove 已设好的 checkAlert 盖掉
         let cancelled = false;
@@ -3209,7 +3212,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 clearTimeout(gameOverTimerRef.current);
             }
         };
-    }, [board, turn, isReplaying, isSetupMode, replayIndex, allReplayBoards]);
+    }, [appScreen, board, turn, isReplaying, isSetupMode, replayIndex, allReplayBoards]);
 
     // Replay Evaluation Logic
     const [replayEvaluation, setReplayEvaluation] = useState<MoveEvaluation>({

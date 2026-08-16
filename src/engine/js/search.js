@@ -15,8 +15,21 @@ import {
     moveToSq
 } from './movegen.js';
 import { searchContext } from './search-context.js';
-import { VALUE_WEIGHTS } from './evaluation.js';
 import { isValidPlacement } from './rules.js';
+
+// 评估分项权重。必须放在本模块，不能从 evaluation.js 回引：
+// Worker 先加载 evaluation.js 时，打包后顶层读 VALUE_WEIGHTS 会撞 TDZ。
+export const VALUE_WEIGHTS = {
+    material: 1,
+    position: 1,
+    threat: 1,
+    safety: 1,
+    mobility: 1
+};
+
+export const setValueWeights = (weights) => {
+    Object.assign(VALUE_WEIGHTS, weights);
+};
 
 // 材料值权重配置
 const MATERIAL_VALUES = {
@@ -52,6 +65,8 @@ const EVALUATION_PARAMETERS = {
         bonus: 80
     }
 };
+
+const CHECK_BONUS = EVALUATION_PARAMETERS.check.bonus;
 
 // 位置评估表 - 基于棋子类型和位置
 const POSITION_TABLES = {
@@ -259,7 +274,8 @@ const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
-const scratchSliderTargets = new Uint8Array(4);
+const scratchOwnScanSlots = new Uint8Array(32);
+const scratchOwnScanOrder = new Uint16Array(32);
 
 let activeSearchPieceState = null;
 
@@ -374,6 +390,7 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
         redGeneralSq,
         blackGeneralSq,
         evalVerificationHash,
+        slotCount: records.length,
         moverStack: new Int8Array(32),
         capturedStack: new Int8Array(32),
         stackDepth: 0
@@ -856,13 +873,13 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     const toOnFile = toC === gc;
 
     if (fromOnRank || toOnRank) {
-        const rankKey = gc * SEARCH_RANK_LOOKUP.occupancyCount + state.rowOccupancy[gr];
+        const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
         if ((fromOnRank && fromC > gc) || (toOnRank && toC > gc)) {
-            const first = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
+            const first = RANK_FIRST_HIGH[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
                 if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
-                const second = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
+                const second = RANK_SECOND_HIGH[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -870,11 +887,11 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             }
         }
         if ((fromOnRank && fromC < gc) || (toOnRank && toC < gc)) {
-            const first = SEARCH_RANK_LOOKUP.firstLow[rankKey];
+            const first = RANK_FIRST_LOW[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
                 if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
-                const second = SEARCH_RANK_LOOKUP.secondLow[rankKey];
+                const second = RANK_SECOND_LOW[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -883,13 +900,13 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
         }
     }
     if (fromOnFile || toOnFile) {
-        const fileKey = gr * SEARCH_FILE_LOOKUP.occupancyCount + state.colOccupancy[gc];
+        const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
         if ((fromOnFile && fromR > gr) || (toOnFile && toR > gr)) {
-            const first = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
+            const first = FILE_FIRST_HIGH[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
                 if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
-                const second = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
+                const second = FILE_SECOND_HIGH[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -897,11 +914,11 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             }
         }
         if ((fromOnFile && fromR < gr) || (toOnFile && toR < gr)) {
-            const first = SEARCH_FILE_LOOKUP.firstLow[fileKey];
+            const first = FILE_FIRST_LOW[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
                 if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
-                const second = SEARCH_FILE_LOOKUP.secondLow[fileKey];
+                const second = FILE_SECOND_LOW[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -1777,6 +1794,98 @@ const createOrthogonalLineLookup = (length) => {
 
 const SEARCH_RANK_LOOKUP = createOrthogonalLineLookup(COLS);
 const SEARCH_FILE_LOOKUP = createOrthogonalLineLookup(ROWS);
+const RANK_OCC_COUNT = SEARCH_RANK_LOOKUP.occupancyCount;
+const FILE_OCC_COUNT = SEARCH_FILE_LOOKUP.occupancyCount;
+const RANK_MOBILITY = SEARCH_RANK_LOOKUP.mobility;
+const RANK_FIRST_HIGH = SEARCH_RANK_LOOKUP.firstHigh;
+const RANK_FIRST_LOW = SEARCH_RANK_LOOKUP.firstLow;
+const RANK_SECOND_HIGH = SEARCH_RANK_LOOKUP.secondHigh;
+const RANK_SECOND_LOW = SEARCH_RANK_LOOKUP.secondLow;
+const RANK_ROOK_CONTROL = SEARCH_RANK_LOOKUP.rookControl;
+const RANK_CANNON_CONTROL = SEARCH_RANK_LOOKUP.cannonControl;
+const FILE_MOBILITY = SEARCH_FILE_LOOKUP.mobility;
+const FILE_FIRST_HIGH = SEARCH_FILE_LOOKUP.firstHigh;
+const FILE_FIRST_LOW = SEARCH_FILE_LOOKUP.firstLow;
+const FILE_SECOND_HIGH = SEARCH_FILE_LOOKUP.secondHigh;
+const FILE_SECOND_LOW = SEARCH_FILE_LOOKUP.secondLow;
+const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
+const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
+
+let leafWMaterial = VALUE_WEIGHTS.material;
+let leafWPosition = VALUE_WEIGHTS.position;
+let leafWThreat = VALUE_WEIGHTS.threat;
+let leafWSafety = VALUE_WEIGHTS.safety;
+let leafWMobility = VALUE_WEIGHTS.mobility;
+
+const snapshotLeafWeights = () => {
+    leafWMaterial = VALUE_WEIGHTS.material;
+    leafWPosition = VALUE_WEIGHTS.position;
+    leafWThreat = VALUE_WEIGHTS.threat;
+    leafWSafety = VALUE_WEIGHTS.safety;
+    leafWMobility = VALUE_WEIGHTS.mobility;
+};
+
+const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
+    const pieceSquares = pieceState.pieceSquares;
+    const pieceCodes = pieceState.pieceCodes;
+    const slots = scratchOwnScanSlots;
+    const orders = scratchOwnScanOrder;
+    const scanOrder = SEARCH_RELATIVE_SCAN_SQUARES[isRed ? 0 : 1];
+    const slotCount = pieceState.slotCount > 0 ? pieceState.slotCount : 32;
+    const ownMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
+    let n = 0;
+    for (let slot = 0; slot < slotCount; slot++) {
+        if ((ownMask & (1 << slot)) === 0) continue;
+        if ((pieceCodes[slot] < 8) !== isRed) continue;
+        const sq = pieceSquares[slot];
+        if (sq >= REL_SQUARES) continue;
+        const order = scanOrder[sq];
+        let j = n - 1;
+        while (j >= 0 && orders[j] > order) {
+            orders[j + 1] = orders[j];
+            slots[j + 1] = slots[j];
+            j--;
+        }
+        orders[j + 1] = order;
+        slots[j + 1] = slot;
+        n++;
+    }
+    return n;
+};
+
+const applyOccupiedSliderHit = (
+    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+) => {
+    const targetCode = squareCodes[sq];
+    const targetSlot = squareToSlot[sq];
+    if ((targetCode < 8) !== isRed) {
+        attackBySlot[targetSlot] |= bit;
+        return 1 << targetSlot;
+    }
+    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+    return 0;
+};
+
+const applyOccupiedSliderHitWithCapture = (
+    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+    recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+) => {
+    const targetCode = squareCodes[sq];
+    const targetSlot = squareToSlot[sq];
+    if ((targetCode < 8) !== isRed) {
+        attackBySlot[targetSlot] |= bit;
+        if (recordCaptures) {
+            if (captureCounts[fromSq] === 0) {
+                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+            }
+            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                (fromSq << 7) | sq;
+        }
+        return 1 << targetSlot;
+    }
+    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+    return 0;
+};
 
 const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked) => {
     let generated = 0;
@@ -1879,8 +1988,10 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     if (fromSq >= REL_SQUARES || toSq >= REL_SQUARES) return false;
     const slot = pieceState.squareToSlot[fromSq];
     if (slot < 0) return false;
-    const record = pieceState.records[slot];
-    if (!record.alive || record.piece.color !== currentPlayer) return false;
+    const pieceCode = pieceState.pieceCodes[slot];
+    const ownMask = pieceCode < 8 ? pieceState.redAliveMask : pieceState.blackAliveMask;
+    if ((ownMask & (1 << slot)) === 0) return false;
+    if ((pieceCode < 8) !== (currentPlayer === 'red')) return false;
     const targetCode = pieceState.squareCodes[toSq];
     if (quietOnly && targetCode !== 0) return false;
 
@@ -1913,19 +2024,13 @@ const appendTrueStagedMoves = (
             appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
         }
     } else if (stage === 2) {
-        const records = pieceState.records;
-        const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
-        for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
-            const scanRow = (scanSq / COLS) | 0;
-            const sq = currentPlayer === 'black'
-                ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
-                : scanSq;
-            const slot = squareToSlot[sq];
-            if (slot < 0) continue;
-            const record = records[slot];
-            if (!record.alive || record.piece.color !== currentPlayer) continue;
+        const pieceSquares = pieceState.pieceSquares;
+        const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === 'red');
+        for (let i = 0; i < n; i++) {
+            const slot = scratchOwnScanSlots[i];
+            const sq = pieceSquares[slot];
             const pieceStart = moves.length;
             appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, true);
             let write = pieceStart;
@@ -1936,25 +2041,19 @@ const appendTrueStagedMoves = (
             moves.length = write;
         }
     } else if (stage === 3) {
-        const records = pieceState.records;
-        const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
-        for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
-            const scanRow = (scanSq / COLS) | 0;
-            const sq = currentPlayer === 'black'
-                ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
-                : scanSq;
-            const slot = squareToSlot[sq];
-            if (slot < 0) continue;
-            const record = records[slot];
-            if (!record.alive || record.piece.color !== currentPlayer) continue;
+        const pieceSquares = pieceState.pieceSquares;
+        const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === 'red');
+        for (let i = 0; i < n; i++) {
+            const slot = scratchOwnScanSlots[i];
+            const sq = pieceSquares[slot];
             stagedGenerationScratch.length = 0;
             appendSearchPseudoMovesForPiece(
                 stagedGenerationScratch, sq, pieceCodes[slot], squareCodes, false
             );
-            for (let i = 0; i < stagedGenerationScratch.length; i++) {
-                const move = stagedGenerationScratch[i];
+            for (let j = 0; j < stagedGenerationScratch.length; j++) {
+                const move = stagedGenerationScratch[j];
                 if (squareCodes[move & MOVE_TO_MASK] === 0 &&
                     !containsEncodedMoveBefore(moves, start, move)) {
                     moves.push(move);
@@ -2169,7 +2268,6 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     const { r, c } = info;
     const isRed = piece.color === 'red';
     const pieceColor = piece.color;
-    const { baseMoveValue } = EVALUATION_PARAMETERS.mobility;
     const useMasks = !!(relCtx && relCtx.useMasks);
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     if (!useMasks) {
@@ -2212,7 +2310,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                 }
             } else if (screenFoundCount === 0) {
                 if (!useMasks) info.moves.push({ r: nr, c: nc });
-                mobilityValue += baseMoveValue;
+                mobilityValue += 1;
             } else if (screenFoundCount === 1) {
                 if (useMasks) {
                     const sq = nr * 9 + nc;
@@ -2234,11 +2332,14 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
 // 跳过空槽以保持初始槽的攻击方顺序。快路径省略 QS 吃子打包（多数叶评估）。
 const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
     const profileRelations = searchContext.profile;
+    const collectMetrics = searchContext.collectMetrics;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
+    const rowOccupancy = pieceState.rowOccupancy;
+    const colOccupancy = pieceState.colOccupancy;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_ATTACK_TARGET;
@@ -2252,21 +2353,20 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     clearAttackBits(scratchRedAttack);
     clearAttackBits(scratchBlackAttack);
 
-    const baseMoveValue = EVALUATION_PARAMETERS.mobility.baseMoveValue;
     const redAttack = scratchRedAttack;
     const blackAttack = scratchBlackAttack;
     let redMobility = 0;
     let blackMobility = 0;
     let attackedTargetMask = 0;
 
-    const slotCount = pieceState.records.length;
+    const slotCount = pieceState.slotCount;
     for (let slot = 0; slot < slotCount; slot++) {
         const bit = 1 << slot;
         if ((aliveMask & bit) === 0) continue;
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
-        if (searchContext.collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
+        if (collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -2283,7 +2383,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2304,7 +2404,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2325,7 +2425,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2348,7 +2448,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2371,7 +2471,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2386,27 +2486,34 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
             case 2: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * SEARCH_RANK_LOOKUP.occupancyCount + pieceState.rowOccupancy[r];
-                const fileKey = r * SEARCH_FILE_LOOKUP.occupancyCount + pieceState.colOccupancy[c];
-                mobilityValue = (SEARCH_RANK_LOOKUP.mobility[rankKey] +
-                    SEARCH_FILE_LOOKUP.mobility[fileKey]) * baseMoveValue;
-                scratchSliderTargets[0] = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
-                scratchSliderTargets[1] = SEARCH_RANK_LOOKUP.firstLow[rankKey];
-                scratchSliderTargets[2] = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
-                scratchSliderTargets[3] = SEARCH_FILE_LOOKUP.firstLow[fileKey];
-                for (let i = 0; i < 4; i++) {
-                    const targetPos = scratchSliderTargets[i];
-                    if (targetPos === 255) continue;
-                    const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
-                    const targetCode = squareCodes[sq];
-                    const targetSlot = squareToSlot[sq];
-                    if ((targetCode < 8) !== isRed) {
-                        attackedTargetMask |= 1 << targetSlot;
-                        attackBySlot[targetSlot] |= bit;
-                    }
-                    else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_FIRST_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
                 }
-                const rankControl = SEARCH_RANK_LOOKUP.rookControl[rankKey];
+                const t1 = RANK_FIRST_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const t2 = FILE_FIRST_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const t3 = FILE_FIRST_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const rankControl = RANK_ROOK_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
                     for (let col = 3; col <= 5; col++) {
                         if (rankControl & (1 << col)) {
@@ -2415,7 +2522,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         }
                     }
                 }
-                const fileControl = SEARCH_FILE_LOOKUP.rookControl[fileKey];
+                const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
                     const firstRow = isRed ? 7 : 0;
                     const lastRow = isRed ? 9 : 2;
@@ -2431,27 +2538,34 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
             case 6: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * SEARCH_RANK_LOOKUP.occupancyCount + pieceState.rowOccupancy[r];
-                const fileKey = r * SEARCH_FILE_LOOKUP.occupancyCount + pieceState.colOccupancy[c];
-                mobilityValue = (SEARCH_RANK_LOOKUP.mobility[rankKey] +
-                    SEARCH_FILE_LOOKUP.mobility[fileKey]) * baseMoveValue;
-                scratchSliderTargets[0] = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
-                scratchSliderTargets[1] = SEARCH_RANK_LOOKUP.secondLow[rankKey];
-                scratchSliderTargets[2] = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
-                scratchSliderTargets[3] = SEARCH_FILE_LOOKUP.secondLow[fileKey];
-                for (let i = 0; i < 4; i++) {
-                    const targetPos = scratchSliderTargets[i];
-                    if (targetPos === 255) continue;
-                    const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
-                    const targetCode = squareCodes[sq];
-                    const targetSlot = squareToSlot[sq];
-                    if ((targetCode < 8) !== isRed) {
-                        attackedTargetMask |= 1 << targetSlot;
-                        attackBySlot[targetSlot] |= bit;
-                    }
-                    else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_SECOND_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
                 }
-                const rankControl = SEARCH_RANK_LOOKUP.cannonControl[rankKey];
+                const t1 = RANK_SECOND_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const t2 = FILE_SECOND_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const t3 = FILE_SECOND_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHit(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                    );
+                }
+                const rankControl = RANK_CANNON_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
                     for (let col = 3; col <= 5; col++) {
                         if (rankControl & (1 << col)) {
@@ -2460,7 +2574,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         }
                     }
                 }
-                const fileControl = SEARCH_FILE_LOOKUP.cannonControl[fileKey];
+                const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
                     const firstRow = isRed ? 7 : 0;
                     const lastRow = isRed ? 9 : 2;
@@ -2493,11 +2607,14 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     pieceState, aliveMask, capturePlayer
 ) => {
     const profileRelations = searchContext.profile;
+    const collectMetrics = searchContext.collectMetrics;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
+    const rowOccupancy = pieceState.rowOccupancy;
+    const colOccupancy = pieceState.colOccupancy;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_ATTACK_TARGET;
@@ -2519,21 +2636,20 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     }
     scratchPackedCaptureSourceCount = 0;
 
-    const baseMoveValue = EVALUATION_PARAMETERS.mobility.baseMoveValue;
     const redAttack = scratchRedAttack;
     const blackAttack = scratchBlackAttack;
     let redMobility = 0;
     let blackMobility = 0;
     let attackedTargetMask = 0;
 
-    const slotCount = pieceState.records.length;
+    const slotCount = pieceState.slotCount;
     for (let slot = 0; slot < slotCount; slot++) {
         const bit = 1 << slot;
         if ((aliveMask & bit) === 0) continue;
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
-        if (searchContext.collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
+        if (collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -2551,7 +2667,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2580,7 +2696,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2609,7 +2725,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2640,7 +2756,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2671,7 +2787,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += baseMoveValue;
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2694,35 +2810,38 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
             case 2: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * SEARCH_RANK_LOOKUP.occupancyCount + pieceState.rowOccupancy[r];
-                const fileKey = r * SEARCH_FILE_LOOKUP.occupancyCount + pieceState.colOccupancy[c];
-                mobilityValue = (SEARCH_RANK_LOOKUP.mobility[rankKey] +
-                    SEARCH_FILE_LOOKUP.mobility[fileKey]) * baseMoveValue;
-                scratchSliderTargets[0] = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
-                scratchSliderTargets[1] = SEARCH_RANK_LOOKUP.firstLow[rankKey];
-                scratchSliderTargets[2] = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
-                scratchSliderTargets[3] = SEARCH_FILE_LOOKUP.firstLow[fileKey];
-                for (let i = 0; i < 4; i++) {
-                    const targetPos = scratchSliderTargets[i];
-                    if (targetPos === 255) continue;
-                    const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
-                    const targetCode = squareCodes[sq];
-                    const targetSlot = squareToSlot[sq];
-                    if ((targetCode < 8) !== isRed) {
-                        attackedTargetMask |= 1 << targetSlot;
-                        attackBySlot[targetSlot] |= bit;
-                        if (recordCaptures) {
-                            if (captureCounts[fromSq] === 0) {
-                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                            }
-                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                (fromSq << 7) | sq;
-                        }
-                    } else if ((targetCode & 7) !== 1) {
-                        guardBySlot[targetSlot] |= bit;
-                    }
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_FIRST_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
                 }
-                const rankControl = SEARCH_RANK_LOOKUP.rookControl[rankKey];
+                const t1 = RANK_FIRST_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t2 = FILE_FIRST_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t3 = FILE_FIRST_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const rankControl = RANK_ROOK_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
                     for (let col = 3; col <= 5; col++) {
                         if (rankControl & (1 << col)) {
@@ -2731,7 +2850,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
-                const fileControl = SEARCH_FILE_LOOKUP.rookControl[fileKey];
+                const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
                     const firstRow = isRed ? 7 : 0;
                     const lastRow = isRed ? 9 : 2;
@@ -2747,35 +2866,38 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
             case 6: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * SEARCH_RANK_LOOKUP.occupancyCount + pieceState.rowOccupancy[r];
-                const fileKey = r * SEARCH_FILE_LOOKUP.occupancyCount + pieceState.colOccupancy[c];
-                mobilityValue = (SEARCH_RANK_LOOKUP.mobility[rankKey] +
-                    SEARCH_FILE_LOOKUP.mobility[fileKey]) * baseMoveValue;
-                scratchSliderTargets[0] = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
-                scratchSliderTargets[1] = SEARCH_RANK_LOOKUP.secondLow[rankKey];
-                scratchSliderTargets[2] = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
-                scratchSliderTargets[3] = SEARCH_FILE_LOOKUP.secondLow[fileKey];
-                for (let i = 0; i < 4; i++) {
-                    const targetPos = scratchSliderTargets[i];
-                    if (targetPos === 255) continue;
-                    const sq = i < 2 ? r * 9 + targetPos : targetPos * 9 + c;
-                    const targetCode = squareCodes[sq];
-                    const targetSlot = squareToSlot[sq];
-                    if ((targetCode < 8) !== isRed) {
-                        attackedTargetMask |= 1 << targetSlot;
-                        attackBySlot[targetSlot] |= bit;
-                        if (recordCaptures) {
-                            if (captureCounts[fromSq] === 0) {
-                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                            }
-                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                (fromSq << 7) | sq;
-                        }
-                    } else if ((targetCode & 7) !== 1) {
-                        guardBySlot[targetSlot] |= bit;
-                    }
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_SECOND_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
                 }
-                const rankControl = SEARCH_RANK_LOOKUP.cannonControl[rankKey];
+                const t1 = RANK_SECOND_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t2 = FILE_SECOND_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t3 = FILE_SECOND_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const rankControl = RANK_CANNON_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
                     for (let col = 3; col <= 5; col++) {
                         if (rankControl & (1 << col)) {
@@ -2784,7 +2906,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
-                const fileControl = SEARCH_FILE_LOOKUP.cannonControl[fileKey];
+                const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
                     const firstRow = isRed ? 7 : 0;
                     const lastRow = isRed ? 9 : 2;
@@ -3210,7 +3332,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
         boardInfo.canCapture = [];  // 可吃的棋子
     }
 
-    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    const checkBonus = CHECK_BONUS;
     const canCaptureSeen = collectUi ? new Set() : null;
     const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
     const attackMask = useMasks ? boardInfo.attackMask : null;
@@ -4717,55 +4839,55 @@ const isCheckFromState = (state, color) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    const rankKey = gc * SEARCH_RANK_LOOKUP.occupancyCount + state.rowOccupancy[gr];
-    const fileKey = gr * SEARCH_FILE_LOOKUP.occupancyCount + state.colOccupancy[gc];
-    let first = SEARCH_RANK_LOOKUP.firstLow[rankKey];
+    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
+    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
+    let first = RANK_FIRST_LOW[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed) {
             const pieceType = pieceCode & 7;
             if (pieceType === 2 || pieceType === 1) return true;
         }
-        const second = SEARCH_RANK_LOOKUP.secondLow[rankKey];
+        const second = RANK_SECOND_LOW[rankKey];
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = SEARCH_RANK_LOOKUP.firstHigh[rankKey];
+    first = RANK_FIRST_HIGH[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed) {
             const pieceType = pieceCode & 7;
             if (pieceType === 2 || pieceType === 1) return true;
         }
-        const second = SEARCH_RANK_LOOKUP.secondHigh[rankKey];
+        const second = RANK_SECOND_HIGH[rankKey];
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = SEARCH_FILE_LOOKUP.firstLow[fileKey];
+    first = FILE_FIRST_LOW[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed) {
             const pieceType = pieceCode & 7;
             if (pieceType === 2 || pieceType === 1) return true;
         }
-        const second = SEARCH_FILE_LOOKUP.secondLow[fileKey];
+        const second = FILE_SECOND_LOW[fileKey];
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = SEARCH_FILE_LOOKUP.firstHigh[fileKey];
+    first = FILE_FIRST_HIGH[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed) {
             const pieceType = pieceCode & 7;
             if (pieceType === 2 || pieceType === 1) return true;
         }
-        const second = SEARCH_FILE_LOOKUP.secondHigh[fileKey];
+        const second = FILE_SECOND_HIGH[fileKey];
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -5463,14 +5585,13 @@ const recordFirstLegalCutoff = (depth) => {
 const hasNullMoveMaterial = (pieceState, color) => {
     if (!pieceState) return false;
     const isRed = color === 'red';
-    const records = pieceState.records;
     const pieceCodes = pieceState.pieceCodes;
-    for (let i = 0; i < records.length; i++) {
-        if (!records[i].alive) continue;
-        const pieceCode = pieceCodes[i];
-        if ((pieceCode < 8) !== isRed) continue;
-        const pieceType = pieceCode & 7;
+    let mask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
+    while (mask !== 0) {
+        const bit = mask & -mask;
+        const pieceType = pieceCodes[31 - Math.clz32(bit)] & 7;
         if (pieceType === 2 || pieceType === 3 || pieceType === 6) return true;
+        mask ^= bit;
     }
     return false;
 };
@@ -5516,7 +5637,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
     calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
 
     if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
-    const checkBonus = EVALUATION_PARAMETERS.check.bonus;
+    const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const blackAttack = scratchBlackAttack;
@@ -5579,11 +5700,11 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
         }
     }
 
-    const wMaterial = VALUE_WEIGHTS.material;
-    const wPosition = VALUE_WEIGHTS.position;
-    const wThreat = VALUE_WEIGHTS.threat;
-    const wSafety = VALUE_WEIGHTS.safety;
-    const wMobility = VALUE_WEIGHTS.mobility;
+    const wMaterial = leafWMaterial;
+    const wPosition = leafWPosition;
+    const wThreat = leafWThreat;
+    const wSafety = leafWSafety;
+    const wMobility = leafWMobility;
     const redTotal =
         pieceState.redMaterial * wMaterial +
         pieceState.redPosition * wPosition +
@@ -5658,20 +5779,15 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     moves.length = 0;
     const pieceState = activePieceStateFor(board);
     if (pieceState) {
-        const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
+        const pieceSquares = pieceState.pieceSquares;
         const isRed = currentPlayer === 'red';
-        const scanSquares = SEARCH_RELATIVE_SCAN_SQUARES[
-            !isRed ? 1 : 0
-        ];
-        for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
-            const sq = scanSquares[scanSq];
-            const slot = squareToSlot[sq];
-            if (slot < 0) continue;
-            if ((pieceCodes[slot] < 8) !== isRed) continue;
+        const n = collectOwnSlotsInScanOrder(pieceState, isRed);
+        for (let i = 0; i < n; i++) {
+            const slot = scratchOwnScanSlots[i];
             const generated = appendSearchPseudoMovesForPiece(
-                moves, sq, pieceCodes[slot], squareCodes, capturesOnly
+                moves, pieceSquares[slot], pieceCodes[slot], squareCodes, capturesOnly
             );
             if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
         }
@@ -6262,6 +6378,7 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
 
   // 根节点：迭代加深 + PVS；TT/killer/history 跨深度保留（仅开局清空一次）
   resetPerfStats();
+  snapshotLeafWeights();
   const startTime = Date.now();
   if (typeof searchContext.reportSearchProgress === 'function') {
     try {
@@ -6395,6 +6512,11 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
       console.log(`ID stopped before depth ${currentDepth} due to time limit (last completed=${completedDepth})`);
       break;
     }
+    emitSearchProgress({
+      phase: 'iterating',
+      completedDepth,
+      currentDepth
+    });
 
     // 浅层最佳着 + TT 着排到最前，供本层 PVS 第一着全窗使用
     const ttEntry = transpositionTable.retrieve(rootTTKey);
