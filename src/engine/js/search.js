@@ -5516,8 +5516,6 @@ const clearEvalCache = () => {
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
-const shouldPackCapturesAtQuiescenceDepth = (qsDepth) =>
-    qsDepth === SEARCH_QUIESCENCE_DEPTH;
 const NULL_WINDOW_EPS = 1e-6;
 // True staged generation owns one move list per active alpha-beta stack level.
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
@@ -5873,7 +5871,7 @@ const quiescence = (
     if (!inCheck) {
         standPat = staticSearchEval(
             b, searchInitiator, gameStage, boardHash,
-            shouldPackCapturesAtQuiescenceDepth(qsDepth) ? currentPlayer : null
+            qsDepth > 0 ? currentPlayer : null
         );
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
@@ -6647,9 +6645,6 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
 const searchTestApi = {
   collectPackedCaptures(board, capturePlayer) {
     return generateQuiescenceMoves(board, capturePlayer, true, []).slice();
-  },
-  shouldPackCapturesAtQuiescenceDepth(qsDepth) {
-    return shouldPackCapturesAtQuiescenceDepth(qsDepth);
   }
 };
 
