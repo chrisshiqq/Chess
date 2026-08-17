@@ -1,5 +1,5 @@
 
-import React, { memo, useEffect, useId } from 'react';
+import React, { memo, useEffect } from 'react';
 import { PieceType, Color } from '../domain/types';
 import { PieceMaterial } from '../ui/types';
 
@@ -131,16 +131,54 @@ const MATERIAL_CONFIGS = {
     }
 };
 
+type GradientConfig = {
+    red: { gradient: string[] };
+    black: { gradient: string[] };
+};
+
+// These IDs are scoped to the containing SVG. ChessBoard renders this once so
+// all pieces can share the same gradients and wood texture filter.
+export const PieceMaterialDefs: React.FC = () => {
+    const materials = Object.entries(MATERIAL_CONFIGS) as Array<[PieceMaterial, GradientConfig]>;
+
+    return (
+        <defs>
+            {materials.flatMap(([material, colors]) => (
+                (['red', 'black'] as Color[]).map((color) => (
+                    <radialGradient key={`${material}-${color}`} id={`pieceGradient-${material}-${color}`}>
+                        <stop offset="0%" stopColor={colors[color].gradient[0]} />
+                        <stop offset="100%" stopColor={colors[color].gradient[1]} />
+                    </radialGradient>
+                ))
+            ))}
+            <filter id="woodPieceTexture" x="-10%" y="-10%" width="120%" height="120%">
+                <feTurbulence
+                    type="fractalNoise"
+                    baseFrequency="0.02 0.25"
+                    numOctaves="8"
+                    seed="42"
+                    result="woodNoise"
+                />
+                <feColorMatrix in="woodNoise" type="saturate" values="0.5" result="woodColor" />
+                <feComponentTransfer in="woodColor" result="woodContrast">
+                    <feFuncR type="linear" slope="2.5" intercept="-0.6" />
+                    <feFuncG type="linear" slope="2.5" intercept="-0.6" />
+                    <feFuncB type="linear" slope="2.5" intercept="-0.6" />
+                    <feFuncA type="discrete" tableValues="0 0.3 0.4 0.35" />
+                </feComponentTransfer>
+                <feBlend mode="multiply" in="woodContrast" in2="SourceGraphic" result="blend" />
+                <feComposite operator="in" in="blend" in2="SourceGraphic" />
+            </filter>
+        </defs>
+    );
+};
+
 const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant = 'normal', material = 'wood', playerColor = 'red', isInCheck = false, isRecentlyCaptured = false, style }) => {
     const r = size / 2 - 4;
     const fontSize = size * 0.52;
     
     const isDark = variant === 'dark';
     const config = MATERIAL_CONFIGS[material][color];
-    // 稳定唯一ID，避免每次渲染重建滤镜导致将军动画被重置
-    const reactId = useId().replace(/:/g, '');
-    const uniqueId = `${material}-${color}-${reactId}`;
-
     useEffect(() => {
         ensurePieceAnimationStyles();
     }, []);
@@ -179,49 +217,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
     
     return (
         <g style={{ ...animationStyle, ...style }}>
-            {/* 渐变定义 */}
-            {!isDark && (
-                <defs>
-                    <radialGradient id={`pieceGradient-${material}-${color}`}>
-                        <stop offset="0%" stopColor={config.gradient[0]} />
-                        <stop offset="100%" stopColor={config.gradient[1]} />
-                    </radialGradient>
-                    
-                    {/* 木纹噪声纹理滤镜 - 仅对木制棋子有效 */}
-                    {material === 'wood' && (
-                        <>
-                            {/* 内圈裁剪路径 */}
-                            <clipPath id={`innerCircle-${uniqueId}`}>
-                                <circle cx="0" cy="0" r={r - 4} />
-                            </clipPath>
-                            <filter id={`woodPieceTexture-${uniqueId}`} x="0%" y="0%" width="100%" height="100%">
-                                <feTurbulence 
-                                    type="fractalNoise" 
-                                    baseFrequency="0.02 0.25" 
-                                    numOctaves="8" 
-                                    seed="42"
-                                    result="woodNoise"
-                                />
-                                <feColorMatrix 
-                                    in="woodNoise"
-                                    type="saturate" 
-                                    values="0.5"
-                                    result="woodColor"
-                                />
-                                <feComponentTransfer in="woodColor" result="woodContrast">
-                                    <feFuncR type="linear" slope="2.5" intercept="-0.6" />
-                                    <feFuncG type="linear" slope="2.5" intercept="-0.6" />
-                                    <feFuncB type="linear" slope="2.5" intercept="-0.6" />
-                                    <feFuncA type="discrete" tableValues="0 0.3 0.4 0.35" />
-                                </feComponentTransfer>
-                                <feBlend mode="multiply" in="woodContrast" in2="SourceGraphic" result="blend" />
-                                <feComposite operator="in" in="blend" in2="SourceGraphic" />
-                            </filter>
-                        </>
-                    )}
-                </defs>
-            )}
-            
             {/* 金属单层棋子设计 */}
             {material === 'metal' && !isDark ? (
                 <>
@@ -234,14 +229,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         className="transition-colors duration-300"
                     />
                     
-                    {/* 裁剪路径定义 */}
-                    <defs>
-                        <clipPath id={`outerCircle-${color}`}>
-                            <circle cx="0" cy="0" r={r} />
-                        </clipPath>
-                    </defs>
-                    
-
                     {/* 回形纹装饰 */}
                     <g>
                         {/* 外圈回形纹 - 靠近棋子边缘 */}
@@ -434,8 +421,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         <circle 
                             r={r - 4} 
                             fill={fillColor} 
-                            filter={`url(#woodPieceTexture-${uniqueId})`}
-                            clipPath={`url(#innerCircle-${uniqueId})`}
+                            filter="url(#woodPieceTexture)"
                         />
                     )}
                 </>

@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Board, Color, Move, Position, PieceType } from '../domain/types';
 import { Skin, PieceMaterial } from '../ui/types';
-import { ChessPiece } from './ChessPiece';
+import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
 import { BoardStaticLayer, toBoardSVG } from './BoardStaticLayer';
 
 interface ChessBoardProps {
@@ -694,6 +694,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
             </filter>
             
         </defs>
+        <PieceMaterialDefs />
         <BoardStaticLayer
           flip={flip}
           coordinateStyle={coordinateStyle}

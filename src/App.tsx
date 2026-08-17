@@ -1099,6 +1099,11 @@ const App: React.FC = () => {
                     
                     osc.connect(noteGain);
                     noteGain.connect(gain);
+
+                    osc.onended = () => {
+                        osc.disconnect();
+                        noteGain.disconnect();
+                    };
                     
                     osc.start(startTime);
                     osc.stop(startTime + duration);

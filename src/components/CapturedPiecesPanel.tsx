@@ -2,7 +2,7 @@
 import React from 'react';
 import { PieceType, Color } from '../domain/types';
 import { Skin, PieceMaterial } from '../ui/types';
-import { ChessPiece } from './ChessPiece';
+import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
 
 interface SidePanelProps {
     pieces: PieceType[];
@@ -87,6 +87,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                 viewBox={isSetupMode ? "-24 -24 48 48" : "-16 -16 32 32"} 
                                 className={`overflow-visible pointer-events-none ${isSetupMode ? 'w-10 h-10 lg:w-12 lg:h-12' : ''}`}
                             >
+                                <PieceMaterialDefs />
                                 <ChessPiece 
                                     type={type} 
                                     color={color} 

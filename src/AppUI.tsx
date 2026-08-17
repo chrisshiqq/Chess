@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult } from './domain/types';
 import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
-import { ChessPiece } from './components/ChessPiece';
+import { ChessPiece, PieceMaterialDefs } from './components/ChessPiece';
 import { SKINS } from './components/ChessBoard';
 
 // ClockDisplay component
@@ -21,6 +21,7 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, lab
         <div className="flex items-center gap-3">
             <div className="flex items-center justify-center">
                 <svg width="32" height="32" viewBox="-16 -16 32 32" className="overflow-visible">
+                    <PieceMaterialDefs />
                     <ChessPiece 
                         type="general" 
                         color={color} 
@@ -96,6 +97,7 @@ const FlyingPiece: React.FC<{
             }}
         >
             <svg width="50" height="50" viewBox="-25 -25 50 50" className="overflow-visible">
+                <PieceMaterialDefs />
                 <ChessPiece 
                     type={piece.type} 
                     color={piece.color} 
@@ -158,6 +160,7 @@ const MovingPiece: React.FC<{
             }}
         >
             <svg width="50" height="50" viewBox="-25 -25 50 50" className="overflow-visible">
+                <PieceMaterialDefs />
                 <ChessPiece 
                     type={piece.type} 
                     color={piece.color} 
