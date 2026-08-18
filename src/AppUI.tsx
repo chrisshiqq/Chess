@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult } from './domain/types';
 import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 import { ChessPiece, PieceMaterialDefs } from './components/ChessPiece';
@@ -13,7 +13,9 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, lab
     blackStepCount: number,
     label?: string,
     playerColor?: Color
-}) => (
+}) => {
+    const materialIdPrefix = `clock-${useId().replace(/:/g, '')}`;
+    return (
     <div className={`
         flex items-center justify-between px-4 py-2 rounded-lg border-2 shadow-lg transition-all duration-300 w-full
         ${isActive ? 'bg-stone-800 border-amber-500 ring-2 ring-amber-500/30 transform scale-105 z-10' : 'bg-stone-900/60 border-stone-700 opacity-70 grayscale'}
@@ -21,13 +23,14 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, lab
         <div className="flex items-center gap-3">
             <div className="flex items-center justify-center">
                 <svg width="32" height="32" viewBox="-16 -16 32 32" className="overflow-visible">
-                    <PieceMaterialDefs />
+                    <PieceMaterialDefs idPrefix={materialIdPrefix} />
                     <ChessPiece 
                         type="general" 
                         color={color} 
                         size={32} 
                         variant="normal"
                         playerColor={color}
+                        materialIdPrefix={materialIdPrefix}
                     />
                 </svg>
             </div>
@@ -39,7 +42,8 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, lab
             {formatTime(time)}
         </span>
     </div>
-);
+    );
+};
 
 // Helper function to format time
 const formatTime = (seconds: number) => {
@@ -56,6 +60,7 @@ const FlyingPiece: React.FC<{
     isFlipped: boolean,
     material?: PieceMaterial
 }> = ({ piece, startPos, targetPos, isFlipped, material = 'wood' }) => {
+    const materialIdPrefix = `flying-${useId().replace(/:/g, '')}`;
     // 使用与ChessBoard组件相同的坐标计算逻辑
     const CELL_SIZE = 50;
     const BOARD_OFFSET = 50;
@@ -97,13 +102,14 @@ const FlyingPiece: React.FC<{
             }}
         >
             <svg width="50" height="50" viewBox="-25 -25 50 50" className="overflow-visible">
-                <PieceMaterialDefs />
+                <PieceMaterialDefs idPrefix={materialIdPrefix} />
                 <ChessPiece 
                     type={piece.type} 
                     color={piece.color} 
                     size={50} 
                     variant="normal"
                     material={material}
+                    materialIdPrefix={materialIdPrefix}
                 />
             </svg>
         </div>
@@ -117,6 +123,7 @@ const MovingPiece: React.FC<{
     to: Position,
     isFlipped: boolean
 }> = ({ piece, from, to, isFlipped }) => {
+    const materialIdPrefix = `moving-${useId().replace(/:/g, '')}`;
     // Calculate initial and target positions using 50px cell size (same as chessboard)
     const startY = (isFlipped ? (9 - from.r) : from.r) * 50 + 70; // 70px offset (BOARD_OFFSET)
     const startX = (isFlipped ? (8 - from.c) : from.c) * 50 + 70;
@@ -160,12 +167,13 @@ const MovingPiece: React.FC<{
             }}
         >
             <svg width="50" height="50" viewBox="-25 -25 50 50" className="overflow-visible">
-                <PieceMaterialDefs />
+                <PieceMaterialDefs idPrefix={materialIdPrefix} />
                 <ChessPiece 
                     type={piece.type} 
                     color={piece.color} 
                     size={50} 
                     variant="normal"
+                    materialIdPrefix={materialIdPrefix}
                 />
             </svg>
         </div>

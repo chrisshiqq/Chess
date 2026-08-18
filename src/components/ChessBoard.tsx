@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { Board, Color, Move, Position, PieceType } from '../domain/types';
 import { Skin, PieceMaterial } from '../ui/types';
 import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
@@ -114,6 +114,9 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
     boardBgColor, boardLineColor, coordinateStyle = 'chinese', onDragStart, onDrop, pieceRelations, moveAnimation, pieceEval, isCheck = false,
     hiddenBestMove = null, suboptimalMove = null
 }) => {
+
+  const materialIdPrefix = `board-${useId().replace(/:/g, '')}`;
+  const animationMaterialIdPrefix = `${materialIdPrefix}-move`;
 
   // 添加CSS动画样式到文档头部 - 只在组件挂载时执行一次
   useEffect(() => {
@@ -598,6 +601,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
                 material={material} 
                 playerColor={playerColor} 
                 isInCheck={isInCheck}
+                materialIdPrefix={materialIdPrefix}
               />
             </g>
           );
@@ -694,7 +698,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
             </filter>
             
         </defs>
-        <PieceMaterialDefs />
+        <PieceMaterialDefs idPrefix={materialIdPrefix} />
         <BoardStaticLayer
           flip={flip}
           coordinateStyle={coordinateStyle}
@@ -727,6 +731,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
           }}
         >
           <svg width={CELL_SIZE} height={CELL_SIZE} viewBox="0 0 50 50" style={{ overflow: 'visible' }}>
+            <PieceMaterialDefs idPrefix={animationMaterialIdPrefix} />
             <g transform="translate(25, 25)">
               <ChessPiece 
                 type={moveAnimation.piece.type} 
@@ -734,6 +739,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
                 size={50} 
                 material={material} 
                 playerColor={playerColor} 
+                materialIdPrefix={animationMaterialIdPrefix}
               />
             </g>
           </svg>

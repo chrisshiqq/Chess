@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useId } from 'react';
 import { PieceType, Color } from '../domain/types';
 import { Skin, PieceMaterial } from '../ui/types';
 import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
@@ -26,6 +26,7 @@ const sortPieces = (pieces: PieceType[]) => {
 
 export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor, label, isSetupMode = false, skin = 'stone-board', material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
     const sortedPieces = sortPieces(pieces);
+    const materialIdBase = `captured-${useId().replace(/:/g, '')}`;
 
     const handleDragOver = (e: React.DragEvent) => {
         if (!isSetupMode) return;
@@ -58,6 +59,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
             >
                 <div className={`grid gap-0 w-full justify-items-center items-center ${isSetupMode ? `${setupHeightClass} grid-cols-8 grid-rows-2 lg:grid-cols-4 lg:grid-rows-4 p-0` : `${capturedHeightClass} grid-cols-8`}`}>
                 {sortedPieces.map((type, idx) => {
+                    const materialIdPrefix = `${materialIdBase}-${color}-${type}-${idx}`;
                     // 检查当前棋子是否是最近被吃的棋子，并且是同类型中最后一个出现的（即最新被吃的）
                     const isRecentlyCaptured = !isSetupMode && recentlyCaptured && 
                         recentlyCaptured.color === color && recentlyCaptured.type === type &&
@@ -87,7 +89,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                 viewBox={isSetupMode ? "-24 -24 48 48" : "-16 -16 32 32"} 
                                 className={`overflow-visible pointer-events-none ${isSetupMode ? 'w-10 h-10 lg:w-12 lg:h-12' : ''}`}
                             >
-                                <PieceMaterialDefs />
+                                <PieceMaterialDefs idPrefix={materialIdPrefix} />
                                 <ChessPiece 
                                     type={type} 
                                     color={color} 
@@ -96,6 +98,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                     material={material} 
                                     playerColor={playerColor} 
                                     isRecentlyCaptured={isRecentlyCaptured} 
+                                    materialIdPrefix={materialIdPrefix}
                                 />
                             </svg>
                         </div>

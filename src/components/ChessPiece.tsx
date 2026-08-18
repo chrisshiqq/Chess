@@ -33,6 +33,7 @@ interface ChessPieceProps {
     playerColor?: Color; // 玩家所在方，用于决定文字朝向
     isInCheck?: boolean; // 是否处于被将军状态
     isRecentlyCaptured?: boolean; // 是否是最近被吃的棋子
+    materialIdPrefix?: string;
     style?: React.CSSProperties;
 }
 
@@ -136,22 +137,26 @@ type GradientConfig = {
     black: { gradient: string[] };
 };
 
-// These IDs are scoped to the containing SVG. ChessBoard renders this once so
-// all pieces can share the same gradients and wood texture filter.
-export const PieceMaterialDefs: React.FC = () => {
+interface PieceMaterialDefsProps {
+    idPrefix: string;
+}
+
+// Each standalone SVG gets a unique prefix; pieces inside it still share one
+// set of gradients and the wood texture filter.
+export const PieceMaterialDefs: React.FC<PieceMaterialDefsProps> = ({ idPrefix }) => {
     const materials = Object.entries(MATERIAL_CONFIGS) as Array<[PieceMaterial, GradientConfig]>;
 
     return (
         <defs>
             {materials.flatMap(([material, colors]) => (
                 (['red', 'black'] as Color[]).map((color) => (
-                    <radialGradient key={`${material}-${color}`} id={`pieceGradient-${material}-${color}`}>
+                    <radialGradient key={`${material}-${color}`} id={`${idPrefix}-pieceGradient-${material}-${color}`}>
                         <stop offset="0%" stopColor={colors[color].gradient[0]} />
                         <stop offset="100%" stopColor={colors[color].gradient[1]} />
                     </radialGradient>
                 ))
             ))}
-            <filter id="woodPieceTexture" x="-10%" y="-10%" width="120%" height="120%">
+            <filter id={`${idPrefix}-woodPieceTexture`} x="-10%" y="-10%" width="120%" height="120%">
                 <feTurbulence
                     type="fractalNoise"
                     baseFrequency="0.02 0.25"
@@ -173,7 +178,7 @@ export const PieceMaterialDefs: React.FC = () => {
     );
 };
 
-const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant = 'normal', material = 'wood', playerColor = 'red', isInCheck = false, isRecentlyCaptured = false, style }) => {
+const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant = 'normal', material = 'wood', playerColor = 'red', isInCheck = false, isRecentlyCaptured = false, materialIdPrefix = 'piece-material', style }) => {
     const r = size / 2 - 4;
     const fontSize = size * 0.52;
     
@@ -184,7 +189,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
     }, []);
     
     // 暗色变体使用固定的深色
-    const fillColor = isDark ? "#3e2723" : `url(#pieceGradient-${material}-${color})`;
+    const fillColor = isDark ? "#3e2723" : `url(#${materialIdPrefix}-pieceGradient-${material}-${color})`;
     const strokeColor = isDark ? '#271c19' : config.stroke;
     const charColor = isDark ? (color === 'red' ? '#c00' : '#111') : config.textColor;
     const textShadow = isDark 
@@ -421,7 +426,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         <circle 
                             r={r - 4} 
                             fill={fillColor} 
-                            filter="url(#woodPieceTexture)"
+                            filter={`url(#${materialIdPrefix}-woodPieceTexture)`}
                         />
                     )}
                 </>
