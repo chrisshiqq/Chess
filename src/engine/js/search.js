@@ -6350,8 +6350,21 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
 };
 
 // exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, exactRootScores = false) => {
+const getBestMove = (
+  board,
+  turn,
+  depth = 8,
+  ply = 0,
+  enableTimeLimit = false,
+  exactRootScores = false,
+  excludedRootMoves = []
+) => {
   const timeLimit = 5000;
+  const excludedRootMoveSet = new Set(
+    excludedRootMoves
+      .filter((move) => move?.from && move?.to)
+      .map((move) => encodeMove(move.from, move.to))
+  );
 
   // First try to get move from opening book
   const bookMove = openingBook.getBookMove(board, ply);
@@ -6364,7 +6377,8 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
       
       const movingPiece = board[bookMove.from.r][bookMove.from.c];
       
-      if (movingPiece && movingPiece.color === turn) {
+      if (movingPiece && movingPiece.color === turn &&
+          !excludedRootMoveSet.has(encodeMove(bookMove.from, bookMove.to))) {
         // Verify move is valid
         const validDestinations = getValidMoves(board, bookMove.from);
         const isValid = validDestinations.some(dest => dest.r === bookMove.to.r && dest.c === bookMove.to.c);
@@ -6437,6 +6451,7 @@ const getBestMove = (board, turn, depth = 8, ply = 0, enableTimeLimit = false, e
         if (board[r][c]?.color === turn) {
           const validDestinations = getValidMoves(board, { r, c });
           validDestinations.forEach(to => {
+            if (excludedRootMoveSet.has(encodeMove({ r, c }, to))) return;
             rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
           });
         }

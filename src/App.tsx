@@ -1449,6 +1449,7 @@ const App: React.FC = () => {
         aiSearchProgressPendingRef.current = null;
 
         const searchToken = { gameId: capturedGameId, aborted: false };
+        const excludedRootMoves: Move[] = [];
         aiSearchAbortRef.current = searchToken;
 
         // 开始搜索，显示齿轮转动效果
@@ -1482,65 +1483,6 @@ const App: React.FC = () => {
             ply,
             enableTimeLimit
         });
-        
-        // 辅助函数定义
-        // 获取当前玩家的所有合法走法
-        const getAllMoves = async (board: Board, turn: Color): Promise<Move[]> => {
-            const allMoves: Move[] = [];
-            for (let r = 0; r < 10; r++) {
-                for (let c = 0; c < 9; c++) {
-                    if (board[r][c]?.color === turn) {
-                        const moves = await workerGetValidMoves(board, { r, c });
-                        moves.forEach(to => {
-                            allMoves.push({ from: { r, c }, to });
-                        });
-                    }
-                }
-            }
-            return allMoves;
-        };
-        
-        // 寻找第一个不导致重复的有效走法
-        const findValidMove = async (moves: Move[], excludeMoves: Move[] = []): Promise<Move | null> => {
-            for (const move of moves) {
-                // 跳过排除的走法
-                const isExcluded = excludeMoves.some(ex => 
-                    ex.from.r === move.from.r && ex.from.c === move.from.c &&
-                    ex.to.r === move.to.r && ex.to.c === move.to.c
-                );
-                if (isExcluded) continue;
-                
-                const testBoard = currentBoard.map(row => [...row]);
-                testBoard[move.to.r][move.to.c] = testBoard[move.from.r][move.from.c];
-                testBoard[move.from.r][move.from.c] = null;
-                const nextTurn = currentTurn === 'red' ? 'black' : 'red';
-                const hash = generateBoardHash(testBoard, nextTurn);
-                const check = await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
-                
-                if (!check.violation) {
-                    console.log('✅ 找到有效走法:', move);
-                    return move;
-                }
-            }
-            return null;
-        };
-        
-        // 尝试执行一个走法（包括有效性检查和重复性检查）
-        const tryMove = async (move: Move | undefined): Promise<boolean> => {
-            // 检查有效性
-            if (!(move && move.from && move.to && 
-                typeof move.from.r === 'number' && typeof move.from.c === 'number' &&
-                typeof move.to.r === 'number' && typeof move.to.c === 'number')) {
-                return false;
-            }
-            // 检查重复性
-            const check = await checkMoveRepetition(move);
-            if (check.violation) {
-                console.log('⚠️ 走法', move, '会导致', check.type === 'check' ? '长将' : '长捉或局面重复', ':', check.type);
-                return false;
-            }
-            return true;
-        };
         
         // 执行走法并处理延迟
         const executeMoveWithDelay = async (move: Move, turn: Color, isAutoMode: boolean, delay: number) => {
@@ -1591,6 +1533,43 @@ const App: React.FC = () => {
             const hash = generateBoardHash(testBoard, nextTurn);
             return await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
         };
+
+        const isSameMove = (left: Move, right: Move): boolean =>
+            left.from.r === right.from.r && left.from.c === right.from.c &&
+            left.to.r === right.to.r && left.to.c === right.to.c;
+
+        const isUsableMove = (move: Move | null | undefined): move is Move =>
+            !!(move?.from && move?.to &&
+                typeof move.from.r === 'number' && typeof move.from.c === 'number' &&
+                typeof move.to.r === 'number' && typeof move.to.c === 'number');
+
+        const postSearch = (): boolean => {
+            const worker = workerRef.current;
+            if (!worker) return false;
+            worker.postMessage({
+                type: 'SEARCH',
+                payload: {
+                    board: currentBoard,
+                    turn: currentTurn,
+                    depth: searchDepth,
+                    randomness,
+                    ply,
+                    gameId: capturedGameId,
+                    openingBookEnabled,
+                    enableTimeLimit,
+                    exactRootScores: false,
+                    excludedRootMoves: [...excludedRootMoves]
+                }
+            });
+            return true;
+        };
+
+        const detachSearchListener = (listener: (e: MessageEvent) => void): boolean => {
+            const stillListening = aiSearchListenerRef.current === listener;
+            workerRef.current?.removeEventListener('message', listener);
+            if (stillListening) aiSearchListenerRef.current = null;
+            return stillListening;
+        };
         
         // Define message handler
         const handleWorkerMessage = async (e: MessageEvent) => {
@@ -1634,11 +1613,6 @@ const App: React.FC = () => {
                     completedDepth: payload?.completedDepth,
                     best: payload?.bestMove
                 });
-                // 无论gameId是否匹配，都要移除事件监听器
-                workerRef.current?.removeEventListener('message', handleWorkerMessage);
-                if (aiSearchListenerRef.current === handleWorkerMessage) {
-                    aiSearchListenerRef.current = null;
-                }
                 // COMPLETE 前 flush 最后一次进度，避免节流丢掉最新层
                 flushAiSearchProgress();
 
@@ -1687,74 +1661,51 @@ const App: React.FC = () => {
                     setIsPreviewing(false);
                     setOriginalBoardForPreview(null);
                     
-                    // 检查最优走法是否有效
-                    // 使用新的线性流程：先尝试最优走法，再尝试次优走法，最后尝试随机走法
-                    
-                    // 尝试最优走法
-                    if (await tryMove(payload.bestMove)) {
-                        if (searchToken.aborted) return;
-                        await executeMoveWithDelay(payload.bestMove, currentTurn, isAutoMode, delay);
-                        return;
-                    }
-                    
-                    // 尝试次优走法
-                    if (await tryMove(payload.secondBestMove)) {
-                        if (searchToken.aborted) return;
-                        await executeMoveWithDelay(payload.secondBestMove, currentTurn, isAutoMode, delay);
+                    const bestMove = payload.bestMove as Move | null | undefined;
+                    if (!isUsableMove(bestMove)) {
+                        detachSearchListener(handleWorkerMessage);
+                        setIsThinking(false);
+                        setTimeout(() => setGameId(prev => prev + 1), 500);
                         return;
                     }
 
-                    // 最优和次优都违规时，继续按引擎根着法排序寻找棋力最好的变招。
-                    const attemptedMoves = [payload.bestMove, payload.secondBestMove].filter(Boolean) as Move[];
-                    for (const moveData of payload.allMovesWithScores || []) {
-                        if (searchToken.aborted) return;
-                        const candidate = moveData.move as Move | undefined;
-                        if (!candidate || attemptedMoves.some(move =>
-                            move.from.r === candidate.from.r && move.from.c === candidate.from.c &&
-                            move.to.r === candidate.to.r && move.to.c === candidate.to.c
-                        )) continue;
-                        attemptedMoves.push(candidate);
-                        if (await tryMove(candidate)) {
-                            await executeMoveWithDelay(candidate, currentTurn, isAutoMode, delay);
+                    const repetition = await checkMoveRepetition(bestMove);
+                    if (searchToken.aborted) return;
+                    if (repetition.violation) {
+                        console.log(
+                            '⚠️ 最优着违反重复规则，禁着后重新搜索:',
+                            bestMove,
+                            repetition.type
+                        );
+                        if (excludedRootMoves.some(move => isSameMove(move, bestMove))) {
+                            console.error('❌ 根节点禁着后仍返回同一走法，停止搜索:', bestMove);
+                            detachSearchListener(handleWorkerMessage);
+                            setIsThinking(false);
                             return;
                         }
-                    }
-                    
-                    // 尝试其他走法
-                    const allMoves = await getAllMoves(currentBoard, currentTurn);
-                    if (searchToken.aborted) return;
-                    if (allMoves.length === 0) {
-                        setIsThinking(false);
-                        setTimeout(() => {
-                            setGameId(prev => prev + 1);
-                        }, 500);
+                        excludedRootMoves.push(bestMove);
+                        setAiSearchDebug(prev => ({
+                            ...prev,
+                            active: true,
+                            phase: 'posted',
+                            completedDepth: -2,
+                            currentDepth: 0,
+                            bestPreview: '',
+                            lastEvent: `RESEARCH exclusions=${excludedRootMoves.length}`,
+                            lastProgressAt: Date.now()
+                        }));
+                        if (!postSearch()) {
+                            detachSearchListener(handleWorkerMessage);
+                            setIsThinking(false);
+                        }
                         return;
                     }
-                    
-                    // 排除已经尝试过的最优和次优走法
-                    const excludeMoves = attemptedMoves;
-                    const validMove = await findValidMove(allMoves, excludeMoves);
-                    if (searchToken.aborted) return;
-                    if (validMove) {
-                        await executeMoveWithDelay(validMove, currentTurn, isAutoMode, delay);
-                        return;
-                    }
-                    
-                    // 所有走法都会导致重复，随机选择一个
-                    console.warn('⚠️ 所有走法都会导致重复！随机选择一个避免死局');
-                    const randomMove = allMoves[Math.floor(Math.random() * allMoves.length)];
-                    if (randomMove) {
-                        console.log('🎲 随机选择走法:', randomMove);
-                        await executeMoveWithDelay(randomMove, currentTurn, isAutoMode, delay);
-                    } else {
-                        console.error('❌ 无法找到任何有效走法！');
-                        setIsThinking(false);
-                        setTimeout(() => {
-                            setGameId(prev => prev + 1);
-                        }, 500);
-                    }
+
+                    detachSearchListener(handleWorkerMessage);
+                    await executeMoveWithDelay(bestMove, currentTurn, isAutoMode, delay);
+                    return;
                 } else {
-                    // 如果gameId不匹配，也要确保isThinking被设置为false
+                    detachSearchListener(handleWorkerMessage);
                     console.warn('[AI] SEARCH_COMPLETE gameId mismatch', {
                         got: payload?.gameId,
                         expect: capturedGameId
@@ -1772,11 +1723,7 @@ const App: React.FC = () => {
 
         const cleanup = () => {
             searchToken.aborted = true;
-            const stillListening = aiSearchListenerRef.current === handleWorkerMessage;
-            workerRef.current?.removeEventListener('message', handleWorkerMessage);
-            if (stillListening) {
-                aiSearchListenerRef.current = null;
-            }
+            const stillListening = detachSearchListener(handleWorkerMessage);
             if (aiSearchProgressTimerRef.current != null) {
                 window.clearTimeout(aiSearchProgressTimerRef.current);
                 aiSearchProgressTimerRef.current = null;
@@ -1798,20 +1745,7 @@ const App: React.FC = () => {
         if (workerRef.current) {
             aiSearchListenerRef.current = handleWorkerMessage;
             workerRef.current.addEventListener('message', handleWorkerMessage);
-            workerRef.current.postMessage({
-                type: 'SEARCH',
-                payload: {
-                    board: currentBoard,
-                    turn: currentTurn,
-                    depth: searchDepth,
-                    randomness: randomness,
-                    ply: ply,
-                    gameId: capturedGameId,
-                    openingBookEnabled: openingBookEnabled,
-                    enableTimeLimit: enableTimeLimit,
-                    exactRootScores: false // 对弈：标准 PVS，不为 Analysis 全根回搜
-                }
-            });
+            postSearch();
         } else {
             setIsThinking(false);
         }

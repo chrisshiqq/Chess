@@ -139,7 +139,8 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
             payload.depth,
             payload.ply ?? 0,
             payload.enableTimeLimit ?? false,
-            payload.exactRootScores ?? false
+            payload.exactRootScores ?? false,
+            payload.excludedRootMoves ?? []
           );
         } finally {
           searchContext.reportSearchProgress = null;
