@@ -5906,6 +5906,7 @@ const quiescence = (
         sortCaptures(moves, b, gameStage);
     }
 
+    const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
     let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
     let legalMovesFound = 0;
     for (let i = 0; i < moves.length; i++) {
@@ -5920,9 +5921,8 @@ const quiescence = (
         const nextHash = childBoardHash(boardHash, move, movingPiece, captured);
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
-        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
         const value = quiescence(
-            b, alpha, beta, nextPlayer === searchInitiator, nextPlayer,
+            b, alpha, beta, !maximizing, nextPlayer,
             searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
         );
         unmakeSearchMove(b, move, captured);
@@ -6011,6 +6011,8 @@ const alphaBeta = (
             (isInitiatorWinner ? d : (searchDepth - d));
     }
 
+    const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
+
     // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
     const canNmp = allowNull &&
         !inCheck &&
@@ -6024,17 +6026,15 @@ const alphaBeta = (
     if (canNmp) {
         const reduction = Math.min(searchContext.nmpReduction, d - 1);
         const nullDepth = d - 1 - reduction;
-        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        const nextMaximizing = nextPlayer === searchInitiator;
         const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
         if (searchContext.collectMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
             ? alphaBeta(
-                b, nullDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                b, nullDepth, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             )
             : alphaBeta(
-                b, nullDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                b, nullDepth, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             );
         if (searchContext.collectMetrics) {
@@ -6141,9 +6141,6 @@ const alphaBeta = (
             recordFirstLegalMove(d, moveIndex);
         }
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
-        const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
-        const nextMaximizing = nextPlayer === searchInitiator;
-
         // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
         const canLmr = !inCheck &&
             !isCapture &&
@@ -6172,7 +6169,7 @@ const alphaBeta = (
         if (maximizing) {
             if (canLmr) {
                 value = alphaBeta(
-                    b, reducedDepth, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                    b, reducedDepth, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
@@ -6180,19 +6177,19 @@ const alphaBeta = (
                     if (pvsEligible) {
                         if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                         value = alphaBeta(
-                            b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                            b, d - 1, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                         if (value > alpha) {
                             if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                             value = alphaBeta(
-                                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                                b, d - 1, alpha, beta, !maximizing, nextPlayer,
                                 searchDepth, searchInitiator, gameStage, nextHash
                             );
                         }
                     } else {
                         value = alphaBeta(
-                            b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                            b, d - 1, alpha, beta, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                     }
@@ -6200,25 +6197,25 @@ const alphaBeta = (
             } else if (pvsEligible) {
                 if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
-                    b, d - 1, alpha, alpha + NULL_WINDOW_EPS, nextMaximizing, nextPlayer,
+                    b, d - 1, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                     value = alphaBeta(
-                        b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                        b, d - 1, alpha, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                 }
             } else {
                 value = alphaBeta(
-                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                    b, d - 1, alpha, beta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
             }
         } else if (canLmr) {
             value = alphaBeta(
-                b, reducedDepth, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                b, reducedDepth, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
@@ -6226,19 +6223,19 @@ const alphaBeta = (
                 if (pvsEligible) {
                     if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
-                        b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                        b, d - 1, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                     if (value < beta) {
                         if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
-                            b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                            b, d - 1, alpha, beta, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                     }
                 } else {
                     value = alphaBeta(
-                        b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                        b, d - 1, alpha, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                 }
@@ -6246,19 +6243,19 @@ const alphaBeta = (
         } else if (pvsEligible) {
             if (searchContext.collectMetrics) perfStats.pvsAttempts++;
             value = alphaBeta(
-                b, d - 1, beta - NULL_WINDOW_EPS, beta, nextMaximizing, nextPlayer,
+                b, d - 1, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
-                    b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                    b, d - 1, alpha, beta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
             }
         } else {
             value = alphaBeta(
-                b, d - 1, alpha, beta, nextMaximizing, nextPlayer,
+                b, d - 1, alpha, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
         }
