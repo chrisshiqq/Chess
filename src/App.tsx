@@ -514,7 +514,6 @@ const App: React.FC = () => {
     useEffect(() => {
         blackIsAutoRef.current = blackIsAuto;
     }, [blackIsAuto]);
-    const [isAutoMovePending, setIsAutoMovePending] = useState<boolean>(false);
     const [enableTimeLimit, setEnableTimeLimit] = useState<boolean>(false); // 控制AI时间限制逻辑的开关
     const [isReplaying, setIsReplaying] = useState<boolean>(false);
     const [replayIndex, setReplayIndex] = useState<number>(0);
@@ -524,9 +523,8 @@ const App: React.FC = () => {
     const [selectedAnalysisMove, setSelectedAnalysisMove] = useState<number | null>(null); // 选中的分析着法索引
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const [isMuted, setIsMuted] = useState<boolean>(false);
+    const isMuted = false;
     const [isMusicEnabled, setIsMusicEnabled] = useState<boolean>(true); // 默认打开
-    const [musicTrigger, setMusicTrigger] = useState<number>(0); // 用于触发音乐循环启动
     const [musicVariant, setMusicVariant] = useState<number>(
         () => Math.floor(Math.random() * MUSIC_VARIANTS.length)
     );
@@ -541,7 +539,6 @@ const App: React.FC = () => {
     const audioContextRef = useRef<AudioContext | null>(null);
     const musicGainRef = useRef<GainNode | null>(null);
     const musicStartedRef = useRef<boolean>(false); // 追踪音乐是否已启动
-    const musicLoopActiveRef = useRef<boolean>(false); // 追踪音乐循环是否激活
 
 
     const [isSetupMode, setIsSetupMode] = useState<boolean>(false);
@@ -616,10 +613,6 @@ const App: React.FC = () => {
     const [playDepth, setPlayDepth] = useState<number>(10);
     const [analysisDepth, setAnalysisDepth] = useState<number>(8);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
-    const [bestMoveSequence, setBestMoveSequence] = useState<Move[]>([]);
-    const [secondBestMoveSequence, setSecondBestMoveSequence] = useState<Move[]>([]);
-    const [bestMoveScore, setBestMoveScore] = useState<number>(0);
-    const [secondBestMoveScore, setSecondBestMoveScore] = useState<number>(0);
     // 隐藏最优着法和次优着法
     const [hiddenBestMove, setHiddenBestMove] = useState<Move | null>(null);
     const [suboptimalMove, setSuboptimalMove] = useState<Move | null>(null);
@@ -736,7 +729,7 @@ const App: React.FC = () => {
     const [gameId, setGameId] = useState(0);
 
     // Chess AI with Opening Book
-    const [openingBookEnabled, setOpeningBookEnabled] = useState(true);
+    const openingBookEnabled = true;
 
     // VALUE_WEIGHTS for chess evaluation
     const [valueWeights, setValueWeights] = useState({
@@ -989,11 +982,6 @@ const App: React.FC = () => {
             }
         }
         
-        // 只有在没有活跃音乐循环且应该播放音乐时，才触发音乐循环启动
-        if (!musicLoopActiveRef.current && isMusicEnabled && hasStarted && !gameOver) {
-            //console.log('🎵 Starting new music loop');
-            setMusicTrigger(prev => prev + 1);
-        }
     };
 
     useEffect(() => {
@@ -1466,8 +1454,6 @@ const App: React.FC = () => {
         // 开始搜索，显示齿轮转动效果
         setIsThinking(true);
         // 清掉上一手分析箭头，避免误判为“正在考虑非法应将”
-        setBestMoveSequence([]);
-        setSecondBestMoveSequence([]);
         setAnalysisMoves([]);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
@@ -1479,6 +1465,7 @@ const App: React.FC = () => {
             turn: currentTurn,
             targetDepth: searchDepth,
             completedDepth: -2,
+            currentDepth: 0,
             rootMoves: 0,
             phase: 'posted',
             bestPreview: '',
@@ -1560,16 +1547,13 @@ const App: React.FC = () => {
             if (searchToken.aborted) return;
             setIsThinking(false);
             
-            // 设置提示移动和自动移动等待状态，无论是AI还是Auto模式
-            // 这确保AI和玩家Auto模式有相同的延迟和指示器效果
+            // AI 和 Auto 模式共用延迟与提示移动效果
             setHintMove(move);
-            setIsAutoMovePending(true);
             
             if (delay > 0) {
                 setTimeout(async () => {
                     if (searchToken.aborted) {
                         setHintMove(null);
-                        setIsAutoMovePending(false);
                         return;
                     }
                     // 对于AI模式，不需要检查isAutoMode，直接执行
@@ -1588,12 +1572,10 @@ const App: React.FC = () => {
                         await executeMove(move, turn);
                     }
                     setHintMove(null);
-                    setIsAutoMovePending(false);
                 }, delay);
             } else {
                 await executeMove(move, turn);
                 setHintMove(null);
-                setIsAutoMovePending(false);
             }
         };
         
@@ -1687,16 +1669,6 @@ const App: React.FC = () => {
                             bestPreview
                         });
                     }
-                    // 首先尝试使用最优走法
-                    const newBestMoveSequence = payload.moveSequence || [];
-                    const newSecondBestMoveSequence = payload.secondMoveSequence || [];
-                    const newBestMoveScore = payload.bestMoveScore || 0;
-                    const newSecondBestMoveScore = payload.secondBestMoveScore || 0;
-                    // 更新最优着法序列、次优着法序列和净胜分状态
-                    setBestMoveSequence(newBestMoveSequence);
-                    setSecondBestMoveSequence(newSecondBestMoveSequence);
-                    setBestMoveScore(newBestMoveScore);
-                    setSecondBestMoveScore(newSecondBestMoveScore);
                     // 设置隐藏最优着法和次优着法
                     setHiddenBestMove(payload.bestMove);
                     setSuboptimalMove(payload.secondBestMove);
@@ -1849,6 +1821,9 @@ const App: React.FC = () => {
 
     // AI 搜索调试：刷新耗时显示 + 无进度看门狗
     const [aiDebugTick, setAiDebugTick] = useState(0);
+    const aiSearchElapsedSeconds = aiSearchDebug.postedAt
+        ? ((Date.now() - aiSearchDebug.postedAt + aiDebugTick * 0) / 1000).toFixed(2)
+        : '0.00';
     useEffect(() => {
         if (!isThinking) return;
         const tickId = window.setInterval(() => setAiDebugTick(v => v + 1), 1000);
@@ -2592,7 +2567,6 @@ const App: React.FC = () => {
         setBlackTime(0);
         setHasStarted(false);
         setIsThinking(false);
-        setIsAutoMovePending(false);
         setGameId(prev => prev + 1);
         // 重置连续无吃子回合计数器
         setDrawMoveCounter(0);
@@ -2611,10 +2585,6 @@ const App: React.FC = () => {
         setIsPreviewing(false);
         setOriginalBoardForPreview(null);
         setLastSearchBench(null);
-        setBestMoveSequence([]);
-        setSecondBestMoveSequence([]);
-        setBestMoveScore(0);
-        setSecondBestMoveScore(0);
         setActiveTab('game');
         
         // 重置moveEvaluation为所有0的对象，确保Restart后显示EVALUATION UI
@@ -2797,13 +2767,8 @@ const App: React.FC = () => {
         setPositionHistory([]);
         setIsRetryMode(false);
         setHintMove(null);
-        setIsAutoMovePending(false);
         setCheckAlert(false);
         setRecentlyCaptured(null);
-        setBestMoveSequence([]);
-        setSecondBestMoveSequence([]);
-        setBestMoveScore(0);
-        setSecondBestMoveScore(0);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
         setRepetitionWarning(null);
@@ -3635,7 +3600,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setHintMove(null);
         setRedIsAuto(false);
         setBlackIsAuto(true); // 恢复黑方默认 AI
-        setIsAutoMovePending(false);
         // 重置连续无吃子回合计数器
         setDrawMoveCounter(0);
         // 返回Game页签
@@ -3979,21 +3943,17 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const capturedInfo = useMemo(() => getCapturedPieces(displayBoard), [displayBoard]);
     const isFlipped = playerColor === 'black';
 
-    let topPanelLabel = "Captured Enemy";
     let topPanelPieces: PieceType[] = [];
     let topPanelColor: Color = playerColor === 'red' ? 'black' : 'red';
 
-    let bottomPanelLabel = "Lost Allies";
     let bottomPanelPieces: PieceType[] = [];
     let bottomPanelColor: Color = playerColor;
 
     if (isSetupMode) {
         topPanelColor = playerColor === 'red' ? 'black' : 'red';
-        topPanelLabel = `${topPanelColor === 'red' ? 'Red' : 'Black'} Supply`;
         topPanelPieces = getSupplyPieces(topPanelColor);
 
         bottomPanelColor = playerColor;
-        bottomPanelLabel = `${bottomPanelColor === 'red' ? 'Red' : 'Black'} Supply`;
         bottomPanelPieces = getSupplyPieces(bottomPanelColor);
     } else {
         const enemyColor = playerColor === 'red' ? 'black' : 'red';
@@ -4136,18 +4096,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 isActive={(playerColor === 'red' ? turn === 'black' : turn === 'red') && !gameOver && !isReplaying && !isSetupMode && hasStarted} 
                                 redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
-                                playerColor={playerColor}
                             />
                         </div>
                         
                         {!isSetupMode && (
                             <SidePanel 
-                                label={topPanelLabel} 
                                 color={playerColor === 'red' ? 'black' : 'red'} 
                                 playerColor={playerColor}
                                 pieces={topPanelColor === (playerColor === 'red' ? 'black' : 'red') ? topPanelPieces : bottomPanelPieces}
                                 isSetupMode={isSetupMode}
-                                skin={skin}
                                 material={material}
                                 onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
                                 onDrop={(e) => handleDropOnPanel(e, playerColor === 'red' ? 'black' : 'red')}
@@ -4159,12 +4116,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         {isSetupMode && (
                             <div className="lg:hidden">
                                 <SidePanel 
-                                    label={topPanelLabel} 
                                     color={topPanelColor} 
                                     playerColor={playerColor}
                                     pieces={topPanelPieces}
                                     isSetupMode={isSetupMode}
-                                    skin={skin}
                                     material={material}
                                     onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
                                     onDrop={(e) => handleDropOnPanel(e, topPanelColor)}
@@ -4193,12 +4148,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         
                         {!isSetupMode && (
                             <SidePanel 
-                                label={bottomPanelLabel} 
                                 color={playerColor} 
                                 playerColor={playerColor}
                                 pieces={topPanelColor === playerColor ? topPanelPieces : bottomPanelPieces}
                                 isSetupMode={isSetupMode}
-                                skin={skin}
                                 material={material}
                                 recentlyCaptured={recentlyCaptured}
                                 onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
@@ -4210,12 +4163,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         {isSetupMode && (
                             <div className="lg:hidden">
                                 <SidePanel 
-                                    label={bottomPanelLabel} 
                                     color={bottomPanelColor} 
                                     playerColor={playerColor}
                                     pieces={bottomPanelPieces}
                                     isSetupMode={isSetupMode}
-                                    skin={skin}
                                     material={material}
                                     recentlyCaptured={recentlyCaptured}
                                     onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
@@ -4231,7 +4182,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 isActive={(playerColor === 'red' ? turn === 'red' : turn === 'black') && !gameOver && !isReplaying && !isSetupMode && hasStarted} 
                                 redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
-                                playerColor={playerColor}
                             />
                         </div>
                     </div>
@@ -4939,10 +4889,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         
                                                         if (payload.gameId === newGameId) {
                                                             // 更新最优着法序列、次优着法序列和净胜分状态
-                                                            setBestMoveSequence(payload.moveSequence || []);
-                                                            setSecondBestMoveSequence(payload.secondMoveSequence || []);
-                                                            setBestMoveScore(payload.bestMoveScore || 0);
-                                                            setSecondBestMoveScore(payload.secondBestMoveScore || 0);
                                                             // 更新所有着法数据，转换为与Replay模式的analysisMoves结构一致的格式
                                                             const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
                                                                 move: moveData.move,
@@ -5004,8 +4950,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             <div className="w-full bg-stone-900/90 rounded-md border border-stone-700 p-2 overflow-y-auto text-xs">
                                                 <div className="w-full space-y-1 overflow-y-auto max-h-48">
                                                     {analysisMoves.map((item, index) => {
-                                                        // 使用清晰的坐标格式显示移动
-                                                        const move = item.move;
                                                         return (
                                                             <div 
                                                                 key={index}
@@ -5127,7 +5071,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             <div>
                                                 Time: {isThinking
                                                     ? (aiSearchDebug.postedAt
-                                                        ? `${((Date.now() - (aiDebugTick, aiSearchDebug.postedAt)) / 1000).toFixed(2)}s`
+                                                        ? `${aiSearchElapsedSeconds}s`
                                                         : '0.00s')
                                                     : formatBenchTime(lastSearchBench?.thinkingTime)}
                                             </div>
@@ -5243,12 +5187,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             <div className="hidden lg:block">
                                 {/* 黑方棋子面板 */}
                                 <SidePanel 
-                                    label="Black Pieces" 
                                     color="black" 
                                     playerColor={playerColor}
                                     pieces={topPanelColor === 'black' ? topPanelPieces : bottomPanelPieces}
                                     isSetupMode={isSetupMode}
-                                    skin={skin}
                                     material={material}
                                     onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
                                     onDrop={(e) => handleDropOnPanel(e, 'black')}
@@ -5257,12 +5199,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 
                                 {/* 红方棋子面板 */}
                                 <SidePanel 
-                                    label="Red Pieces" 
                                     color="red" 
                                     playerColor={playerColor}
                                     pieces={topPanelColor === 'red' ? topPanelPieces : bottomPanelPieces}
                                     isSetupMode={isSetupMode}
-                                    skin={skin}
                                     material={material}
                                     onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
                                     onDrop={(e) => handleDropOnPanel(e, 'red')}
@@ -5394,8 +5334,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     {analysisMoves.length > 0 ? (
                                         <div className="w-full h-full space-y-1 overflow-y-auto">
                                             {analysisMoves.map((item, index) => {
-                                                // 使用清晰的坐标格式显示移动
-                                                const move = item.move;
                                                 return (
                                                     <div 
                                                         key={index}

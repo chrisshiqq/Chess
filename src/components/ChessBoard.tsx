@@ -1,6 +1,6 @@
 
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { Board, Color, Move, Position, PieceType } from '../domain/types';
+import { Board, Color, Move, Position } from '../domain/types';
 import { Skin, PieceMaterial } from '../ui/types';
 import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
 import { BoardStaticLayer, toBoardSVG } from './BoardStaticLayer';
@@ -550,9 +550,6 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
           // 计算选中状态下的缩放比例
           const scale = isSelected ? 1.15 : 1;
           
-          // 计算移动动画的偏移量
-          let translateX = 0;
-          let translateY = 0;
           let animationTransition = 'transform 0.3s linear';
           
           // 动画期间棋盘已是新局面：目标格有子但由浮层棋子播放位移，故隐藏目标格实体子

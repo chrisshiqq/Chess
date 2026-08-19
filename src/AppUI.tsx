@@ -1,18 +1,15 @@
 import React, { useState, useEffect, useId } from 'react';
-import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult } from './domain/types';
-import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
+import { Color, Position, Piece } from './domain/types';
+import { PieceMaterial } from './ui/types';
 import { ChessPiece, PieceMaterialDefs } from './components/ChessPiece';
-import { SKINS } from './components/ChessBoard';
 
 // ClockDisplay component
-const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, label, playerColor = 'red' }: { 
+const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount }: {
     color: Color, 
     time: number, 
     isActive: boolean, 
     redStepCount: number, 
-    blackStepCount: number,
-    label?: string,
-    playerColor?: Color
+    blackStepCount: number
 }) => {
     const materialIdPrefix = `clock-${useId().replace(/:/g, '')}`;
     return (
@@ -116,69 +113,5 @@ const FlyingPiece: React.FC<{
     );
 };
 
-// MovingPiece component for move animation
-const MovingPiece: React.FC<{
-    piece: Piece, 
-    from: Position, 
-    to: Position,
-    isFlipped: boolean
-}> = ({ piece, from, to, isFlipped }) => {
-    const materialIdPrefix = `moving-${useId().replace(/:/g, '')}`;
-    // Calculate initial and target positions using 50px cell size (same as chessboard)
-    const startY = (isFlipped ? (9 - from.r) : from.r) * 50 + 70; // 70px offset (BOARD_OFFSET)
-    const startX = (isFlipped ? (8 - from.c) : from.c) * 50 + 70;
-    const targetY = (isFlipped ? (9 - to.r) : to.r) * 50 + 70;
-    const targetX = (isFlipped ? (8 - to.c) : to.c) * 50 + 70;
-    
-    const [style, setStyle] = useState<React.CSSProperties>({
-        top: startY,
-        left: startX,
-        transform: 'scale(1)',
-        opacity: 1,
-    });
-
-    useEffect(() => {
-        // 双 rAF：保证先以起点完成绘制，再启用 transition（避免移动端瞬移）
-        let raf2 = 0;
-        const raf1 = requestAnimationFrame(() => {
-            raf2 = requestAnimationFrame(() => {
-                setStyle({
-                    top: targetY,
-                    left: targetX,
-                    transform: 'scale(1)',
-                    opacity: 1,
-                    transition: 'top 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), left 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
-                });
-            });
-        });
-        return () => {
-            cancelAnimationFrame(raf1);
-            cancelAnimationFrame(raf2);
-        };
-    }, [startY, startX, targetY, targetX]);
-
-    return (
-        <div 
-            className="absolute pointer-events-none z-40"
-            style={{
-                ...style,
-                marginTop: -25, 
-                marginLeft: -25
-            }}
-        >
-            <svg width="50" height="50" viewBox="-25 -25 50 50" className="overflow-visible">
-                <PieceMaterialDefs idPrefix={materialIdPrefix} />
-                <ChessPiece 
-                    type={piece.type} 
-                    color={piece.color} 
-                    size={50} 
-                    variant="normal"
-                    materialIdPrefix={materialIdPrefix}
-                />
-            </svg>
-        </div>
-    );
-};
-
 // Export UI components
-export { ClockDisplay, FlyingPiece, MovingPiece, formatTime };
+export { ClockDisplay, FlyingPiece };

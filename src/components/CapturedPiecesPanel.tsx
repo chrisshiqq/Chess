@@ -1,16 +1,14 @@
 
 import React, { useId } from 'react';
 import { PieceType, Color } from '../domain/types';
-import { Skin, PieceMaterial } from '../ui/types';
+import { PieceMaterial } from '../ui/types';
 import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
 
 interface SidePanelProps {
     pieces: PieceType[];
     color: Color; // The color of the pieces being displayed
     playerColor: Color; // The player's color, used for determining piece orientation
-    label: string;
     isSetupMode?: boolean;
-    skin?: Skin;
     material?: PieceMaterial;
     onDragStart?: (e: React.DragEvent, pieceType: PieceType, color: Color) => void;
     onDrop?: (e: React.DragEvent) => void;
@@ -24,7 +22,7 @@ const sortPieces = (pieces: PieceType[]) => {
     return [...pieces].sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
 };
 
-export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor, label, isSetupMode = false, skin = 'stone-board', material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
+export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor, isSetupMode = false, material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
     const sortedPieces = sortPieces(pieces);
     const materialIdBase = `captured-${useId().replace(/:/g, '')}`;
 

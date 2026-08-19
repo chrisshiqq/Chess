@@ -357,7 +357,6 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                     {/* 分段式彩色包边 - 位于内外圈之间，每隔120度一段 */}
                     <g>
                         {[0, 120, 240].map((angle) => {
-                            const radian = (angle * Math.PI) / 180;
                             const innerRadius = r - 8;
                             const outerRadius = r - 2;
                             const startAngle = angle - 55; // 每段110度宽
