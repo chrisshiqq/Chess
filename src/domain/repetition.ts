@@ -1,5 +1,7 @@
 import type { Color, PieceType, Position } from './types';
 
+export { generatePositionHash } from './position-hash.js';
+
 export type PositionHistoryEntry = {
   hash: string;
   mover?: Color;

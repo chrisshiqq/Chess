@@ -31,6 +31,7 @@ import type { PeerSession } from './net/PeerSession';
 import { generateRoomCode } from './net/roomCode';
 import type { AppScreen, ConnectionStatus, NetMessage, OnlineSessionInfo } from './net/types';
 import {
+    generatePositionHash,
     isReplyingToOpponentCheck,
     violatesRepeatedCheckCycle,
     type PositionHistoryEntry
@@ -1158,25 +1159,6 @@ const App: React.FC = () => {
         return () => { if (interval) clearInterval(interval); };
     }, [gameOver, isReplaying, isSetupMode, hasStarted]);
 
-    // 生成棋盘哈希（简化版FEN）
-    const generateBoardHash = (board: Board, turn: Color): string => {
-        let hash = '';
-        for (let r = 0; r < 10; r++) {
-            for (let c = 0; c < 9; c++) {
-                const piece = board[r][c];
-                if (piece) {
-                    const symbol = piece.type[0].toUpperCase();
-                    hash += piece.color === 'red' ? symbol : symbol.toLowerCase();
-                } else {
-                    hash += '.';
-                }
-            }
-            hash += '/';
-        }
-        hash += turn; // 加上当前回合方
-        return hash;
-    };
-
     // 检测局面是否处于将军状态
     const isBoardInCheck = async (board: Board, color: Color): Promise<boolean> => {
         return await workerIsCheck(board, color);
@@ -1530,7 +1512,7 @@ const App: React.FC = () => {
             testBoard[move.to.r][move.to.c] = testBoard[move.from.r][move.from.c];
             testBoard[move.from.r][move.from.c] = null;
             const nextTurn = currentTurn === 'red' ? 'black' : 'red';
-            const hash = generateBoardHash(testBoard, nextTurn);
+            const hash = generatePositionHash(testBoard, nextTurn);
             return await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
         };
 
@@ -1857,7 +1839,7 @@ const App: React.FC = () => {
         }
         
         // 移动前评估：优先复用上一手 post（同 hash），否则才 RPC
-        const preHash = generateBoardHash(board, turn);
+        const preHash = generatePositionHash(board, turn);
         const cachedPre = cachedBoardEvalRef.current;
         const preMoveEval = (cachedPre && cachedPre.hash === preHash)
             ? { red: cachedPre.red, black: cachedPre.black }
@@ -1903,7 +1885,7 @@ const App: React.FC = () => {
         
         // 生成新局面哈希
         const nextTurn = turn === 'red' ? 'black' : 'red';
-        const newHash = generateBoardHash(newBoard, nextTurn);
+        const newHash = generatePositionHash(newBoard, nextTurn);
         
         // 注意：以下 await 期间不要 setMoveAnimation/setBoard，否则会出现「动画已开、棋盘未变」的中间帧
         // 将军/捉子各算一次，供重复检测与历史共用
