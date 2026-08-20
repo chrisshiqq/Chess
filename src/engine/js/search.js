@@ -16,6 +16,7 @@ import {
 } from './movegen.js';
 import { searchContext } from './search-context.js';
 import { isValidPlacement } from './rules.js';
+import { generatePositionHash } from '../../domain/position-hash.js';
 
 // 评估分项权重。必须放在本模块，不能从 evaluation.js 回引：
 // Worker 先加载 evaluation.js 时，打包后顶层读 VALUE_WEIGHTS 会撞 TDZ。
@@ -6354,14 +6355,30 @@ const getBestMove = (
   ply = 0,
   enableTimeLimit = false,
   exactRootScores = false,
-  excludedRootMoves = []
+  excludedRootMoves = [],
+  forbiddenRootPositionHashes = []
 ) => {
   const timeLimit = 5000;
+  const nextTurn = turn === 'red' ? 'black' : 'red';
   const excludedRootMoveSet = new Set(
     excludedRootMoves
       .filter((move) => move?.from && move?.to)
       .map((move) => encodeMove(move.from, move.to))
   );
+  const forbiddenRootPositionHashSet = forbiddenRootPositionHashes.length > 0
+    ? new Set(forbiddenRootPositionHashes)
+    : null;
+  const isForbiddenRootPosition = (move) => {
+    if (!forbiddenRootPositionHashSet) return false;
+    const captured = makeMove(board, move.from, move.to);
+    let resultingHash;
+    try {
+      resultingHash = generatePositionHash(board, nextTurn);
+    } finally {
+      unmakeMove(board, move.from, move.to, captured);
+    }
+    return forbiddenRootPositionHashSet.has(resultingHash);
+  };
 
   // First try to get move from opening book
   const bookMove = openingBook.getBookMove(board, ply);
@@ -6380,7 +6397,7 @@ const getBestMove = (
         const validDestinations = getValidMoves(board, bookMove.from);
         const isValid = validDestinations.some(dest => dest.r === bookMove.to.r && dest.c === bookMove.to.c);
         
-        if (isValid) {
+        if (isValid && !isForbiddenRootPosition(bookMove)) {
           return { bestMove: bookMove, secondBestMove: null, moveSequence: [], secondMoveSequence: [], bestMoveScore: 0, secondBestMoveScore: 0, allMovesWithScores: [] };
         }
       }
@@ -6448,8 +6465,10 @@ const getBestMove = (
         if (board[r][c]?.color === turn) {
           const validDestinations = getValidMoves(board, { r, c });
           validDestinations.forEach(to => {
-            if (excludedRootMoveSet.has(encodeMove({ r, c }, to))) return;
-            rootMoves.push({ from: { r, c }, to, score: 0, moveSequence: [] });
+            const move = { from: { r, c }, to };
+            if (excludedRootMoveSet.has(encodeMove(move.from, move.to))) return;
+            if (isForbiddenRootPosition(move)) return;
+            rootMoves.push({ ...move, score: 0, moveSequence: [] });
           });
         }
       }
@@ -6511,7 +6530,6 @@ const getBestMove = (
 
   const workBoard = board.map((row) => [...row]);
   activeSearchPieceState = createSearchPieceState(workBoard, gameStage);
-  const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hash(board);
   if (searchContext.collectMetrics) perfStats.fullHashCount++;
