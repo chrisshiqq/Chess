@@ -4,7 +4,8 @@ import { ChessBoard, SKINS } from './components/ChessBoard';
 import { SidePanel } from './components/CapturedPiecesPanel';
 import { EvaluationPanel } from './components/EvaluationPanel';
 import { 
-    ArrowPathIcon, 
+    ArrowPathIcon,
+    ArrowsLeftRightIcon, 
     BarChartIcon,
     GearIcon, 
     LightBulbIcon, 
@@ -4773,7 +4774,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     style={getButtonStyle()}
                                     className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
-                                    <ArrowPathIcon className="w-4 h-4" />
+                                    <ArrowsLeftRightIcon className="w-6 h-6" />
                                     <span className="text-xs">Switch</span>
                                 </button>
                                 
@@ -4939,7 +4940,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     : formatBenchTime(lastSearchBench?.thinkingTime)}
                                             </div>
                                             {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (
-                                                <div>root: {isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves}</div>
+                                                <div>Root: {isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves}</div>
                                             ) : null}
                                             {(isThinking ? aiSearchDebug.bestPreview : lastSearchBench?.bestPreview) ? (
                                                 <div className="truncate">
