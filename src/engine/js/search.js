@@ -229,6 +229,7 @@ const scratchPackedCaptures = [];
 let scratchPackedCaptureSourceCount = 0;
 let packedCaptureCacheKey = 0;
 let packedCaptureVerificationKey = 0;
+let packedCaptureCombinedKey = 0;
 let packedCaptureGeneration = 0;
 let packedCapturePlayer = null;
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
@@ -3516,7 +3517,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
 // Each piece type/color/position gets a unique random 53-bit integer
 // Uses seeded RNG for deterministic hashing
 class ZobristHasher {
-    hashTable;  // [row][col][pieceIndex]
+    hashTableFlat;
     pieceToIndex;
 
     constructor() {
@@ -3527,7 +3528,7 @@ class ZobristHasher {
             ['black-chariot', 11], ['black-cannon', 12], ['black-soldier', 13]
         ]);
         // Initialize random hash values using seeded RNG (53-bit integers to avoid precision issues)
-        this.hashTable = [];
+        this.hashTableFlat = new Float64Array(90 * 14);
         const MAX_SAFE = 0x1FFFFFFFFFFFFF; // 2^53 - 1
         
         // Simple seeded RNG (LCG - Linear Congruential Generator)
@@ -3537,25 +3538,12 @@ class ZobristHasher {
             return seed / 0x7fffffff;
         };
 
-        for (let r = 0; r < 10; r++) {
-            this.hashTable[r] = [];
-            for (let c = 0; c < 9; c++) {
-                this.hashTable[r][c] = [];
-                for (let p = 0; p < 14; p++) {
-                    // Generate deterministic 53-bit integer
-                    const value = Math.floor(seededRandom() * MAX_SAFE);
-                    this.hashTable[r][c][p] = value;
-                }
+        for (let sq = 0; sq < 90; sq++) {
+            for (let p = 0; p < 14; p++) {
+                this.hashTableFlat[sq * 14 + p] = Math.floor(seededRandom() * MAX_SAFE);
             }
         }
 
-        // 格号直索引：hashBySq[sq][pieceIdx]，避免热路径 (sq/9)|0 与 %9
-        this.hashBySq = new Array(90);
-        for (let sq = 0; sq < 90; sq++) {
-            this.hashBySq[sq] = this.hashTable[SQ_ROW[sq]][SQ_COL[sq]];
-        }
-
-        // 叶评估缓存键：boardHash ^ initiatorKey ^ stageKey
         this.evalInitiatorKeys = {
             red: Math.floor(seededRandom() * MAX_SAFE),
             black: Math.floor(seededRandom() * MAX_SAFE)
@@ -3626,7 +3614,7 @@ class ZobristHasher {
                 if (piece) {
                     const pieceIdx = this.pieceIndex(piece);
                     if (pieceIdx !== undefined) {
-                        h ^= this.hashTable[r][c][pieceIdx];
+                        h ^= this.hashTableFlat[(r * 9 + c) * 14 + pieceIdx];
                     }
                 }
             }
@@ -3666,13 +3654,13 @@ class ZobristHasher {
         let newHash = currentHash;
         const movingIdx = this.pieceIndex(movingPiece);
         if (movingIdx !== undefined) {
-            newHash ^= this.hashTable[move.from.r][move.from.c][movingIdx];
-            newHash ^= this.hashTable[move.to.r][move.to.c][movingIdx];
+            newHash ^= this.hashTableFlat[(move.from.r * 9 + move.from.c) * 14 + movingIdx];
+            newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + movingIdx];
         }
         if (capturedPiece) {
             const capturedIdx = this.pieceIndex(capturedPiece);
             if (capturedIdx !== undefined) {
-                newHash ^= this.hashTable[move.to.r][move.to.c][capturedIdx];
+                newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + capturedIdx];
             }
         }
         return newHash;
@@ -4734,37 +4722,41 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
 
   switch (piece.type) {
     case 'general': {
-      const dests = GENERAL_DEST[colorIdx][fromSq];
+      const dests = SEARCH_GENERAL_DEST[colorIdx][fromSq];
       for (let i = 0; i < dests.length; i++) {
-        const d = dests[i];
-        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+        const sq = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, SEARCH_SQ_ROWS[sq], SEARCH_SQ_COLS[sq]);
       }
       break;
     }
     case 'advisor': {
-      const dests = ADVISOR_DEST[colorIdx][fromSq];
+      const dests = SEARCH_ADVISOR_DEST[colorIdx][fromSq];
       for (let i = 0; i < dests.length; i++) {
-        const d = dests[i];
-        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+        const sq = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, SEARCH_SQ_ROWS[sq], SEARCH_SQ_COLS[sq]);
       }
       break;
     }
     case 'elephant': {
-      const dests = ELEPHANT_DEST[colorIdx][fromSq];
+      const dests = SEARCH_ELEPHANT_DEST[colorIdx][fromSq];
       for (let i = 0; i < dests.length; i++) {
-        const d = dests[i];
-        if (board[d.br][d.bc] === null) {
-          pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+        const entry = dests[i];
+        const blockSq = entry >> 7;
+        if (board[SEARCH_SQ_ROWS[blockSq]][SEARCH_SQ_COLS[blockSq]] === null) {
+          const sq = entry & 0x7F;
+          pushPseudoDest(board, moves, alliesOut, pieceColor, SEARCH_SQ_ROWS[sq], SEARCH_SQ_COLS[sq]);
         }
       }
       break;
     }
     case 'horse': {
-      const dests = HORSE_DEST[fromSq];
+      const dests = SEARCH_HORSE_DEST[fromSq];
       for (let i = 0; i < dests.length; i++) {
-        const d = dests[i];
-        if (board[d.br][d.bc] === null) {
-          pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+        const entry = dests[i];
+        const legSq = entry >> 7;
+        if (board[SEARCH_SQ_ROWS[legSq]][SEARCH_SQ_COLS[legSq]] === null) {
+          const sq = entry & 0x7F;
+          pushPseudoDest(board, moves, alliesOut, pieceColor, SEARCH_SQ_ROWS[sq], SEARCH_SQ_COLS[sq]);
         }
       }
       break;
@@ -4810,10 +4802,10 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
       }
       break;
     case 'soldier': {
-      const dests = SOLDIER_DEST[colorIdx][fromSq];
+      const dests = SEARCH_SOLDIER_DEST[colorIdx][fromSq];
       for (let i = 0; i < dests.length; i++) {
-        const d = dests[i];
-        pushPseudoDest(board, moves, alliesOut, pieceColor, d.r, d.c);
+        const sq = dests[i];
+        pushPseudoDest(board, moves, alliesOut, pieceColor, SEARCH_SQ_ROWS[sq], SEARCH_SQ_COLS[sq]);
       }
       break;
     }
@@ -5444,7 +5436,6 @@ const snapshotPerfStats = () => {
         staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
         evalCacheSize: EVAL_CACHE_SIZE,
         evalCacheBytes: evalCacheKeys.byteLength +
-            evalCacheVerificationKeys.byteLength +
             evalCacheValues.byteLength +
             evalCacheGenerations.byteLength,
         evaluateBoardMs: perfStats.evaluateBoardMs,
@@ -5495,7 +5486,6 @@ const transpositionTable = new TranspositionTable();
 const EVAL_CACHE_SIZE = 1 << 20;
 const EVAL_CACHE_MASK = EVAL_CACHE_SIZE - 1;
 const evalCacheKeys = new Int32Array(EVAL_CACHE_SIZE);
-const evalCacheVerificationKeys = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheValues = new Float64Array(EVAL_CACHE_SIZE);
 const evalCacheGenerations = new Uint8Array(EVAL_CACHE_SIZE);
 let evalCacheGeneration = 1;
@@ -5602,15 +5592,15 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
         const movingIdx = zobristHasher.pieceIndex(movingPiece);
         const from = move >>> 7;
         const to = move & MOVE_TO_MASK;
-        const hashBySq = zobristHasher.hashBySq;
+        const hashTableFlat = zobristHasher.hashTableFlat;
         if (movingIdx !== undefined) {
-            newHash ^= hashBySq[from][movingIdx];
-            newHash ^= hashBySq[to][movingIdx];
+            newHash ^= hashTableFlat[from * 14 + movingIdx];
+            newHash ^= hashTableFlat[to * 14 + movingIdx];
         }
         if (captured) {
             const capturedIdx = zobristHasher.pieceIndex(captured);
             if (capturedIdx !== undefined) {
-                newHash ^= hashBySq[to][capturedIdx];
+                newHash ^= hashTableFlat[to * 14 + capturedIdx];
             }
         }
         return newHash;
@@ -5725,10 +5715,10 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
     const pieceState = activePieceStateFor(board);
     const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
+    const combinedKey = cacheKey ^ verificationKey;
     const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
-        evalCacheKeys[cacheSlot] === cacheKey &&
-        evalCacheVerificationKeys[cacheSlot] === verificationKey) {
+        evalCacheKeys[cacheSlot] === combinedKey) {
         if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
         return evalCacheValues[cacheSlot];
     }
@@ -5736,13 +5726,12 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     const net = evaluateLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
     if (capturePlayer != null) {
         packedCaptureCacheKey = cacheKey;
-        packedCaptureVerificationKey = verificationKey;
+        packedCaptureCombinedKey = combinedKey;
         packedCaptureGeneration = evalCacheGeneration;
         packedCapturePlayer = capturePlayer;
     }
     evalCacheGenerations[cacheSlot] = evalCacheGeneration;
-    evalCacheKeys[cacheSlot] = cacheKey;
-    evalCacheVerificationKeys[cacheSlot] = verificationKey;
+    evalCacheKeys[cacheSlot] = combinedKey;
     evalCacheValues[cacheSlot] = net;
     return net;
 };
@@ -5757,8 +5746,8 @@ const copyPackedRelationCaptures = (
     const pieceState = activePieceStateFor(board);
     if (!pieceState || packedCaptureGeneration !== evalCacheGeneration) return false;
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
-    if (packedCaptureCacheKey !== cacheKey ||
-        packedCaptureVerificationKey !== pieceState.evalVerificationHash) return false;
+    const verificationKey = pieceState.evalVerificationHash;
+    if (packedCaptureCombinedKey !== (cacheKey ^ verificationKey)) return false;
     if (packedCapturePlayer !== currentPlayer) return false;
     const captures = scratchPackedCaptures;
     for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
