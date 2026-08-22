@@ -617,6 +617,8 @@ const App: React.FC = () => {
     // 隐藏最优着法和次优着法
     const [hiddenBestMove, setHiddenBestMove] = useState<Move | null>(null);
     const [suboptimalMove, setSuboptimalMove] = useState<Move | null>(null);
+    const [analysisBestMove, setAnalysisBestMove] = useState<Move | null>(null);
+    const [analysisSecondBestMove, setAnalysisSecondBestMove] = useState<Move | null>(null);
     // 最近被吃的棋子
     const [recentlyCaptured, setRecentlyCaptured] = useState<{ color: Color; type: PieceType } | null>(null);
     // 保存原始棋盘状态用于预览未来局面
@@ -629,6 +631,8 @@ const App: React.FC = () => {
         const autoTurn = turn === 'red' ? redIsAuto : blackIsAuto;
         if (!autoTurn) return;
         setAnalysisMoves([]);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setSelectedAnalysisMove(null);
         setIsAnalyzing(false);
         setIsPreviewing(false);
@@ -697,6 +701,8 @@ const App: React.FC = () => {
         setSelectedPieceEval(null);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setFlyingPiece(null);
     };
     
@@ -1433,6 +1439,8 @@ const App: React.FC = () => {
         setAnalysisMoves([]);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setHintMove(null);
         const postedAt = Date.now();
         setAiSearchDebug({
@@ -1999,6 +2007,8 @@ const App: React.FC = () => {
         setCheckAlert(isCheck);
         setHintMove(null);
         setSelectedPieceEval(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         
         // 本步只算 post；结果写入缓存供下一手作 pre
         const postMoveEval = await workerGetDetailedEval(newBoard, nextTurn, isReplaying);
@@ -2461,6 +2471,8 @@ const App: React.FC = () => {
         setRecentlyCaptured(null);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setIsSetupMode(false);
         setRedTime(0);
         setBlackTime(0);
@@ -2628,6 +2640,8 @@ const App: React.FC = () => {
             setSelectedPieceEval(null);
             setHiddenBestMove(null);
             setSuboptimalMove(null);
+            setAnalysisBestMove(null);
+            setAnalysisSecondBestMove(null);
         }
     };
 
@@ -2667,6 +2681,8 @@ const App: React.FC = () => {
         setRecentlyCaptured(null);
         setHiddenBestMove(null);
         setSuboptimalMove(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setRepetitionWarning(null);
         setSelectedPos(null);
         setValidMoves([]);
@@ -3227,6 +3243,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const analyzeCurrentPosition = async () => {
         setIsAnalyzing(true);
         setAnalysisMoves([]);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         
         try {
             let currentBoard;
@@ -3351,6 +3369,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             
             setAnalysisMoves(movesWithScores);
             setSelectedAnalysisMove(null);
+            setAnalysisBestMove(searchResult.bestMove ?? movesWithScores[0]?.move ?? null);
+            setAnalysisSecondBestMove(searchResult.secondMove ?? movesWithScores[1]?.move ?? null);
             
             // 对于Setup模式，我们还需要获取详细的局面评估并更新EVALUATION
             if (isSetupMode) {
@@ -3488,6 +3508,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         // 重置指示器
         setHiddenBestMove(null);
         setSuboptimalMove(null);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
         setBlackTime(0);
         setPositionHistory([]);
         setRepetitionWarning(null);
@@ -4110,6 +4132,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         isCheck={checkAlert}
                         hiddenBestMove={isSetupMode ? null : hiddenBestMove}
                         suboptimalMove={isSetupMode ? null : suboptimalMove}
+                        analysisBestMove={isSetupMode ? null : analysisBestMove}
+                        analysisSecondBestMove={isSetupMode ? null : analysisSecondBestMove}
                     />
 
                     {isReplaying && (
@@ -4672,10 +4696,14 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             setIsPreviewing(false);
                                             setOriginalBoardForPreview(null);
                                             setIsAnalysisMode(false);
+                                            setAnalysisBestMove(null);
+                                            setAnalysisSecondBestMove(null);
                                             return;
                                         }
                                         // 进入Analysis模式，触发分析
                                         setIsAnalysisMode(true);
+                                        setAnalysisBestMove(null);
+                                        setAnalysisSecondBestMove(null);
                                         setIsThinking(true);
                                         const newGameId = gameId + 1;
                                         setGameId(newGameId);
@@ -4695,6 +4723,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         setSelectedAnalysisMove(null);
                                                         setIsPreviewing(false);
                                                         setOriginalBoardForPreview(null);
+                                                        setAnalysisBestMove(payload.bestMove ?? formattedAnalysisMoves[0]?.move ?? null);
+                                                        setAnalysisSecondBestMove(payload.secondBestMove ?? formattedAnalysisMoves[1]?.move ?? null);
                                                     }
                                                     setIsThinking(false);
                                                 }

@@ -53,6 +53,10 @@ interface ChessBoardProps {
   hiddenBestMove?: Move | null;
   // 次优着法（红色虚线箭头）
   suboptimalMove?: Move | null;
+  // Analysis 最优着法（黄色实线箭头）
+  analysisBestMove?: Move | null;
+  // Analysis 次优着法（黄色虚线箭头）
+  analysisSecondBestMove?: Move | null;
 }
 
 export const CELL_SIZE = 50;
@@ -112,7 +116,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
     board, onSelect, onMove, onRightClick, selectedPos, validMoves, turn, lastMove, hintMove, flip = false,
     isSetupMode = false, skin = 'wood-board', material = 'wood', playerColor = 'red', 
     boardBgColor, boardLineColor, coordinateStyle = 'chinese', onDragStart, onDrop, pieceRelations, moveAnimation, pieceEval, isCheck = false,
-    hiddenBestMove = null, suboptimalMove = null
+    hiddenBestMove = null, suboptimalMove = null,
+    analysisBestMove = null, analysisSecondBestMove = null
 }) => {
 
   const materialIdPrefix = `board-${useId().replace(/:/g, '')}`;
@@ -506,6 +511,20 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
         const to = toSVG(suboptimalMove.to.r, suboptimalMove.to.c);
         indicators.push(<line key="suboptimal-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#ef4444" strokeWidth="3" strokeDasharray="5,5" opacity="0.8" pointerEvents="none" markerEnd="url(#arrowhead-dashed-red)" />);
     }
+
+    // Analysis 最优着法（黄色实线箭头）
+    if (analysisBestMove && !isSetupMode) {
+        const from = toSVG(analysisBestMove.from.r, analysisBestMove.from.c);
+        const to = toSVG(analysisBestMove.to.r, analysisBestMove.to.c);
+        indicators.push(<line key="analysis-best-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#eab308" strokeWidth="3" opacity="0.9" pointerEvents="none" markerEnd="url(#arrowhead-yellow)" />);
+    }
+
+    // Analysis 次优着法（黄色虚线箭头）
+    if (analysisSecondBestMove && !isSetupMode) {
+        const from = toSVG(analysisSecondBestMove.from.r, analysisSecondBestMove.from.c);
+        const to = toSVG(analysisSecondBestMove.to.r, analysisSecondBestMove.to.c);
+        indicators.push(<line key="analysis-second-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#eab308" strokeWidth="3" strokeDasharray="5,5" opacity="0.9" pointerEvents="none" markerEnd="url(#arrowhead-dashed-yellow)" />);
+    }
     
     return indicators;
   }
@@ -681,6 +700,29 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
                 markerUnits="strokeWidth"
             >
                 <polygon points="0 0, 5 2, 0 4" fill="#ef4444" stroke="#ef4444" strokeWidth="1" />
+            </marker>
+
+            <marker
+                id="arrowhead-yellow"
+                markerWidth="6"
+                markerHeight="6"
+                refX="4"
+                refY="2"
+                orient="auto"
+                markerUnits="strokeWidth"
+            >
+                <polygon points="0 0, 5 2, 0 4" fill="#eab308" stroke="#eab308" strokeWidth="1" />
+            </marker>
+            <marker
+                id="arrowhead-dashed-yellow"
+                markerWidth="6"
+                markerHeight="6"
+                refX="4"
+                refY="2"
+                orient="auto"
+                markerUnits="strokeWidth"
+            >
+                <polygon points="0 0, 5 2, 0 4" fill="#eab308" stroke="#eab308" strokeWidth="1" />
             </marker>
             
             <radialGradient id="pieceGradient" cx="30%" cy="30%" r="70%" fx="40%" fy="40%">
