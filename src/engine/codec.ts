@@ -21,11 +21,7 @@ const isCompactBoard = (board: WireBoard): board is CompactBoard => {
   return false;
 };
 
-export const encodeBoard = (board: Board): CompactBoard => board.map((row) =>
-  row.map((piece) => piece == null
-    ? -1
-    : PIECE_TYPES.indexOf(piece.type) + (piece.color === 'black' ? PIECE_TYPES.length : 0))
-);
+// encodeBoard removed (unused); keep decoder and helpers
 
 export const decodeBoard = (board: WireBoard): Board => {
   if (!Array.isArray(board) || board.length !== 10 || board.some((row) => !Array.isArray(row) || row.length !== 9)) {

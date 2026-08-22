@@ -20,8 +20,5 @@ for (let sq = 0; sq < REL_SQUARES; sq++) {
   SQ_COL[sq] = sq % COLS;
 }
 
-export const isBoardShape = (board) =>
-  Array.isArray(board) &&
-  board.length === ROWS &&
-  board.every((row) => Array.isArray(row) && row.length === COLS);
+// isBoardShape removed (unused)
 

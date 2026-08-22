@@ -549,14 +549,7 @@ const countSetBits = (mask) => {
     return (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 };
 
-const forEachSetBit = (mask, fn) => {
-    let m = mask >>> 0;
-    while (m !== 0) {
-        const bit = m & -m;
-        fn(31 - Math.clz32(bit));
-        m ^= bit;
-    }
-};
+// forEachSetBit removed (unused)
 
 // 主评估函数 - 详细评估棋盘局势（局面评估面板 / 搜索叶 / 根节点）
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
@@ -5816,8 +5809,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     return moves;
 };
 
-const generateCapturesForSearch = (board, currentPlayer) =>
-    generateQuiescenceMoves(board, currentPlayer, true);
+// generateCapturesForSearch removed (unused alias)
 
 const quiescenceMateValue = (currentPlayer, searchInitiator) =>
     currentPlayer === searchInitiator ? -100000 : 100000;

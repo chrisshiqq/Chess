@@ -707,14 +707,7 @@ const App: React.FC = () => {
 
     // Derive dual mode from auto settings: both players are manual (not auto)
     
-    // Retry and Confirm functionality for Dual Mode
-    const [isRetryMode, setIsRetryMode] = useState(false); // 是否处于重试模式
-    const [hasMovedInRetryMode, setHasMovedInRetryMode] = useState(false); // 在重试模式下是否已经走过棋
-    const [originalBoard, setOriginalBoard] = useState<Board>(createInitialBoard()); // 保存原始棋盘状态
-    const [originalMoveHistory, setOriginalMoveHistory] = useState<Move[]>([]); // 保存原始移动历史
-    const [originalPositionHistory, setOriginalPositionHistory] = useState<any[]>([]); // 保存原始局面历史
-    const [originalRedStepCount, setOriginalRedStepCount] = useState(0); // 保存原始红方步数
-    const [originalBlackStepCount, setOriginalBlackStepCount] = useState(0); // 保存原始黑方步数
+    // Try feature removed: related state variables eliminated
     
     // Player turn counters
     const [redStepCount, setRedStepCount] = useState(0);
@@ -1972,9 +1965,7 @@ const App: React.FC = () => {
             piece: movingPiece
         });
         setBoard(newBoard);
-        if (!isRetryMode) {
-            setTurn(nextTurn);
-        }
+        setTurn(nextTurn);
         if (animationTimeoutRef.current) {
             clearTimeout(animationTimeoutRef.current);
         }
@@ -2087,10 +2078,7 @@ const App: React.FC = () => {
         // 为了用户能更直观地看到，我们可以考虑在界面上显示这些信息
         // 例如，可以在聊天区域或专用的评估面板中展示
         
-        // 如果在Try模式下成功走棋，标记为已经走过棋
-        if (isRetryMode) {
-            setHasMovedInRetryMode(true);
-        }
+        // Try feature removed: always advance turn
         return true;
     };
     executeMoveRef.current = executeMove;
@@ -2424,12 +2412,7 @@ const App: React.FC = () => {
         }
     };
 
-    const handleOnlineResign = () => {
-        if (!onlineInfo) return;
-        peerSessionRef.current?.send({ type: 'resign' });
-        const winner: Color = onlineInfo.myColor === 'red' ? 'black' : 'red';
-        handleGameOver('checkmate', winner, 'RESIGNED!');
-    };
+    // Resign UI removed; network "resign" messages still handled elsewhere
 
     useEffect(() => {
         return () => {
@@ -2496,8 +2479,6 @@ const App: React.FC = () => {
         setIsAnalyzing(false);
         setAnalysisMoves([]);
         setSelectedAnalysisMove(null);
-        setIsRetryMode(false);
-        setHasMovedInRetryMode(false);
         setIsPreviewing(false);
         setOriginalBoardForPreview(null);
         setLastSearchBench(null);
@@ -2681,7 +2662,6 @@ const App: React.FC = () => {
         setRedIsAuto(false);
         setBlackIsAuto(false);
         setPositionHistory([]);
-        setIsRetryMode(false);
         setHintMove(null);
         setCheckAlert(false);
         setRecentlyCaptured(null);
@@ -4683,26 +4663,68 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     <ArrowPathIcon className="w-4 h-4" />
                                     <span className="text-xs">Restart</span>
                                 </button>
-                                <button 
+                                {/* Analysis button moved into Resign slot */}
+                                <button
                                     onClick={() => {
-                                        if (onlineInfo) {
-                                            handleOnlineResign();
+                                        if (isAnalysisMode) {
+                                            setAnalysisMoves([]);
+                                            setSelectedAnalysisMove(null);
+                                            setIsPreviewing(false);
+                                            setOriginalBoardForPreview(null);
+                                            setIsAnalysisMode(false);
                                             return;
                                         }
-                                        // 实现Resign逻辑：根据净胜分判断输赢
-                                        const redScore = moveEvaluation.post.red.total;
-                                        const blackScore = moveEvaluation.post.black.total;
-                                        const winner = redScore > blackScore ? 'red' : redScore < blackScore ? 'black' : null;
-                                        const status = winner ? 'checkmate' : 'draw';
-                                        // 调用游戏结束处理函数
-                                        handleGameOver(status, winner, 'RESIGNED!');
-                                    }} 
-                                    disabled={isThinking || !!gameOver}
+                                        // 进入Analysis模式，触发分析
+                                        setIsAnalysisMode(true);
+                                        setIsThinking(true);
+                                        const newGameId = gameId + 1;
+                                        setGameId(newGameId);
+                                        const currentTurn = turn;
+                                        if (workerRef.current) {
+                                            const handleAnalysisMessage = (e: MessageEvent) => {
+                                                const { type, payload } = e.data;
+                                                if (type === 'SEARCH_COMPLETE') {
+                                                    workerRef.current?.removeEventListener('message', handleAnalysisMessage);
+                                                    if (payload.gameId === newGameId) {
+                                                        const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
+                                                            move: moveData.move,
+                                                            score: moveData.score,
+                                                            moveSequence: moveData.moveSequence || []
+                                                        }));
+                                                        setAnalysisMoves(formattedAnalysisMoves);
+                                                        setSelectedAnalysisMove(null);
+                                                        setIsPreviewing(false);
+                                                        setOriginalBoardForPreview(null);
+                                                    }
+                                                    setIsThinking(false);
+                                                }
+                                            };
+                                            workerRef.current.addEventListener('message', handleAnalysisMessage);
+                                            workerRef.current.postMessage({
+                                                type: 'SEARCH',
+                                                payload: {
+                                                    board,
+                                                    turn: currentTurn,
+                                                    depth: analysisDepth,
+                                                    randomness: DIFFICULTIES[difficulty].randomness,
+                                                    ply: 0,
+                                                    gameId: newGameId,
+                                                    openingBookEnabled,
+                                                    enableTimeLimit: true,
+                                                    exactRootScores: true
+                                                }
+                                            });
+                                        }
+                                        setTimeout(() => {
+                                            setIsThinking(false);
+                                        }, DIFFICULTIES[difficulty].timeLimit + 1000);
+                                    }}
+                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
                                     style={getButtonStyle()}
-                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
+                                    className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-blue-500 ring-2 ring-blue-500/30' : ''}`}
                                 >
-                                    <StopIcon className="w-6 h-6" />
-                                    <span className="text-xs">Resign</span>
+                                    <BarChartIcon className="w-4 h-4" />
+                                    <span className="text-xs">Analysis</span>
                                 </button>
                                 
                                 {/* 第2排：Undo, Switch */}
@@ -4749,114 +4771,9 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     <span className="text-xs text-stone-300">B: {blackIsAuto ? "Auto" : "Manual"}</span>
                                 </button>
                                 
-                                {/* 第4排：Try, Analysis */}
-                                {/* Try按钮 - 只要玩家侧是非Auto模式就可以点击 */}
-                                <button 
-                                    onClick={() => {
-                                        // 进入重试模式，保存当前状态作为原始状态
-                                        setIsRetryMode(true);
-                                        setHasMovedInRetryMode(false); // 重置走棋状态
-                                        setOriginalBoard(board);
-                                        setOriginalMoveHistory([...moveHistory]);
-                                        setOriginalPositionHistory([...positionHistory]);
-                                        setOriginalRedStepCount(redStepCount);
-                                        setOriginalBlackStepCount(blackStepCount);
-                                    }} 
-                                    disabled={(redIsAuto || blackIsAuto) || isRetryMode || isThinking || !!gameOver}
-                                    style={getButtonStyle()}
-                                    className={`px-3 py-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isRetryMode ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''}`}
-                                >
-                                    <ArrowPathIcon className="w-4 h-4" />
-                                    <span className="text-xs">Try</span>
-                                </button>
+                                {/* Try 按钮已移除 */}
                                 
-                                {/* Analysis按钮 - 仅 Manual 行棋时显示 */}
-                                {!isAutoTurn && <button 
-                                    onClick={() => {
-                                        if (isAnalysisMode) {
-                                            setAnalysisMoves([]);
-                                            setSelectedAnalysisMove(null);
-                                            setIsPreviewing(false);
-                                            setOriginalBoardForPreview(null);
-                                            setIsAnalysisMode(false);
-                                            return;
-                                        }
-                                        {
-                                            // 进入Analysis模式，触发分析
-                                            setIsAnalysisMode(true);
-                                            setIsThinking(true);
-                                            
-                                            // 创建一个新的游戏ID，确保不会处理旧的AI响应
-                                            const newGameId = gameId + 1;
-                                            setGameId(newGameId);
-                                            
-                                            // 获取当前回合
-                                            const currentTurn = turn;
-                                            
-                                            // 发送分析请求到worker
-                                            if (workerRef.current) {
-                                                // 定义Analysis模式下的消息处理器
-                                                const handleAnalysisMessage = (e: MessageEvent) => {
-                                                    console.log('Analysis worker message received:', e.data.type);
-                                                    const { type, payload } = e.data;
-                                                    if (type === 'SEARCH_COMPLETE') {
-                                                        // 移除事件监听器
-                                                        workerRef.current?.removeEventListener('message', handleAnalysisMessage);
-                                                        
-                                                        if (payload.gameId === newGameId) {
-                                                            // 更新最优着法序列、次优着法序列和净胜分状态
-                                                            // 更新所有着法数据，转换为与Replay模式的analysisMoves结构一致的格式
-                                                            const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
-                                                                move: moveData.move,
-                                                                score: moveData.score,
-                                                                moveSequence: moveData.moveSequence || [] // 使用worker返回的moveSequence
-                                                            }));
-                                                            setAnalysisMoves(formattedAnalysisMoves);
-                                                            // 重置选中状态
-                                                            setSelectedAnalysisMove(null);
-                                                            // 重置预览状态
-                                                            setIsPreviewing(false);
-                                                            setOriginalBoardForPreview(null);
-                                                        }
-                                                        
-                                                        // 无论如何都要停止思考状态
-                                                        setIsThinking(false);
-                                                    }
-                                                };
-                                                
-                                                // 添加事件监听器
-                                                workerRef.current.addEventListener('message', handleAnalysisMessage);
-                                                
-                                                // 发送搜索请求
-                                                workerRef.current.postMessage({
-                                                    type: 'SEARCH',
-                                                    payload: { 
-                                                        board, 
-                                                        turn: currentTurn, 
-                                                        depth: analysisDepth, 
-                                                        randomness: DIFFICULTIES[difficulty].randomness,
-                                                        ply: 0,
-                                                        gameId: newGameId,
-                                                        openingBookEnabled,
-                                                        enableTimeLimit: true,
-                                                        exactRootScores: true // 主动 Analysis：全根精确分
-                                                    }
-                                                });
-                                            }
-                                            
-                                            // 设置一个超时，防止AI分析时间过长
-                                            setTimeout(() => {
-                                                setIsThinking(false);
-                                            }, DIFFICULTIES[difficulty].timeLimit + 1000);
-                                        }
-                                    }} 
-                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
-                                    style={getButtonStyle()}
-                                    className={`px-3 py-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-blue-500 ring-2 ring-blue-500/30' : ''}`}
-                                >
-                                    <BarChartIcon className="w-4 h-4" />
-                                    <span className="text-xs">Analysis</span>
-                                </button>}
+                                {/* Analysis button removed from original location (moved to Resign slot) */}
                                 
                                 {/* 着法序列棋谱控件 - 与Replay模式完全一致 (Analysis模式下显示，或者在Game模式下搜索完成后显示) */}
                                 {isAnalysisMode && (analysisMoves.length > 0 || isThinking) && (
@@ -5003,40 +4920,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     </div>
                                 )}
 
-                                {isRetryMode && hasMovedInRetryMode && (
-                                    <div className="col-span-2 grid grid-cols-2 gap-2 mt-2">
-                                        <button
-                                            onClick={() => {
-                                                // 取消这次移动，恢复到原始状态
-                                                setBoard(originalBoard);
-                                                setMoveHistory(originalMoveHistory);
-                                                setPositionHistory(originalPositionHistory);
-                                                setRedStepCount(originalRedStepCount);
-                                                setBlackStepCount(originalBlackStepCount);
-                                                
-                                                // 重置走棋状态，因为点击No相当于没走过棋
-                                                setHasMovedInRetryMode(false);
-                                            }}
-                                            style={getButtonStyle()}
-                                            className="px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
-                                        >
-                                            <span className="text-xs">No</span>
-                                        </button>
-                                        <button
-                                            onClick={() => {
-                                                // 确认这次移动，退出重试模式
-                                                setIsRetryMode(false);
-                                                // 执行正常的走棋逻辑，轮到对方走棋
-                                                const nextTurn = turn === 'red' ? 'black' : 'red';
-                                                setTurn(nextTurn);
-                                            }}
-                                            style={getButtonStyle()}
-                                            className="px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
-                                        >
-                                            <span className="text-xs">Yes</span>
-                                        </button>
-                                    </div>
-                                )}
+                                {/* Try confirmation UI removed */}
                                 
                                 {/* 退出预览模式按钮 - 放在着法序列下方 */}
                                 {isPreviewing && (
