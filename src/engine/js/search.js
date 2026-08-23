@@ -5459,7 +5459,7 @@ const transpositionTable = new TranspositionTable();
 const EVAL_CACHE_SIZE = 1 << 20;
 const EVAL_CACHE_MASK = EVAL_CACHE_SIZE - 1;
 const evalCacheKeys = new Int32Array(EVAL_CACHE_SIZE);
-const evalCacheValues = new Float64Array(EVAL_CACHE_SIZE);
+const evalCacheValues = new Float32Array(EVAL_CACHE_SIZE);
 const evalCacheGenerations = new Uint8Array(EVAL_CACHE_SIZE);
 let evalCacheGeneration = 1;
 const clearEvalCache = () => {
