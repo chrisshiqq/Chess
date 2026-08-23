@@ -6518,31 +6518,55 @@ const getBestMove = (
 
       let score;
       let scoreIsExact = true;
+      const remaining = currentDepth - 1;
+      const childTTKey = makeSearchTTKey(workBoard, nextTurn, childHash);
+      // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
+      const exactFromTt = () => {
+        const entry = transpositionTable.retrieve(childTTKey);
+        if (!entry || entry.flag !== 'exact' || entry.depth < remaining) return null;
+        if (entry.value > rootAlpha) return null;
+        return entry.value;
+      };
       if (i === 0 || rootAlpha === -Infinity) {
         score = alphaBeta(
-          workBoard, currentDepth - 1, -Infinity, Infinity,
+          workBoard, remaining, -Infinity, Infinity,
           false, nextTurn, currentDepth, turn, gameStage, childHash
         );
       } else {
-        const probe = alphaBeta(
-          workBoard, currentDepth - 1,
-          rootAlpha, rootAlpha + NULL_WINDOW_EPS,
-          false, nextTurn, currentDepth, turn, gameStage, childHash
-        );
-        if (probe > rootAlpha) {
-          score = alphaBeta(
-            workBoard, currentDepth - 1, rootAlpha, Infinity,
-            false, nextTurn, currentDepth, turn, gameStage, childHash
-          );
-        } else if (useExactRoot) {
-          score = alphaBeta(
-            workBoard, currentDepth - 1, -Infinity, Infinity,
-            false, nextTurn, currentDepth, turn, gameStage, childHash
-          );
+        const cachedExact = useExactRoot ? exactFromTt() : null;
+        if (cachedExact != null) {
+          score = cachedExact;
         } else {
-          // fail-low：探测分只是上界，不能当精确分写入（否则 ID 下层排序被污染，易反复走炮）
-          score = probe;
-          scoreIsExact = false;
+          const probe = alphaBeta(
+            workBoard, remaining,
+            rootAlpha, rootAlpha + NULL_WINDOW_EPS,
+            false, nextTurn, currentDepth, turn, gameStage, childHash
+          );
+          if (probe > rootAlpha) {
+            score = alphaBeta(
+              workBoard, remaining, rootAlpha, Infinity,
+              false, nextTurn, currentDepth, turn, gameStage, childHash
+            );
+          } else if (useExactRoot) {
+            const afterProbe = exactFromTt();
+            if (afterProbe != null) {
+              score = afterProbe;
+            } else {
+              // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
+              score = alphaBeta(
+                workBoard, remaining, -Infinity, rootAlpha + NULL_WINDOW_EPS,
+                false, nextTurn, currentDepth, turn, gameStage, childHash
+              );
+              if (score > rootAlpha) {
+                // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
+                score = probe;
+              }
+            }
+          } else {
+            // fail-low：探测分只是上界，不能当精确分写入（否则 ID 下层排序被污染，易反复走炮）
+            score = probe;
+            scoreIsExact = false;
+          }
         }
       }
 
