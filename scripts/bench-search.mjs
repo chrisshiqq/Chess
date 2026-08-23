@@ -221,6 +221,17 @@ function printSummary(label, run) {
     console.log(`  probeNodes=${nmp.probeNodes}`);
   }
 
+  const gc = payload.gc;
+  if (gc) {
+    const toMiB = (bytes) => (bytes / 1048576).toFixed(2);
+    console.log('gc:');
+    console.log(`  count=${gc.count}`);
+    console.log(`  durationMs=${gc.durationMs.toFixed(2)}`);
+    console.log(`  heapBeforeMiB=${toMiB(gc.heapBefore)}`);
+    console.log(`  heapAfterMiB=${toMiB(gc.heapAfter)}`);
+    console.log(`  deltaMiB=${toMiB(gc.heapAfter - gc.heapBefore)}`);
+  }
+
   if (perf.profile) {
     console.log('profile:');
     console.log(`  sortMovesMs=${Math.round(perf.sortMovesMs)}`);
