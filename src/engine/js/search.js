@@ -641,11 +641,11 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         if (piece.color === 'red') {
             redThreat += threatValue;
             redSafety += safetyValue;
-            redMobility += mobilityValue;
+            if (piece.type !== 'soldier') redMobility += mobilityValue;
         } else {
             blackThreat += threatValue;
             blackSafety += safetyValue;
-            blackMobility += mobilityValue;
+            if (piece.type !== 'soldier') blackMobility += mobilityValue;
         }
     }
     
@@ -2584,8 +2584,11 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
             default:
                 break;
         }
-        if (isRed) redMobility += mobilityValue;
-        else blackMobility += mobilityValue;
+        // 兵仍扫空步做威胁/安全，不进机动分
+        if (pieceType !== 7) {
+            if (isRed) redMobility += mobilityValue;
+            else blackMobility += mobilityValue;
+        }
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
@@ -2916,8 +2919,11 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
             default:
                 break;
         }
-        if (isRed) redMobility += mobilityValue;
-        else blackMobility += mobilityValue;
+        // 兵仍扫空步做威胁/安全，不进机动分
+        if (pieceType !== 7) {
+            if (isRed) redMobility += mobilityValue;
+            else blackMobility += mobilityValue;
+        }
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
