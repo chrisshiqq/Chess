@@ -6307,7 +6307,7 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
   return sequence;
 };
 
-// exactRootScores: true=Analysis 全根精确分；false=对弈标准 PVS（fail-low 不回搜）
+// exactRootScores: true=Analysis 根着法精确分（数量由 exactRootLimit 限制，0=不限制）；false=对弈标准 PVS（fail-low 不回搜）
 const getBestMove = (
   board,
   turn,
@@ -6505,6 +6505,7 @@ const getBestMove = (
 
     const useExactRoot = exactRootScores && currentDepth === maxDepth;
     const collectRootPv = useExactRoot;
+    const exactRootLimit = searchContext.exactRootLimit | 0;
     let rootAlpha = -Infinity;
 
     for (let i = 0; i < rootMoves.length; i++) {
@@ -6519,6 +6520,7 @@ const getBestMove = (
       let score;
       let scoreIsExact = true;
       const remaining = currentDepth - 1;
+      const exactThisMove = useExactRoot && (exactRootLimit <= 0 || i < exactRootLimit);
       const childTTKey = makeSearchTTKey(workBoard, nextTurn, childHash);
       // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
       const exactFromTt = () => {
@@ -6533,7 +6535,7 @@ const getBestMove = (
           false, nextTurn, currentDepth, turn, gameStage, childHash
         );
       } else {
-        const cachedExact = useExactRoot ? exactFromTt() : null;
+        const cachedExact = exactThisMove ? exactFromTt() : null;
         if (cachedExact != null) {
           score = cachedExact;
         } else {
@@ -6547,7 +6549,7 @@ const getBestMove = (
               workBoard, remaining, rootAlpha, Infinity,
               false, nextTurn, currentDepth, turn, gameStage, childHash
             );
-          } else if (useExactRoot) {
+          } else if (exactThisMove) {
             const afterProbe = exactFromTt();
             if (afterProbe != null) {
               score = afterProbe;
@@ -6570,7 +6572,7 @@ const getBestMove = (
         }
       }
 
-      if (scoreIsExact && collectRootPv) {
+      if (collectRootPv) {
         item.moveSequence = [
           { from: item.from, to: item.to },
           ...extractPvFromTt(workBoard, nextTurn, childHash, currentDepth - 1)

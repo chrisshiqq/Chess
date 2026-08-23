@@ -613,7 +613,8 @@ const App: React.FC = () => {
     const aiSearchAbortRef = useRef<{ gameId: number; aborted: boolean } | null>(null);
 
     const [playDepth, setPlayDepth] = useState<number>(10);
-    const [analysisDepth, setAnalysisDepth] = useState<number>(8);
+    const [analysisDepth, setAnalysisDepth] = useState<number>(10);
+    const [analysisScale, setAnalysisScale] = useState<number>(20);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
     // 隐藏最优着法和次优着法
     const [hiddenBestMove, setHiddenBestMove] = useState<Move | null>(null);
@@ -3331,7 +3332,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         gameId: capturedGameId,
                         openingBookEnabled: openingBookEnabled,
                         enableTimeLimit: enableTimeLimit,
-                        exactRootScores: true // Analysis：全部根着法精确分
+                        exactRootScores: true,
+                        exactRootLimit: analysisScale
                     }
                 });
             });
@@ -4495,7 +4497,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             </div>
                             <div className="flex flex-col gap-2">
                                 <label className="flex items-center gap-2">
-                                    <span className="w-16 shrink-0 text-xs text-stone-400">Play</span>
+                                    <span className="w-28 shrink-0 text-xs text-stone-400">Play</span>
                                     <select
                                         value={playDepth}
                                         onChange={(e) => setPlayDepth(parseInt(e.target.value))}
@@ -4509,7 +4511,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     </select>
                                 </label>
                                 <label className="flex items-center gap-2">
-                                    <span className="w-16 shrink-0 text-xs text-stone-400">Analysis</span>
+                                    <span className="w-28 shrink-0 text-xs text-stone-400">Analysis</span>
                                     <select
                                         value={analysisDepth}
                                         onChange={(e) => setAnalysisDepth(parseInt(e.target.value))}
@@ -4518,6 +4520,20 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         {[6, 7, 8, 9, 10].map((depth) => (
                                             <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
                                                 Depth {depth}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="flex items-center gap-2">
+                                    <span className="w-28 shrink-0 text-xs text-stone-400">Analysis Scale</span>
+                                    <select
+                                        value={analysisScale}
+                                        onChange={(e) => setAnalysisScale(parseInt(e.target.value))}
+                                        className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
+                                    >
+                                        {[10, 20, 30, 40, 50].map((scale) => (
+                                            <option key={scale} value={scale} className="bg-stone-800 text-stone-300">
+                                                {scale}
                                             </option>
                                         ))}
                                     </select>
@@ -4742,7 +4758,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     gameId: newGameId,
                                                     openingBookEnabled,
                                                     enableTimeLimit: true,
-                                                    exactRootScores: true
+                                                    exactRootScores: true,
+                                                    exactRootLimit: analysisScale
                                                 }
                                             });
                                         }

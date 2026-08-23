@@ -11,6 +11,7 @@ export interface SearchOptions {
   ply?: number;
   enableTimeLimit?: boolean;
   exactRootScores?: boolean;
+  exactRootLimit?: number;
   excludedRootMoves?: Move[];
   profile?: boolean;
   metrics?: boolean;

@@ -13,6 +13,8 @@ export const searchContext = {
   ttMaxAge: 1,
   ttReuseScope: 'default',
   ttSearchPly: 0,
+  // 分析最后一层精确回搜的根着法数量；0=不限制
+  exactRootLimit: 0,
   /** @type {null | ((info: Record<string, unknown>) => void)} */
   reportSearchProgress: null
 };
@@ -27,7 +29,8 @@ export const configureSearch = ({
   nmpReduction = 2,
   ttMaxAge = 1,
   ttReuseScope = 'default',
-  ply = 0
+  ply = 0,
+  exactRootLimit = 0
 } = {}) => {
   searchContext.profile = !!profile;
   searchContext.collectMetrics = !!metrics;
@@ -39,4 +42,5 @@ export const configureSearch = ({
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);
   searchContext.ttReuseScope = ttReuseScope == null ? null : String(ttReuseScope);
   searchContext.ttSearchPly = Math.max(0, ply | 0);
+  searchContext.exactRootLimit = Math.max(0, exactRootLimit | 0);
 };
