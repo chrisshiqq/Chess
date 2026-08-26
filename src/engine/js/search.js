@@ -5444,7 +5444,7 @@ const clearEvalCache = () => {
 
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
-const NULL_WINDOW_EPS = 1e-6;
+const NULL_WINDOW = 1;
 // True staged generation owns one move list per active alpha-beta stack level.
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
@@ -5950,7 +5950,7 @@ const alphaBeta = (
         d >= searchContext.nmpMinDepth &&
         Number.isFinite(alpha) &&
         Number.isFinite(beta) &&
-        (beta - alpha) <= NULL_WINDOW_EPS * 1.5 &&
+        (beta - alpha) <= NULL_WINDOW &&
         Math.abs(alpha) < 90000 &&
         Math.abs(beta) < 90000 &&
         hasNullMoveMaterial(stagedPieceState, currentPlayer);
@@ -5961,11 +5961,11 @@ const alphaBeta = (
         if (searchContext.collectMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
             ? alphaBeta(
-                b, nullDepth, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
+                b, nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             )
             : alphaBeta(
-                b, nullDepth, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
+                b, nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             );
         if (searchContext.collectMetrics) {
@@ -6087,7 +6087,7 @@ const alphaBeta = (
         // 树内 PVS：非首着且窗口够宽时先空窗；fail-high 再全窗回搜
         const pvsEligible = legalMovesFound > 1 &&
             (maximizing ? Number.isFinite(alpha) : Number.isFinite(beta)) &&
-            (beta - alpha) > NULL_WINDOW_EPS;
+            (beta - alpha) > NULL_WINDOW;
 
         let reducedDepth = d - 1;
         if (canLmr) {
@@ -6103,7 +6103,7 @@ const alphaBeta = (
         if (maximizing) {
             if (canLmr) {
                 value = alphaBeta(
-                    b, reducedDepth, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
+                    b, reducedDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
@@ -6111,7 +6111,7 @@ const alphaBeta = (
                     if (pvsEligible) {
                         if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                         value = alphaBeta(
-                            b, d - 1, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
+                            b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                         if (value > alpha) {
@@ -6131,7 +6131,7 @@ const alphaBeta = (
             } else if (pvsEligible) {
                 if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
-                    b, d - 1, alpha, alpha + NULL_WINDOW_EPS, !maximizing, nextPlayer,
+                    b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
@@ -6149,7 +6149,7 @@ const alphaBeta = (
             }
         } else if (canLmr) {
             value = alphaBeta(
-                b, reducedDepth, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
+                b, reducedDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
@@ -6157,7 +6157,7 @@ const alphaBeta = (
                 if (pvsEligible) {
                     if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
-                        b, d - 1, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
+                        b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                     if (value < beta) {
@@ -6177,7 +6177,7 @@ const alphaBeta = (
         } else if (pvsEligible) {
             if (searchContext.collectMetrics) perfStats.pvsAttempts++;
             value = alphaBeta(
-                b, d - 1, beta - NULL_WINDOW_EPS, beta, !maximizing, nextPlayer,
+                b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
@@ -6420,7 +6420,7 @@ const getBestMove = (
   const sortRootMovesByScore = (moves) => {
     moves.sort((a, b) => {
       const scoreDiff = b.score - a.score;
-      if (Math.abs(scoreDiff) < 1e-6) {
+      if (scoreDiff === 0) {
         if (a.score > 0) {
           return (a.moveSequence?.length || 0) - (b.moveSequence?.length || 0);
         }
@@ -6513,7 +6513,7 @@ const getBestMove = (
         } else {
           const probe = alphaBeta(
             workBoard, remaining,
-            rootAlpha, rootAlpha + NULL_WINDOW_EPS,
+            rootAlpha, rootAlpha + NULL_WINDOW,
             false, nextTurn, currentDepth, turn, gameStage, childHash
           );
           if (probe > rootAlpha) {
@@ -6528,7 +6528,7 @@ const getBestMove = (
             } else {
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
-                workBoard, remaining, -Infinity, rootAlpha + NULL_WINDOW_EPS,
+                workBoard, remaining, -Infinity, rootAlpha + NULL_WINDOW,
                 false, nextTurn, currentDepth, turn, gameStage, childHash
               );
               if (score > rootAlpha) {
