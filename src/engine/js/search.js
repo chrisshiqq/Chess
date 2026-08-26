@@ -946,7 +946,6 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
             unsafe = isCheckFromState(pieceState, color);
         }
     } else {
-        if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.noState++;
         unsafe = isCheck(board, color);
     }
     if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
@@ -2293,7 +2292,6 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
 // 跳过空槽以保持初始槽的攻击方顺序。快路径省略 QS 吃子打包（多数叶评估）。
 const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
     const profileRelations = searchContext.profile;
-    const collectMetrics = searchContext.collectMetrics;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
@@ -2327,7 +2325,6 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
-        if (collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -2571,7 +2568,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     pieceState, aliveMask, capturePlayer
 ) => {
     const profileRelations = searchContext.profile;
-    const collectMetrics = searchContext.collectMetrics;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
@@ -2613,7 +2609,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
-        if (collectMetrics) perfStats.leafRelationPiecesByType[pieceType]++;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
@@ -3389,7 +3384,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
                 ? calculateStaticExchangeScoreFromMasks(threatenedPiece, piecesInfo, attackMask, guardMask)
                 : calculateStaticExchangeScore(threatenedPiece);
             if (sseScore > 0) {
-                firstAttacker.threatValue += sseScore * 0.5;
+                firstAttacker.threatValue += sseScore >> 1;
             }
         }
     }
@@ -4949,7 +4944,6 @@ const zobristHasher = new ZobristHasher();
 // 定长槽位 TT：8 字节 AoS + generation O(1) clear。
 // 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
 const TT_DEFAULT_SIZE = 1 << 22; // 4194304
-const TT_DEFAULT_EVICTION_BATCH = 512; // API 兼容，定长 TT 不再批量淘汰
 const TT_FLAG_NAMES = ['exact', 'lowerbound', 'upperbound'];
 // word0: key16:0-15 | gen:16-23 | flag:24-25 | keyHigh:26 | depth:27-31
 // word1: value18:0-17 | move:18-31
@@ -4969,14 +4963,13 @@ const TT_DEPTH_MAX = 31;
 const TT_GEN_MASK8 = 0xFF;
 
 class TranspositionTable {
-    constructor(size = TT_DEFAULT_SIZE, evictionBatch = TT_DEFAULT_EVICTION_BATCH) {
+    constructor(size = TT_DEFAULT_SIZE) {
         let n = size | 0;
         if (n < 1024) n = 1024;
         // 强制 2 的幂，便于 key & mask
         n = 1 << (32 - Math.clz32(n - 1));
         this.size = n;
         this.mask = n - 1;
-        this.evictionBatch = evictionBatch;
         this.generation = 1;
         this.retainedGenerations = 0;
         this.reuseScope = null;
@@ -5002,20 +4995,14 @@ class TranspositionTable {
             stores: 0,
             lruEvictions: 0,
             depthPreferredEvictions: 0,
-            fallbackEvictions: 0,
             updatedStores: 0,
             retainedUpdates: 0,
-            evictionBatches: 0,
             clears: 0,
             retainedSearches: 0,
             retainedEntriesAtStart: 0,
             historicalHits: 0,
             historicalReplacements: 0
         };
-    }
-
-    setEvictionBatch(batch) {
-        this.evictionBatch = Math.max(1, batch | 0);
     }
 
     _writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move) {
@@ -5079,7 +5066,6 @@ class TranspositionTable {
             }
             if (searchContext.collectMetrics) {
                 this.stats.lruEvictions++;
-                this.stats.fallbackEvictions++;
                 if (historicalSlot) this.stats.historicalReplacements++;
             }
         } else if (searchContext.collectMetrics) {
@@ -5156,20 +5142,11 @@ class TranspositionTable {
     getStats() {
         const totalAccesses = this.stats.hits + this.stats.misses;
         const hitRate = totalAccesses > 0 ? (this.stats.hits / totalAccesses * 100).toFixed(2) : 0;
-        const historicalHitRate = totalAccesses > 0
-            ? (this.stats.historicalHits / totalAccesses * 100).toFixed(2)
-            : 0;
-        const historicalHitShare = this.stats.hits > 0
-            ? (this.stats.historicalHits / this.stats.hits * 100).toFixed(2)
-            : 0;
         const currentSize = Math.min(this.occupiedApprox, this.size);
         return {
             ...this.stats,
-            evictionBatch: this.evictionBatch,
             totalAccesses,
             hitRate,
-            historicalHitRate,
-            historicalHitShare,
             currentSize,
             maxSize: this.size,
             fillPercentage: ((currentSize / this.size) * 100).toFixed(2)
@@ -5186,10 +5163,8 @@ class TranspositionTable {
             stores: 0,
             lruEvictions: 0,
             depthPreferredEvictions: 0,
-            fallbackEvictions: 0,
             updatedStores: 0,
             retainedUpdates: 0,
-            evictionBatches: 0,
             clears: 0,
             retainedSearches: 0,
             retainedEntriesAtStart: 0,
@@ -5225,7 +5200,7 @@ let perfStats = {
     legalityChecks: 0,
     kingSafetyFullChecks: 0,
     kingSafetyFastSkips: 0,
-    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, noState: 0 },
+    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0 },
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
@@ -5244,7 +5219,6 @@ let perfStats = {
     leafTacticalMs: 0,
     leafRelationCalls: 0,
     leafRelationCaptureCalls: 0,
-    leafRelationPiecesByType: new Array(8).fill(0),
     leafAttackedTargets: 0,
     prepareCheckMs: 0,
     prepareMoveGenMs: 0,
@@ -5288,7 +5262,7 @@ const resetPerfStats = () => {
     perfStats.legalityChecks = 0;
     perfStats.kingSafetyFullChecks = 0;
     perfStats.kingSafetyFastSkips = 0;
-    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, noState: 0 };
+    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0 };
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
@@ -5306,7 +5280,6 @@ const resetPerfStats = () => {
     perfStats.leafTacticalMs = 0;
     perfStats.leafRelationCalls = 0;
     perfStats.leafRelationCaptureCalls = 0;
-    perfStats.leafRelationPiecesByType = new Array(8).fill(0);
     perfStats.leafAttackedTargets = 0;
     perfStats.prepareCheckMs = 0;
     perfStats.prepareMoveGenMs = 0;
@@ -5358,7 +5331,6 @@ const snapshotPerfStats = () => {
             captureCalls: perfStats.leafRelationCaptureCalls,
             relationMs: perfStats.leafRelationsMs,
             tacticalMs: perfStats.leafTacticalMs,
-            piecesByType: [...perfStats.leafRelationPiecesByType],
             attackedTargets: perfStats.leafAttackedTargets,
             averageAttackedTargets: perfStats.leafRelationCalls
                 ? Number((perfStats.leafAttackedTargets / perfStats.leafRelationCalls).toFixed(2))
@@ -5459,7 +5431,7 @@ const transpositionTable = new TranspositionTable();
 const EVAL_CACHE_SIZE = 1 << 20;
 const EVAL_CACHE_MASK = EVAL_CACHE_SIZE - 1;
 const evalCacheKeys = new Int32Array(EVAL_CACHE_SIZE);
-const evalCacheValues = new Float32Array(EVAL_CACHE_SIZE);
+const evalCacheValues = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheGenerations = new Uint8Array(EVAL_CACHE_SIZE);
 let evalCacheGeneration = 1;
 const clearEvalCache = () => {
@@ -5623,12 +5595,12 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
                 threatValue = targetValue;
             } else if (attackers === (firstBit >>> 0)) {
                 const seeScore = targetValue - materialValues[stateCodes[attackerIndex] & 7];
-                if (seeScore > 0) threatValue = seeScore * 0.5;
+                if (seeScore > 0) threatValue = seeScore >> 1;
             } else {
                 const seeScore = calculateStaticExchangeScoreNumeric(
                     targetValue, attackers, guards, stateCodes, materialValues
                 );
-                if (seeScore > 0) threatValue = seeScore * 0.5;
+                if (seeScore > 0) threatValue = seeScore >> 1;
             }
         }
         if (stateCodes[attackerIndex] < 8) redThreat += threatValue;

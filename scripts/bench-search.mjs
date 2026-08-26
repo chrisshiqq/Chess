@@ -126,8 +126,10 @@ function printSummary(label, run) {
   console.log(`zobristFullHash=${perf.fullHashCount}`);
   console.log(`zobristIncrUpdates=${perf.incrementalHashUpdates}`);
   console.log(`numericLeafCount=${perf.fastLeafEvalCount}`);
-  console.log(`numericLeafMs=${Math.round(perf.fastLeafEvalMs ?? 0)}`);
-  console.log(`prepareSearchInfoMs=${Math.round(perf.prepareSearchInfoMs ?? 0)}`);
+  if (perf.profile) {
+    console.log(`numericLeafMs=${Math.round(perf.fastLeafEvalMs ?? 0)}`);
+    console.log(`prepareSearchInfoMs=${Math.round(perf.prepareSearchInfoMs ?? 0)}`);
+  }
 
   const evalCacheHits = perf.staticEvalCacheHits ?? 0;
   const evalCacheMisses = perf.staticEvalCacheMisses ?? 0;
@@ -149,14 +151,9 @@ function printSummary(label, run) {
   console.log(`  stores=${tt.stores}`);
   console.log(`  updates=${tt.updatedStores ?? 0}`);
   console.log(`  lruEvictions=${tt.lruEvictions}`);
-  console.log(`  evictionBatches=${tt.evictionBatches ?? 0}`);
   console.log(`  depthPreferredEvictions=${tt.depthPreferredEvictions ?? 0}`);
-  console.log(`  fallbackEvictions=${tt.fallbackEvictions ?? 0}`);
-  console.log(`  historicalHits=${tt.historicalHits ?? 0}`);
-  console.log(`  historicalReplacements=${tt.historicalReplacements ?? 0}`);
   console.log(`  currentSize=${tt.currentSize}`);
   console.log(`  maxSize=${tt.maxSize}`);
-  console.log(`  evictionBatch=${tt.evictionBatch}`);
 
   if (perf.moveOrdering) {
     console.log('ordering top:');
@@ -188,9 +185,10 @@ function printSummary(label, run) {
     console.log('leafRelations:');
     console.log(`  calls=${relations.calls}`);
     console.log(`  captureCalls=${relations.captureCalls}`);
-    console.log(`  relationMs=${Math.round(relations.relationMs ?? 0)}`);
-    console.log(`  tacticalMs=${Math.round(relations.tacticalMs ?? 0)}`);
-    console.log(`  piecesByType=${JSON.stringify(relations.piecesByType ?? [])}`);
+    if (perf.profile) {
+      console.log(`  relationMs=${Math.round(relations.relationMs ?? 0)}`);
+      console.log(`  tacticalMs=${Math.round(relations.tacticalMs ?? 0)}`);
+    }
     console.log(`  attackedTargets=${relations.attackedTargets}`);
     console.log(`  averageAttackedTargets=${relations.averageAttackedTargets}`);
   }
