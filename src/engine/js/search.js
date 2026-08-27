@@ -567,9 +567,9 @@ const countSetBits = (mask) => {
 // options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
 // 点棋关系请用 evaluateBoardForUi，不要往这里加 UI 专用开关
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
+    const __t0 = hotProfile ? performance.now() : 0;
     // 统计
-    if (searchContext.collectMetrics && currentPlayer) {
+    if (hotMetrics && currentPlayer) {
         perfStats.evaluateBoardCount[currentPlayer]++;
     }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
@@ -713,7 +713,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         gameStage: gameStage,
         boardInfo: boardInfo
     };
-    if (searchContext.profile) {
+    if (hotProfile) {
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
@@ -1004,21 +1004,21 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
 const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, checkInfo = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.collectMetrics) perfStats.legalityChecks++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotMetrics) perfStats.legalityChecks++;
     const pieceState = activePieceStateFor(board);
     if (kingSafetyIsUnchangedByMove(pieceState, color, move, wasInCheck)) {
-        if (searchContext.collectMetrics) perfStats.kingSafetyFastSkips++;
+        if (hotMetrics) perfStats.kingSafetyFastSkips++;
         return false;
     }
     let unsafe;
     if (pieceState) {
         if (!wasInCheck && move != null) {
-            if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
+            if (hotMetrics) perfStats.kingSafetyFullChecks++;
             const toSq = moveToSq(move);
             const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
             // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
-            if (searchContext.collectMetrics) {
+            if (hotMetrics) {
                 if (generalSq === toSq) perfStats.kingSafetyFullReasons.generalMove++;
                 else perfStats.kingSafetyFullReasons.lineOrHorse++;
             }
@@ -1037,16 +1037,16 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, check
             const toSq = moveToSq(move);
             const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
             if (generalSq === toSq) {
-                if (searchContext.collectMetrics) {
+                if (hotMetrics) {
                     perfStats.kingSafetyFullChecks++;
                     perfStats.kingSafetyFullReasons.inCheck++;
                 }
                 unsafe = isCheckFromState(pieceState, color);
             } else if (!moveResolvesKnownChecks(moveFromSq(move), toSq, generalSq, checkInfo)) {
-                if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
+                if (hotMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
                 unsafe = true;
             } else {
-                if (searchContext.collectMetrics) {
+                if (hotMetrics) {
                     perfStats.kingSafetyFullChecks++;
                     perfStats.kingSafetyFullReasons.evasionDiscover++;
                 }
@@ -1055,17 +1055,17 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, check
                 );
             }
         } else {
-            if (searchContext.collectMetrics) {
+            if (hotMetrics) {
                 perfStats.kingSafetyFullChecks++;
                 perfStats.kingSafetyFullReasons.inCheck++;
             }
             unsafe = isCheckFromState(pieceState, color);
         }
     } else {
-        if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
+        if (hotMetrics) perfStats.kingSafetyFullChecks++;
         unsafe = isCheck(board, color);
     }
-    if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
+    if (hotProfile) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
 };
 
@@ -1116,8 +1116,8 @@ const clearSortSquareMarks = () => {
 };
 
 const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null, searchHeuristics = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.profile) perfStats.sortMovesCount++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotProfile) perfStats.sortMovesCount++;
     const currentIsInCheck = boardInfo
         ? ((currentPlayer === 'red' && boardInfo.redIsInCheck) ||
            (currentPlayer === 'black' && boardInfo.blackIsInCheck))
@@ -1324,7 +1324,7 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     }
 
     clearSortSquareMarks();
-    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
+    if (hotProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
@@ -1339,8 +1339,8 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo
         return sortMovesFast(moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, { ttMove, killers });
     }
 
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.profile) perfStats.sortMovesCount++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotProfile) perfStats.sortMovesCount++;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
@@ -1397,15 +1397,15 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo
         sortMoveScoreScratch[j + 1] = score;
     }
 
-    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
+    if (hotProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
 // 未将军节点分阶段消耗着法。划分稳定，某阶段只在搜到时才排序，
 // 早截断可跳过后续阶段。packed 边界每个阶段结束用一字节。
 const prepareStagedMoves = (moves, board, ttMove, killers) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.profile) perfStats.sortMovesCount++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotProfile) perfStats.sortMovesCount++;
     const pieceState = activePieceStateFor(board);
     if (!pieceState) return -1;
     const squareToSlot = pieceState.squareToSlot;
@@ -1448,13 +1448,13 @@ const prepareStagedMoves = (moves, board, ttMove, killers) => {
         moves[write++] = move;
     }
     const captureEnd = write;
-    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
+    if (hotProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return ttEnd | (killerEnd << 8) | (captureEnd << 16);
 };
 
 const sortStagedMoveRange = (moves, start, end, board, currentPlayer, killers) => {
     if (end - start <= 1) return;
-    const __t0 = searchContext.profile ? performance.now() : 0;
+    const __t0 = hotProfile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -1489,19 +1489,19 @@ const sortStagedMoveRange = (moves, start, end, board, currentPlayer, killers) =
         moves[j + 1] = move;
         sortMoveScoreScratch[j + 1] = score;
     }
-    if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
+    if (hotProfile) perfStats.sortMovesMs += performance.now() - __t0;
 };
 
 // 搜索用着法准备（轻量）：不建关系图/威胁/机动性
 // 只生成伪合法着，合法性在试走时检测。
 // 点棋关系走 evaluateBoardForUi，不受影响
 const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.collectMetrics) perfStats.prepareSearchInfoCount[currentPlayer]++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotMetrics) perfStats.prepareSearchInfoCount[currentPlayer]++;
 
     const inCheck = isCheck(board, currentPlayer);
-    if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - __t0;
-    const __movesT0 = searchContext.profile ? performance.now() : 0;
+    if (hotProfile) perfStats.prepareCheckMs += performance.now() - __t0;
+    const __movesT0 = hotProfile ? performance.now() : 0;
     // 未将军排序只用 packed state。除非将军回退需要关系元数据，否则不建 per-piece 对象。
     const piecesInfo = (collectPiecesInfo || inCheck) ? [] : null;
     const legalMoveList = [];
@@ -1525,7 +1525,7 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
             const generated = appendSearchPseudoMovesForPiece(
                 legalMoveList, sq, pieceCodes[slot], squareCodes, false
             );
-            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+            if (hotMetrics) perfStats.pseudoMovesGenerated += generated;
         }
     } else {
         for (let scanRow = 0; scanRow < ROWS; scanRow++) {
@@ -1542,11 +1542,11 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
                     const to = moves[i];
                     legalMoveList.push(encodeMoveFromCoords(r, c, to.r, to.c));
                 }
-                if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += moves.length;
+                if (hotMetrics) perfStats.pseudoMovesGenerated += moves.length;
             }
         }
     }
-    if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - __movesT0;
+    if (hotProfile) perfStats.prepareMoveGenMs += performance.now() - __movesT0;
 
     // 轻量 boardInfo：仅被将标志
     const boardInfo = {
@@ -1564,7 +1564,7 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
         boardInfo.gameState = { status: 'playing' };
     }
 
-    if (searchContext.profile) perfStats.prepareSearchInfoMs += performance.now() - __t0;
+    if (hotProfile) perfStats.prepareSearchInfoMs += performance.now() - __t0;
     return { piecesInfo, boardInfo, legalMoveList, inCheck };
 };
 
@@ -1893,6 +1893,16 @@ let leafWPosition = VALUE_WEIGHTS.position;
 let leafWThreat = VALUE_WEIGHTS.threat;
 let leafWSafety = VALUE_WEIGHTS.safety;
 let leafWMobility = VALUE_WEIGHTS.mobility;
+let leafWeightsUnity = 1;
+
+// 搜索开始时拍到模块绑定，避免热路径反复读 searchContext 对象属性（JSC 更敏感）。
+let hotProfile = false;
+let hotMetrics = false;
+let hotLmrMinDepth = 3;
+let hotLmrMinMove = 5;
+let hotLmrMaxReduction = 2;
+let hotNmpMinDepth = 3;
+let hotNmpReduction = 2;
 
 const snapshotLeafWeights = () => {
     leafWMaterial = VALUE_WEIGHTS.material;
@@ -1900,6 +1910,18 @@ const snapshotLeafWeights = () => {
     leafWThreat = VALUE_WEIGHTS.threat;
     leafWSafety = VALUE_WEIGHTS.safety;
     leafWMobility = VALUE_WEIGHTS.mobility;
+    leafWeightsUnity = (leafWMaterial === 1 && leafWPosition === 1 &&
+        leafWThreat === 1 && leafWSafety === 1 && leafWMobility === 1) ? 1 : 0;
+};
+
+const snapshotHotSearchFlags = () => {
+    hotProfile = searchContext.profile;
+    hotMetrics = searchContext.collectMetrics;
+    hotLmrMinDepth = searchContext.lmrMinDepth;
+    hotLmrMinMove = searchContext.lmrMinMove;
+    hotLmrMaxReduction = searchContext.lmrMaxReduction | 0 || 2;
+    hotNmpMinDepth = searchContext.nmpMinDepth;
+    hotNmpReduction = searchContext.nmpReduction;
 };
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
@@ -1928,40 +1950,6 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
         n++;
     }
     return n;
-};
-
-const applyOccupiedSliderHit = (
-    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-) => {
-    const targetCode = squareCodes[sq];
-    const targetSlot = squareToSlot[sq];
-    if ((targetCode < 8) !== isRed) {
-        attackBySlot[targetSlot] |= bit;
-        return 1 << targetSlot;
-    }
-    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
-    return 0;
-};
-
-const applyOccupiedSliderHitWithCapture = (
-    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-    recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-) => {
-    const targetCode = squareCodes[sq];
-    const targetSlot = squareToSlot[sq];
-    if ((targetCode < 8) !== isRed) {
-        attackBySlot[targetSlot] |= bit;
-        if (recordCaptures) {
-            if (captureCounts[fromSq] === 0) {
-                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-            }
-            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                (fromSq << 7) | sq;
-        }
-        return 1 << targetSlot;
-    }
-    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
-    return 0;
 };
 
 const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked, targetMask = null) => {
@@ -2261,12 +2249,12 @@ const advanceTrueStagedMoves = (
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
-        const started = searchContext.profile ? performance.now() : 0;
+        const started = hotProfile ? performance.now() : 0;
         const added = appendTrueStagedMoves(
             moves, stage, board, currentPlayer, pieceState, ttMove, killers
         );
-        if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - started;
-        if (searchContext.collectMetrics) {
+        if (hotProfile) perfStats.prepareMoveGenMs += performance.now() - started;
+        if (hotMetrics) {
             perfStats.stagedGeneration.stages[stage]++;
             perfStats.stagedGeneration.generated[stage] += added;
             perfStats.pseudoMovesGenerated += added;
@@ -2521,7 +2509,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
 // SoA 关系构建。占位目标关系按目标索引，攻击关系用稳定的 piece-state 槽（最多 32）。
 // 跳过空槽以保持初始槽的攻击方顺序。快路径省略 QS 吃子打包（多数叶评估）。
 const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
-    const profileRelations = searchContext.profile;
+    const profileRelations = hotProfile;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
@@ -2679,27 +2667,51 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = r * 9 + t0;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t1 = RANK_FIRST_LOW[rankKey];
                 if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = r * 9 + t1;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t2 = FILE_FIRST_HIGH[fileKey];
                 if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = t2 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t3 = FILE_FIRST_LOW[fileKey];
                 if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = t3 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const rankControl = RANK_ROOK_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
@@ -2731,27 +2743,51 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = r * 9 + t0;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t1 = RANK_SECOND_LOW[rankKey];
                 if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = r * 9 + t1;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t2 = FILE_SECOND_HIGH[fileKey];
                 if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = t2 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t3 = FILE_SECOND_LOW[fileKey];
                 if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHit(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
-                    );
+                    const sq = t3 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const rankControl = RANK_CANNON_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
@@ -2787,7 +2823,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
-    if (searchContext.collectMetrics) {
+    if (hotMetrics) {
         perfStats.leafRelationCalls++;
         perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
     }
@@ -2797,7 +2833,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
 const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     pieceState, aliveMask, capturePlayer
 ) => {
-    const profileRelations = searchContext.profile;
+    const profileRelations = hotProfile;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
@@ -3004,31 +3040,79 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = r * 9 + t0;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t1 = RANK_FIRST_LOW[rankKey];
                 if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = r * 9 + t1;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t2 = FILE_FIRST_HIGH[fileKey];
                 if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = t2 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t3 = FILE_FIRST_LOW[fileKey];
                 if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = t3 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const rankControl = RANK_ROOK_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
@@ -3060,31 +3144,79 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = r * 9 + t0;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t1 = RANK_SECOND_LOW[rankKey];
                 if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = r * 9 + t1;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t2 = FILE_SECOND_HIGH[fileKey];
                 if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = t2 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const t3 = FILE_SECOND_LOW[fileKey];
                 if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
+                    const sq = t3 * 9 + c;
+                    const targetCode = squareCodes[sq];
+                    const targetSlot = squareToSlot[sq];
+                    if ((targetCode < 8) !== isRed) {
+                        attackBySlot[targetSlot] |= bit;
+                        if (recordCaptures) {
+                            if (captureCounts[fromSq] === 0) {
+                                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                            }
+                            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                (fromSq << 7) | sq;
+                        }
+                        attackedTargetMask |= 1 << targetSlot;
+                    } else if ((targetCode & 7) !== 1) {
+                        guardBySlot[targetSlot] |= bit;
+                    }
                 }
                 const rankControl = RANK_CANNON_CONTROL[rankKey];
                 if ((isRed && r >= 7) || (!isRed && r <= 2)) {
@@ -3120,7 +3252,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
-    if (searchContext.collectMetrics) {
+    if (hotMetrics) {
         perfStats.leafRelationCalls++;
         perfStats.leafRelationCaptureCalls++;
         perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
@@ -3512,7 +3644,7 @@ const calculateStaticExchangeScoreNumeric = (
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
 const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null, forSearchLeaf = false) => {
     // 统计
-    if (searchContext.collectMetrics && currentPlayer) {
+    if (hotMetrics && currentPlayer) {
         perfStats.calculateThreatValuesCount[currentPlayer]++;
     }
 
@@ -5385,19 +5517,19 @@ class TranspositionTable {
 
         if (live && (word0 & TT_W0_KEY_MASK) === key16 &&
             !!(word0 & TT_W0_KEYHIGH) === keyHigh) {
-            if (searchContext.collectMetrics) this.stats.updatedStores++;
+            if (hotMetrics) this.stats.updatedStores++;
             const slotDepth = word0 >>> TT_W0_DEPTH_SHIFT;
             // 更深 exact 不被更浅 bound 覆盖
             if (slotDepth > depth &&
                 ((word0 >>> TT_W0_FLAG_SHIFT) & 3) === 0 && flagCode !== 0) {
-                if (searchContext.collectMetrics) this.stats.retainedUpdates++;
+                if (hotMetrics) this.stats.retainedUpdates++;
                 // The matching historical entry is useful in this search; refresh
                 // its generation so it cannot expire while the current search runs.
                 this.data[base] = (word0 & TT_W0_GEN_CLEAR) | (gen << TT_W0_GEN_SHIFT);
                 return;
             }
             this._writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move);
-            if (searchContext.collectMetrics) this.stats.stores++;
+            if (hotMetrics) this.stats.stores++;
             return;
         }
 
@@ -5407,22 +5539,22 @@ class TranspositionTable {
             // Current-search entries remain depth preferred. A different-key
             // historical entry must never block the current generation.
             if (!historicalSlot && slotDepth > depth) {
-                if (searchContext.collectMetrics) {
+                if (hotMetrics) {
                     this.stats.retainedUpdates++;
                     this.stats.depthPreferredEvictions++;
                 }
                 return;
             }
-            if (searchContext.collectMetrics) {
+            if (hotMetrics) {
                 this.stats.lruEvictions++;
                 if (historicalSlot) this.stats.historicalReplacements++;
             }
-        } else if (searchContext.collectMetrics) {
+        } else if (hotMetrics) {
             this.occupiedApprox++;
         }
 
         this._writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move);
-        if (searchContext.collectMetrics) this.stats.stores++;
+        if (hotMetrics) this.stats.stores++;
     }
 
     retrieve(key) {
@@ -5436,15 +5568,15 @@ class TranspositionTable {
         if (age > this.retainedGenerations ||
             (word0 & TT_W0_KEY_MASK) !== (keyLow >>> 16) ||
             !!(word0 & TT_W0_KEYHIGH) !== (key < 0)) {
-            if (searchContext.collectMetrics) this.stats.misses++;
+            if (hotMetrics) this.stats.misses++;
             return null;
         }
-        if (searchContext.collectMetrics) {
+        if (hotMetrics) {
             this.stats.hits++;
             if (age > 0) this.stats.historicalHits++;
         }
         const flagCode = (word0 >>> TT_W0_FLAG_SHIFT) & 3;
-        if (searchContext.profile) {
+        if (hotProfile) {
             if (flagCode === 0) this.stats.exactHits++;
             else if (flagCode === 1) this.stats.lowerboundHits++;
             else this.stats.upperboundHits++;
@@ -5474,7 +5606,7 @@ class TranspositionTable {
         this.reuseScope = reuseScope;
         this.lastSearchPly = searchPly;
         if (!canRetain) this.occupiedApprox = 0;
-        if (searchContext.collectMetrics) {
+        if (hotMetrics) {
             this.stats.clears++;
             if (canRetain) {
                 this.stats.retainedSearches++;
@@ -5660,14 +5792,14 @@ const snapshotPerfStats = () => {
     }
     return {
         elapsedMs: elapsed,
-        profile: searchContext.profile,
+        profile: hotProfile,
         evaluateBoard: { ...perfStats.evaluateBoardCount },
         prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
         calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
         alphaBetaCalls: perfStats.alphaBetaCalls,
         pseudoMovesGenerated: perfStats.pseudoMovesGenerated,
         legalityChecks: perfStats.legalityChecks,
-        kingSafety: searchContext.collectMetrics ? {
+        kingSafety: hotMetrics ? {
             fullChecks: perfStats.kingSafetyFullChecks,
             fastSkips: perfStats.kingSafetyFastSkips,
             skipRate: perfStats.legalityChecks
@@ -5675,7 +5807,7 @@ const snapshotPerfStats = () => {
                 : 0,
             fullReasons: { ...perfStats.kingSafetyFullReasons }
         } : null,
-        leafRelations: searchContext.collectMetrics ? {
+        leafRelations: hotMetrics ? {
             calls: perfStats.leafRelationCalls,
             captureCalls: perfStats.leafRelationCaptureCalls,
             relationMs: perfStats.leafRelationsMs,
@@ -5687,7 +5819,7 @@ const snapshotPerfStats = () => {
         } : null,
         illegalMovesSkipped: perfStats.illegalMovesSkipped,
         legalMovesSearched: perfStats.legalMovesSearched,
-        lmr: searchContext.collectMetrics ? {
+        lmr: hotMetrics ? {
             minDepth: searchContext.lmrMinDepth,
             minMove: searchContext.lmrMinMove,
             attempts: perfStats.lmrAttempts,
@@ -5696,14 +5828,14 @@ const snapshotPerfStats = () => {
                 ? Number((perfStats.lmrReSearches / perfStats.lmrAttempts * 100).toFixed(2))
                 : 0
         } : null,
-        pvs: searchContext.collectMetrics ? {
+        pvs: hotMetrics ? {
             attempts: perfStats.pvsAttempts,
             reSearches: perfStats.pvsReSearches,
             reSearchRate: perfStats.pvsAttempts
                 ? Number((perfStats.pvsReSearches / perfStats.pvsAttempts * 100).toFixed(2))
                 : 0
         } : null,
-        nmp: searchContext.collectMetrics ? {
+        nmp: hotMetrics ? {
             minDepth: searchContext.nmpMinDepth,
             reduction: searchContext.nmpReduction,
             attempts: perfStats.nmpAttempts,
@@ -5734,7 +5866,7 @@ const snapshotPerfStats = () => {
             evalCacheGenerations.byteLength,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
-        moveOrdering: searchContext.collectMetrics ? {
+        moveOrdering: hotMetrics ? {
             topMoveSources: { ...perfStats.moveOrdering.topMoveSources },
             byDepth: Object.fromEntries(depths.map((d) => {
                 const firstLegalMoves = perfStats.moveOrdering.firstLegalMovesByDepth[d] || 0;
@@ -5751,7 +5883,7 @@ const snapshotPerfStats = () => {
                 }];
             }))
         } : null,
-        stagedGeneration: searchContext.collectMetrics ? {
+        stagedGeneration: hotMetrics ? {
             nodes: perfStats.stagedGeneration.nodes,
             stages: [...perfStats.stagedGeneration.stages],
             generated: [...perfStats.stagedGeneration.generated],
@@ -5885,10 +6017,8 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 };
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
-const childBoardHash = (boardHash, move, movingPiece, captured) => {
-    if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
-    const moverCode = toSearchPieceCode(movingPiece);
-    const capturedCode = toSearchPieceCode(captured);
+const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
+    if (hotMetrics) perfStats.incrementalHashUpdates++;
     const from = moveFromSq(move);
     const to = moveToSq(move);
     let newHash = boardHash;
@@ -5907,7 +6037,7 @@ const childBoardHash = (boardHash, move, movingPiece, captured) => {
 
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
 const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
+    const __t0 = hotProfile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const stateCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
@@ -5916,7 +6046,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
 
     calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
 
-    if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
+    if (hotMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
@@ -5924,7 +6054,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
     const redAttack = scratchRedAttack;
     let redThreat = 0;
     let blackThreat = 0;
-    const tacticalStart = searchContext.profile ? performance.now() : 0;
+    const tacticalStart = hotProfile ? performance.now() : 0;
     let attackedTargets = scratchLeafAttackedTargetMask >>> 0;
     while (attackedTargets !== 0) {
         const targetBit = attackedTargets & -attackedTargets;
@@ -5955,7 +6085,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
         if (stateCodes[attackerIndex] < 8) redThreat += threatValue;
         else blackThreat += threatValue;
     }
-    if (searchContext.profile) perfStats.leafTacticalMs += performance.now() - tacticalStart;
+    if (hotProfile) perfStats.leafTacticalMs += performance.now() - tacticalStart;
 
     let redSafety = 0;
     let blackSafety = 0;
@@ -5980,28 +6110,37 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
         }
     }
 
-    const wMaterial = leafWMaterial;
-    const wPosition = leafWPosition;
-    const wThreat = leafWThreat;
-    const wSafety = leafWSafety;
-    const wMobility = leafWMobility;
-    const redTotal =
-        pieceState.redMaterial * wMaterial +
-        pieceState.redPosition * wPosition +
-        redThreat * wThreat +
-        redSafety * wSafety +
-        scratchLeafTotals[2] * wMobility;
-    const blackTotal =
-        pieceState.blackMaterial * wMaterial +
-        pieceState.blackPosition * wPosition +
-        blackThreat * wThreat +
-        blackSafety * wSafety +
-        scratchLeafTotals[5] * wMobility;
+    let redTotal;
+    let blackTotal;
+    if (leafWeightsUnity) {
+        redTotal = pieceState.redMaterial + pieceState.redPosition +
+            redThreat + redSafety + scratchLeafTotals[2];
+        blackTotal = pieceState.blackMaterial + pieceState.blackPosition +
+            blackThreat + blackSafety + scratchLeafTotals[5];
+    } else {
+        const wMaterial = leafWMaterial;
+        const wPosition = leafWPosition;
+        const wThreat = leafWThreat;
+        const wSafety = leafWSafety;
+        const wMobility = leafWMobility;
+        redTotal =
+            pieceState.redMaterial * wMaterial +
+            pieceState.redPosition * wPosition +
+            redThreat * wThreat +
+            redSafety * wSafety +
+            scratchLeafTotals[2] * wMobility;
+        blackTotal =
+            pieceState.blackMaterial * wMaterial +
+            pieceState.blackPosition * wPosition +
+            blackThreat * wThreat +
+            blackSafety * wSafety +
+            scratchLeafTotals[5] * wMobility;
+    }
 
-    if (searchContext.profile) {
+    if (hotProfile) {
         perfStats.fastLeafEvalCount++;
         perfStats.fastLeafEvalMs += performance.now() - __t0;
-    } else if (searchContext.collectMetrics) {
+    } else if (hotMetrics) {
         perfStats.fastLeafEvalCount++;
     }
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
@@ -6016,10 +6155,10 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
         evalCacheKeys[cacheSlot] === combinedKey) {
-        if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
+        if (hotMetrics) perfStats.staticEvalCacheHits++;
         return evalCacheValues[cacheSlot];
     }
-    if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
+    if (hotMetrics) perfStats.staticEvalCacheMisses++;
     const net = evaluateLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
     if (capturePlayer != null) {
         packedCaptureCacheKey = cacheKey;
@@ -6052,8 +6191,8 @@ const copyPackedRelationCaptures = (
 };
 
 const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.profile) perfStats.captureGenCount++;
+    const __t0 = hotProfile ? performance.now() : 0;
+    if (hotProfile) perfStats.captureGenCount++;
     const moves = destination || [];
     moves.length = 0;
     const pieceState = activePieceStateFor(board);
@@ -6068,9 +6207,9 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             const generated = appendSearchPseudoMovesForPiece(
                 moves, pieceSquares[slot], pieceCodes[slot], squareCodes, capturesOnly
             );
-            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+            if (hotMetrics) perfStats.pseudoMovesGenerated += generated;
         }
-        if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
+        if (hotProfile) perfStats.captureGenMs += performance.now() - __t0;
         return moves;
     }
     for (let scanRow = 0; scanRow < ROWS; scanRow++) {
@@ -6082,7 +6221,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             if (!piece || piece.color !== currentPlayer) continue;
             const from = { r, c };
             const pseudo = getPieceMoves(board, from, piece);
-            if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += pseudo.length;
+            if (hotMetrics) perfStats.pseudoMovesGenerated += pseudo.length;
             for (let i = 0; i < pseudo.length; i++) {
                 const to = pseudo[i];
                 if (!capturesOnly || board[to.r][to.c]) {
@@ -6091,7 +6230,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
             }
         }
     }
-    if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
+    if (hotProfile) perfStats.captureGenMs += performance.now() - __t0;
     return moves;
 };
 
@@ -6143,7 +6282,7 @@ const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
     searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
-    if (searchContext.profile) perfStats.quiescenceCalls++;
+    if (hotProfile) perfStats.quiescenceCalls++;
     const qsState = activePieceStateFor(b);
     const checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
     let inCheck;
@@ -6178,13 +6317,13 @@ const quiescence = (
     }
     if (inCheck && qsState) {
         const generated = generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
-        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+        if (hotMetrics) perfStats.pseudoMovesGenerated += generated;
     } else if (inCheck || !copyPackedRelationCaptures(
         moves, currentPlayer, boardHash, searchInitiator, gameStage, b
     )) {
         generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
     }
-    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
+    if (hotProfile) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) return inCheck
         ? quiescenceMateValue(currentPlayer, searchInitiator)
         : standPat;
@@ -6206,12 +6345,12 @@ const quiescence = (
         makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
-            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
+            if (hotMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
         legalMovesFound++;
-        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
+        if (hotMetrics) perfStats.legalMovesSearched++;
         const value = quiescence(
             b, alpha, beta, !maximizing, nextPlayer,
             searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
@@ -6241,7 +6380,7 @@ const alphaBeta = (
     const originalAlpha = alpha;
     const originalBeta = beta;
 
-    if (searchContext.collectMetrics) {
+    if (hotMetrics) {
         perfStats.alphaBetaCalls++;
         if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
         perfStats.nodesSearched[d]++;
@@ -6273,10 +6412,10 @@ const alphaBeta = (
     let searchInfo = null;
     let inCheck;
     if (useTrueStagedGeneration) {
-        const checkStarted = searchContext.profile ? performance.now() : 0;
+        const checkStarted = hotProfile ? performance.now() : 0;
         inCheck = isCheckFromState(stagedPieceState, currentPlayer);
         if (inCheck) collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
-        if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
+        if (hotProfile) perfStats.prepareCheckMs += performance.now() - checkStarted;
         if (inCheck) {
             useTrueStagedGeneration = false;
             let evasionMoves = playStagedMoveBuffers[plyFromRoot];
@@ -6286,12 +6425,12 @@ const alphaBeta = (
             } else {
                 evasionMoves.length = 0;
             }
-            const genStarted = searchContext.profile ? performance.now() : 0;
+            const genStarted = hotProfile ? performance.now() : 0;
             const generated = generateCheckEvasions(
                 evasionMoves, currentPlayer, stagedPieceState, checkInfo
             );
-            if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - genStarted;
-            if (searchContext.collectMetrics) {
+            if (hotProfile) perfStats.prepareMoveGenMs += performance.now() - genStarted;
+            if (hotMetrics) {
                 perfStats.pseudoMovesGenerated += generated;
                 perfStats.prepareSearchInfoCount[currentPlayer]++;
             }
@@ -6338,18 +6477,16 @@ const alphaBeta = (
     // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
     const canNmp = allowNull &&
         !inCheck &&
-        d >= searchContext.nmpMinDepth &&
-        Number.isFinite(alpha) &&
-        Number.isFinite(beta) &&
+        d >= hotNmpMinDepth &&
         (beta - alpha) <= NULL_WINDOW &&
         Math.abs(alpha) < 90000 &&
         Math.abs(beta) < 90000 &&
         hasNullMoveMaterial(stagedPieceState, currentPlayer);
     if (canNmp) {
-        const reduction = Math.min(searchContext.nmpReduction, d - 1);
+        const reduction = Math.min(hotNmpReduction, d - 1);
         const nullDepth = d - 1 - reduction;
-        const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
-        if (searchContext.collectMetrics) perfStats.nmpAttempts++;
+        const probeStartNodes = hotMetrics ? perfStats.alphaBetaCalls : 0;
+        if (hotMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
             ? alphaBeta(
                 b, nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
@@ -6359,11 +6496,11 @@ const alphaBeta = (
                 b, nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false
             );
-        if (searchContext.collectMetrics) {
+        if (hotMetrics) {
             perfStats.nmpProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
         }
         if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
-            if (searchContext.collectMetrics) perfStats.nmpCutoffs++;
+            if (hotMetrics) perfStats.nmpCutoffs++;
             return nullValue;
         }
     }
@@ -6380,7 +6517,7 @@ const alphaBeta = (
     } else {
         moves = searchInfo.legalMoveList;
     }
-    if (searchContext.collectMetrics && !useTrueStagedGeneration) {
+    if (hotMetrics && !useTrueStagedGeneration) {
         if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
         perfStats.movesGenerated[d] += moves.length;
     }
@@ -6393,7 +6530,7 @@ const alphaBeta = (
     let stagedEnd = moves.length;
     let nextTrueStagedStage = 0;
     if (useTrueStagedGeneration) {
-        if (searchContext.collectMetrics) perfStats.stagedGeneration.nodes++;
+        if (hotMetrics) perfStats.stagedGeneration.nodes++;
         nextTrueStagedStage = advanceTrueStagedMoves(
             moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth, d
@@ -6417,7 +6554,7 @@ const alphaBeta = (
             ttMove, killersAtDepth, inCheck
         );
     }
-    if (searchContext.collectMetrics && moves.length) {
+    if (hotMetrics && moves.length) {
         recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
     }
 
@@ -6456,37 +6593,37 @@ const alphaBeta = (
         makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
-            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
+            if (hotMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
         legalMovesFound++;
-        if (searchContext.collectMetrics && legalMovesFound === 1) {
+        if (hotMetrics && legalMovesFound === 1) {
             recordFirstLegalMove(d, moveIndex);
         }
-        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
+        if (hotMetrics) perfStats.legalMovesSearched++;
         // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
         const canLmr = !inCheck &&
             !isCapture &&
-            d >= searchContext.lmrMinDepth &&
-            legalMovesFound >= searchContext.lmrMinMove &&
-            !isSameMove(move, ttMove) &&
-            !isSameMove(move, killersAtDepth[0]) &&
-            !isSameMove(move, killersAtDepth[1]);
+            d >= hotLmrMinDepth &&
+            legalMovesFound >= hotLmrMinMove &&
+            move !== ttMove &&
+            move !== killersAtDepth[0] &&
+            move !== killersAtDepth[1];
 
         // 树内 PVS：非首着且窗口够宽时先空窗；fail-high 再全窗回搜
         const pvsEligible = legalMovesFound > 1 &&
-            (maximizing ? Number.isFinite(alpha) : Number.isFinite(beta)) &&
+            (maximizing ? alpha !== -Infinity : beta !== Infinity) &&
             (beta - alpha) > NULL_WINDOW;
 
         let reducedDepth = d - 1;
         if (canLmr) {
             let reduction = (Math.log(d) * Math.log(legalMovesFound) / Math.LN2) | 0;
             if (reduction < 1) reduction = 1;
-            const maxReduction = Math.min(searchContext.lmrMaxReduction | 0 || 2, d - 2);
+            const maxReduction = Math.min(hotLmrMaxReduction, d - 2);
             if (reduction > maxReduction) reduction = maxReduction;
             reducedDepth = d - 1 - reduction;
-            if (searchContext.collectMetrics) perfStats.lmrAttempts++;
+            if (hotMetrics) perfStats.lmrAttempts++;
         }
 
         let value;
@@ -6497,15 +6634,15 @@ const alphaBeta = (
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
-                    if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                    if (hotMetrics) perfStats.lmrReSearches++;
                     if (pvsEligible) {
-                        if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                        if (hotMetrics) perfStats.pvsAttempts++;
                         value = alphaBeta(
                             b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
                         );
                         if (value > alpha) {
-                            if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                            if (hotMetrics) perfStats.pvsReSearches++;
                             value = alphaBeta(
                                 b, d - 1, alpha, beta, !maximizing, nextPlayer,
                                 searchDepth, searchInitiator, gameStage, nextHash
@@ -6519,13 +6656,13 @@ const alphaBeta = (
                     }
                 }
             } else if (pvsEligible) {
-                if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                if (hotMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
                     b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
                 );
                 if (value > alpha) {
-                    if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                    if (hotMetrics) perfStats.pvsReSearches++;
                     value = alphaBeta(
                         b, d - 1, alpha, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
@@ -6543,15 +6680,15 @@ const alphaBeta = (
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
-                if (searchContext.collectMetrics) perfStats.lmrReSearches++;
+                if (hotMetrics) perfStats.lmrReSearches++;
                 if (pvsEligible) {
-                    if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+                    if (hotMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
                         b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, gameStage, nextHash
                     );
                     if (value < beta) {
-                        if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                        if (hotMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
                             b, d - 1, alpha, beta, !maximizing, nextPlayer,
                             searchDepth, searchInitiator, gameStage, nextHash
@@ -6565,13 +6702,13 @@ const alphaBeta = (
                 }
             }
         } else if (pvsEligible) {
-            if (searchContext.collectMetrics) perfStats.pvsAttempts++;
+            if (hotMetrics) perfStats.pvsAttempts++;
             value = alphaBeta(
                 b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, nextHash
             );
             if (value < beta) {
-                if (searchContext.collectMetrics) perfStats.pvsReSearches++;
+                if (hotMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
                     b, d - 1, alpha, beta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, gameStage, nextHash
@@ -6601,11 +6738,11 @@ const alphaBeta = (
 
         if (beta <= alpha) {
             cutoffFound = true;
-            if (searchContext.collectMetrics) {
+            if (hotMetrics) {
                 if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
                 perfStats.cutoffs[d]++;
             }
-            if (searchContext.collectMetrics && legalMovesFound === 1) {
+            if (hotMetrics && legalMovesFound === 1) {
                 recordFirstLegalCutoff(d);
             }
             if (!isCapture) {
@@ -6617,7 +6754,7 @@ const alphaBeta = (
     }
 
     if (useTrueStagedGeneration && cutoffFound && nextTrueStagedStage < 4 &&
-        searchContext.collectMetrics) {
+        hotMetrics) {
         perfStats.stagedGeneration.quietSkipped++;
     }
 
@@ -6712,6 +6849,7 @@ const getBestMove = (
 
   // 根节点：迭代加深 + PVS；TT/killer/history 跨深度保留（仅开局清空一次）
   resetPerfStats();
+  snapshotHotSearchFlags();
   snapshotLeafWeights();
   const startTime = Date.now();
   if (typeof searchContext.reportSearchProgress === 'function') {
@@ -6837,7 +6975,7 @@ const getBestMove = (
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hash(board);
-  if (searchContext.collectMetrics) perfStats.fullHashCount++;
+  if (hotMetrics) perfStats.fullHashCount++;
   const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, turn);
 
   let completedDepth = 0;
