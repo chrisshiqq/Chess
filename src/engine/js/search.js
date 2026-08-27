@@ -916,8 +916,94 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     return false;
 };
 
+const CHECK_KIND_RAY = 1;
+const CHECK_KIND_HORSE = 2;
+const CHECK_KIND_SOLDIER = 3;
+const CHECK_KIND_CANNON = 4;
+const CHECK_INFO_CAP = 4;
+
+const createCheckInfo = () => ({
+    count: 0,
+    sq: [-1, -1, -1, -1],
+    kind: [0, 0, 0, 0],
+    leg: [-1, -1, -1, -1]
+});
+
+const addChecker = (out, sq, kind, leg = -1) => {
+    if (out.count >= CHECK_INFO_CAP) {
+        out.count = CHECK_INFO_CAP + 1;
+        return;
+    }
+    const i = out.count;
+    out.sq[i] = sq;
+    out.kind[i] = kind;
+    out.leg[i] = leg;
+    out.count = i + 1;
+};
+
+const acquireCheckInfo = (pool, ply) => {
+    let info = pool[ply];
+    if (!info) {
+        info = createCheckInfo();
+        pool[ply] = info;
+    } else {
+        info.count = 0;
+    }
+    return info;
+};
+
+const abCheckInfoPool = [];
+const qsCheckInfoPool = [];
+const evasionResolveMask = new Uint8Array(REL_SQUARES);
+const evasionResolveScratch = new Uint8Array(REL_SQUARES);
+
+const isStrictlyBetweenOnRay = (sq, a, b) => {
+    const sr = SEARCH_SQ_ROWS[sq];
+    const sc = SEARCH_SQ_COLS[sq];
+    const ar = SEARCH_SQ_ROWS[a];
+    const ac = SEARCH_SQ_COLS[a];
+    const br = SEARCH_SQ_ROWS[b];
+    const bc = SEARCH_SQ_COLS[b];
+    if (ar === br && sr === ar) {
+        const lo = ac < bc ? ac : bc;
+        const hi = ac < bc ? bc : ac;
+        return sc > lo && sc < hi;
+    }
+    if (ac === bc && sc === ac) {
+        const lo = ar < br ? ar : br;
+        const hi = ar < br ? br : ar;
+        return sr > lo && sr < hi;
+    }
+    return false;
+};
+
+const squareResolvesChecker = (fromSq, toSq, generalSq, checkerSq, kind, extra) => {
+    if (toSq === checkerSq) return true;
+    if (kind === CHECK_KIND_HORSE) return toSq === extra;
+    if (kind === CHECK_KIND_SOLDIER) return false;
+    if (kind === CHECK_KIND_CANNON) {
+        if (generalSq >= 0 && isStrictlyBetweenOnRay(toSq, generalSq, checkerSq)) return true;
+        return fromSq === extra;
+    }
+    return generalSq >= 0 && checkerSq >= 0 && isStrictlyBetweenOnRay(toSq, generalSq, checkerSq);
+};
+
+const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
+    const count = checkInfo.count;
+    if (count <= 0) return true;
+    if (count > CHECK_INFO_CAP) return false;
+    for (let i = 0; i < count; i++) {
+        if (!squareResolvesChecker(
+            fromSq, toSq, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i]
+        )) {
+            return false;
+        }
+    }
+    return true;
+};
+
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
-const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
+const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, checkInfo = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.collectMetrics) perfStats.legalityChecks++;
     const pieceState = activePieceStateFor(board);
@@ -925,10 +1011,10 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
         if (searchContext.collectMetrics) perfStats.kingSafetyFastSkips++;
         return false;
     }
-    if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
     let unsafe;
     if (pieceState) {
         if (!wasInCheck && move != null) {
+            if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
             const toSq = moveToSq(move);
             const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
             // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
@@ -941,11 +1027,42 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true) => {
                 : isCheckAfterSafeMove(
                     pieceState, color, moveFromSq(move), toSq
                 );
+        } else if (
+            wasInCheck &&
+            checkInfo &&
+            checkInfo.count > 0 &&
+            checkInfo.count <= CHECK_INFO_CAP &&
+            move != null
+        ) {
+            const toSq = moveToSq(move);
+            const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
+            if (generalSq === toSq) {
+                if (searchContext.collectMetrics) {
+                    perfStats.kingSafetyFullChecks++;
+                    perfStats.kingSafetyFullReasons.inCheck++;
+                }
+                unsafe = isCheckFromState(pieceState, color);
+            } else if (!moveResolvesKnownChecks(moveFromSq(move), toSq, generalSq, checkInfo)) {
+                if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
+                unsafe = true;
+            } else {
+                if (searchContext.collectMetrics) {
+                    perfStats.kingSafetyFullChecks++;
+                    perfStats.kingSafetyFullReasons.evasionDiscover++;
+                }
+                unsafe = isCheckAfterSafeMove(
+                    pieceState, color, moveFromSq(move), toSq
+                );
+            }
         } else {
-            if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.inCheck++;
+            if (searchContext.collectMetrics) {
+                perfStats.kingSafetyFullChecks++;
+                perfStats.kingSafetyFullReasons.inCheck++;
+            }
             unsafe = isCheckFromState(pieceState, color);
         }
     } else {
+        if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
         unsafe = isCheck(board, color);
     }
     if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
@@ -1847,7 +1964,7 @@ const applyOccupiedSliderHitWithCapture = (
     return 0;
 };
 
-const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked) => {
+const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked, targetMask = null) => {
     let generated = 0;
     for (let i = 0; i < dests.length; i++) {
         let toSq = dests[i];
@@ -1855,6 +1972,7 @@ const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, captur
             if (squareCodes[toSq >>> 7] !== 0) continue;
             toSq &= 127;
         }
+        if (targetMask && !targetMask[toSq]) continue;
         const targetCode = squareCodes[toSq];
         if (targetCode === 0) {
             generated++;
@@ -1867,7 +1985,7 @@ const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, captur
     return generated;
 };
 
-const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, capturesOnly = false) => {
+const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, capturesOnly = false, targetMask = null) => {
     const pieceType = pieceCode & 7;
     const isRed = pieceCode < 8;
     const colorIdx = isRed ? 0 : 1;
@@ -1875,15 +1993,15 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
 
     switch (pieceType) {
         case 1:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+            return appendSearchShortMoves(moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
         case 5:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+            return appendSearchShortMoves(moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
         case 4:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true);
+            return appendSearchShortMoves(moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true, targetMask);
         case 3:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true);
+            return appendSearchShortMoves(moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true, targetMask);
         case 7:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false);
+            return appendSearchShortMoves(moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
         case 2:
             for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
                 const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
@@ -1891,10 +2009,12 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
                     const toSq = SEARCH_RAY_SQUARES[rayPos];
                     const targetCode = squareCodes[toSq];
                     if (targetCode === 0) {
-                        generated++;
-                        if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                        if (!targetMask || targetMask[toSq]) {
+                            generated++;
+                            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                        }
                     } else {
-                        if ((targetCode < 8) !== isRed) {
+                        if ((targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
                             generated++;
                             moves.push((fromSq << 7) | toSq);
                         }
@@ -1912,13 +2032,15 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
                     const targetCode = squareCodes[toSq];
                     if (!screenFound) {
                         if (targetCode === 0) {
-                            generated++;
-                            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                            if (!targetMask || targetMask[toSq]) {
+                                generated++;
+                                if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+                            }
                         } else {
                             screenFound = true;
                         }
                     } else if (targetCode !== 0) {
-                        if ((targetCode < 8) !== isRed) {
+                        if ((targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
                             generated++;
                             moves.push((fromSq << 7) | toSq);
                         }
@@ -1930,6 +2052,114 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
         default:
             return generated;
     }
+};
+
+const markCheckerResolveSquares = (state, generalSq, checkerSq, kind, legSq, mask) => {
+    let marked = 0;
+    if (checkerSq >= 0 && checkerSq < REL_SQUARES) {
+        mask[checkerSq] = 1;
+        marked++;
+    }
+    if (kind === CHECK_KIND_HORSE) {
+        if (legSq >= 0 && state.squareCodes[legSq] === 0) {
+            mask[legSq] = 1;
+            marked++;
+        }
+        return marked;
+    }
+    if (kind === CHECK_KIND_SOLDIER || checkerSq < 0 || generalSq < 0) return marked;
+    const gr = SEARCH_SQ_ROWS[generalSq];
+    const gc = SEARCH_SQ_COLS[generalSq];
+    const cr = SEARCH_SQ_ROWS[checkerSq];
+    const cc = SEARCH_SQ_COLS[checkerSq];
+    const squareCodes = state.squareCodes;
+    if (gr === cr) {
+        const lo = gc < cc ? gc : cc;
+        const hi = gc < cc ? cc : gc;
+        const rowBase = gr * COLS;
+        for (let c = lo + 1; c < hi; c++) {
+            const sq = rowBase + c;
+            if (squareCodes[sq] === 0) {
+                mask[sq] = 1;
+                marked++;
+            }
+        }
+        return marked;
+    }
+    if (gc === cc) {
+        const lo = gr < cr ? gr : cr;
+        const hi = gr < cr ? cr : gr;
+        for (let r = lo + 1; r < hi; r++) {
+            const sq = r * COLS + gc;
+            if (squareCodes[sq] === 0) {
+                mask[sq] = 1;
+                marked++;
+            }
+        }
+    }
+    return marked;
+};
+
+const fillResolveSquares = (state, generalSq, checkInfo, mask) => {
+    mask.fill(0);
+    if (checkInfo.count <= 0 || checkInfo.count > CHECK_INFO_CAP) return 0;
+    let marked = markCheckerResolveSquares(
+        state, generalSq, checkInfo.sq[0], checkInfo.kind[0], checkInfo.leg[0], mask
+    );
+    if (checkInfo.count === 1) return marked;
+    for (let i = 1; i < checkInfo.count; i++) {
+        evasionResolveScratch.fill(0);
+        markCheckerResolveSquares(
+            state, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i], evasionResolveScratch
+        );
+        marked = 0;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            if (mask[sq] && evasionResolveScratch[sq]) marked++;
+            else mask[sq] = 0;
+        }
+    }
+    return marked;
+};
+
+const isCannonScreenSquare = (sq, checkInfo) => {
+    for (let i = 0; i < checkInfo.count; i++) {
+        if (checkInfo.kind[i] === CHECK_KIND_CANNON && checkInfo.leg[i] === sq) return true;
+    }
+    return false;
+};
+
+// 与 prepareSearchInfo 同一套全盘扫描顺序生成应将，保证合法着相对顺序不变。
+const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
+    const start = moves.length;
+    const isRed = currentPlayer === 'red';
+    const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
+    const squareCodes = pieceState.squareCodes;
+    const pieceCodes = pieceState.pieceCodes;
+    const squareToSlot = pieceState.squareToSlot;
+    const records = pieceState.records;
+    const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
+    const resolveCount = fallback
+        ? 0
+        : fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
+
+    for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
+        const scanRow = (scanSq / COLS) | 0;
+        const sq = currentPlayer === 'black'
+            ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
+            : scanSq;
+        const slot = squareToSlot[sq];
+        if (slot < 0) continue;
+        const record = records[slot];
+        if (!record.alive || record.piece.color !== currentPlayer) continue;
+        if (fallback || sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
+            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, false);
+        } else if (resolveCount > 0) {
+            appendSearchPseudoMovesForPiece(
+                moves, sq, pieceCodes[slot], squareCodes, false, evasionResolveMask
+            );
+        }
+    }
+    return moves.length - start;
 };
 
 const stagedGenerationScratch = [];
@@ -4781,6 +5011,125 @@ const getPieceMoves = (board, pos, piece, alliesOut = null) => {
   return moves;
 };
 
+// 收集全部将军者（最多 4 个）。车/将走第一子，炮走第二子，马走无腿，兵走邻格。
+const collectCheckersFromState = (state, color, out) => {
+    out.count = 0;
+    const ownIsRed = color === 'red';
+    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) {
+        addChecker(out, -1, CHECK_KIND_RAY);
+        return out;
+    }
+
+    const squareCodes = state.squareCodes;
+    const enemyIsRed = !ownIsRed;
+    const gr = SEARCH_SQ_ROWS[generalSq];
+    const gc = SEARCH_SQ_COLS[generalSq];
+
+    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
+    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
+    let first = RANK_FIRST_LOW[rankKey];
+    let second = RANK_SECOND_LOW[rankKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[gr * COLS + first];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
+        }
+        if (second !== 255) {
+            pieceCode = squareCodes[gr * COLS + second];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) {
+                addChecker(out, gr * COLS + second, CHECK_KIND_CANNON, gr * COLS + first);
+            }
+        }
+    }
+    first = RANK_FIRST_HIGH[rankKey];
+    second = RANK_SECOND_HIGH[rankKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[gr * COLS + first];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
+        }
+        if (second !== 255) {
+            pieceCode = squareCodes[gr * COLS + second];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) {
+                addChecker(out, gr * COLS + second, CHECK_KIND_CANNON, gr * COLS + first);
+            }
+        }
+    }
+    first = FILE_FIRST_LOW[fileKey];
+    second = FILE_SECOND_LOW[fileKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[first * COLS + gc];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
+        }
+        if (second !== 255) {
+            pieceCode = squareCodes[second * COLS + gc];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) {
+                addChecker(out, second * COLS + gc, CHECK_KIND_CANNON, first * COLS + gc);
+            }
+        }
+    }
+    first = FILE_FIRST_HIGH[fileKey];
+    second = FILE_SECOND_HIGH[fileKey];
+    if (first !== 255) {
+        let pieceCode = squareCodes[first * COLS + gc];
+        if ((pieceCode < 8) === enemyIsRed) {
+            const pieceType = pieceCode & 7;
+            if (pieceType === 2 || pieceType === 1) addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
+        }
+        if (second !== 255) {
+            pieceCode = squareCodes[second * COLS + gc];
+            if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) {
+                addChecker(out, second * COLS + gc, CHECK_KIND_CANNON, first * COLS + gc);
+            }
+        }
+    }
+
+    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+    for (let i = 0; i < horseCheckers.length; i++) {
+        const entry = horseCheckers[i];
+        if (squareCodes[entry >>> 7] !== 0) continue;
+        const horseSq = entry & 127;
+        const pieceCode = squareCodes[horseSq];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) {
+            addChecker(out, horseSq, CHECK_KIND_HORSE, entry >>> 7);
+        }
+    }
+
+    const enemyForward = enemyIsRed ? 1 : -1;
+    const forwardR = gr - enemyForward;
+    if (forwardR >= 0 && forwardR < ROWS) {
+        const soldierSq = forwardR * 9 + gc;
+        const pieceCode = squareCodes[soldierSq];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
+            addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
+        }
+    }
+    const crossedRiver = enemyIsRed ? gr >= 5 : gr <= 4;
+    if (crossedRiver) {
+        if (gc < COLS - 1) {
+            const soldierSq = generalSq + 1;
+            const pieceCode = squareCodes[soldierSq];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
+                addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
+            }
+        }
+        if (gc > 0) {
+            const soldierSq = generalSq - 1;
+            const pieceCode = squareCodes[soldierSq];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
+                addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
+            }
+        }
+    }
+
+    return out;
+};
+
 // 占位表将军检测：occupancy 查车/将/炮，再查马和兵。白脸将算第一子为敌将。
 const isCheckFromState = (state, color) => {
     const ownIsRed = color === 'red';
@@ -5200,7 +5549,7 @@ let perfStats = {
     legalityChecks: 0,
     kingSafetyFullChecks: 0,
     kingSafetyFastSkips: 0,
-    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0 },
+    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 },
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
@@ -5262,7 +5611,7 @@ const resetPerfStats = () => {
     perfStats.legalityChecks = 0;
     perfStats.kingSafetyFullChecks = 0;
     perfStats.kingSafetyFastSkips = 0;
-    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0 };
+    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 };
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
@@ -5795,7 +6144,15 @@ const quiescence = (
     searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
-    const inCheck = isCheck(b, currentPlayer);
+    const qsState = activePieceStateFor(b);
+    const checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
+    let inCheck;
+    if (qsState) {
+        inCheck = isCheckFromState(qsState, currentPlayer);
+        if (inCheck) collectCheckersFromState(qsState, currentPlayer, checkInfo);
+    } else {
+        inCheck = isCheck(b, currentPlayer);
+    }
     let standPat;
     if (!inCheck) {
         standPat = staticSearchEval(
@@ -5819,7 +6176,10 @@ const quiescence = (
     } else {
         moves.length = 0;
     }
-    if (inCheck || !copyPackedRelationCaptures(
+    if (inCheck && qsState) {
+        const generated = generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
+        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+    } else if (inCheck || !copyPackedRelationCaptures(
         moves, currentPlayer, boardHash, searchInitiator, gameStage, b
     )) {
         generateQuiescenceMoves(b, currentPlayer, !inCheck, moves);
@@ -5840,11 +6200,11 @@ const quiescence = (
     let legalMovesFound = 0;
     for (let i = 0; i < moves.length; i++) {
         const move = moves[i];
-        const qsState = activePieceStateFor(b);
-        const moverCode = qsState ? qsState.squareCodes[moveFromSq(move)] : 0;
-        const capturedCode = qsState ? qsState.squareCodes[moveToSq(move)] : 0;
+        const moveState = activePieceStateFor(b);
+        const moverCode = moveState ? moveState.squareCodes[moveFromSq(move)] : 0;
+        const capturedCode = moveState ? moveState.squareCodes[moveToSq(move)] : 0;
         makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
@@ -5907,16 +6267,47 @@ const alphaBeta = (
     }
 
     const stagedPieceState = activePieceStateFor(b);
+    const plyFromRoot = searchDepth - d;
+    const checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
     let useTrueStagedGeneration = !!stagedPieceState;
     let searchInfo = null;
     let inCheck;
     if (useTrueStagedGeneration) {
         const checkStarted = searchContext.profile ? performance.now() : 0;
-        inCheck = isCheck(b, currentPlayer);
+        inCheck = isCheckFromState(stagedPieceState, currentPlayer);
+        if (inCheck) collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
         if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
         if (inCheck) {
             useTrueStagedGeneration = false;
-            searchInfo = prepareSearchInfo(b, currentPlayer, false);
+            let evasionMoves = playStagedMoveBuffers[plyFromRoot];
+            if (!evasionMoves) {
+                evasionMoves = [];
+                playStagedMoveBuffers[plyFromRoot] = evasionMoves;
+            } else {
+                evasionMoves.length = 0;
+            }
+            const genStarted = searchContext.profile ? performance.now() : 0;
+            const generated = generateCheckEvasions(
+                evasionMoves, currentPlayer, stagedPieceState, checkInfo
+            );
+            if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - genStarted;
+            if (searchContext.collectMetrics) {
+                perfStats.pseudoMovesGenerated += generated;
+                perfStats.prepareSearchInfoCount[currentPlayer]++;
+            }
+            const opponent = currentPlayer === 'red' ? 'black' : 'red';
+            searchInfo = {
+                piecesInfo: null,
+                boardInfo: {
+                    redIsInCheck: currentPlayer === 'red',
+                    blackIsInCheck: currentPlayer === 'black',
+                    gameState: evasionMoves.length === 0
+                        ? { status: 'checkmate', winner: opponent }
+                        : { status: 'playing' }
+                },
+                legalMoveList: evasionMoves,
+                inCheck: true
+            };
         }
     } else {
         searchInfo = prepareSearchInfo(b, currentPlayer, false);
@@ -5977,7 +6368,6 @@ const alphaBeta = (
         }
     }
 
-    const plyFromRoot = searchDepth - d;
     let moves;
     if (useTrueStagedGeneration) {
         moves = playStagedMoveBuffers[plyFromRoot];
@@ -6064,7 +6454,7 @@ const alphaBeta = (
         const capturedCode = stagedPieceState ? stagedPieceState.squareCodes[toSq] : 0;
         const isCapture = capturedCode !== 0;
         makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck)) {
+        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
@@ -6619,6 +7009,66 @@ const getBestMove = (
 const searchTestApi = {
   collectPackedCaptures(board, capturePlayer) {
     return generateQuiescenceMoves(board, capturePlayer, true, []).slice();
+  },
+  collectCheckers(board, color) {
+    return runWithPieceState(board, () => {
+      const state = activePieceStateFor(board);
+      if (!state) return { count: 0 };
+      const info = createCheckInfo();
+      collectCheckersFromState(state, color, info);
+      return {
+        count: info.count,
+        sq: info.sq.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
+        kind: info.kind.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
+        leg: info.leg.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
+        generalSq: color === 'red' ? state.redGeneralSq : state.blackGeneralSq
+      };
+    });
+  },
+  generatedEvasions(board, color) {
+    return runWithPieceState(board, () => {
+      const state = activePieceStateFor(board);
+      if (!state) return [];
+      const info = createCheckInfo();
+      collectCheckersFromState(state, color, info);
+      const moves = [];
+      generateCheckEvasions(moves, color, state, info);
+      return moves.slice();
+    });
+  },
+  legalEvasions(board, color) {
+    return runWithPieceState(board, () => {
+      const state = activePieceStateFor(board);
+      if (!state) return [];
+      const info = createCheckInfo();
+      collectCheckersFromState(state, color, info);
+      if (info.count <= 0) return [];
+      const moves = [];
+      generateCheckEvasions(moves, color, state, info);
+      const legal = [];
+      for (let i = 0; i < moves.length; i++) {
+        const move = moves[i];
+        makeSearchMove(board, move);
+        const unsafe = leavesOwnKingUnsafe(board, color, move, true, info);
+        unmakeSearchMove(board, move);
+        if (!unsafe) legal.push(move);
+      }
+      return legal;
+    });
+  },
+  allLegalMoves(board, color) {
+    const legal = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const piece = board[r][c];
+        if (!piece || piece.color !== color) continue;
+        const dests = getValidMoves(board, { r, c });
+        for (let i = 0; i < dests.length; i++) {
+          legal.push(encodeMoveFromCoords(r, c, dests[i].r, dests[i].c));
+        }
+      }
+    }
+    return legal;
   }
 };
 
