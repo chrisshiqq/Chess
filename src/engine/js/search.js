@@ -846,7 +846,7 @@ const unmakeMove = (board, from, to, captured) => {
 
 // 仅普通节点使用：父局面安全时，走子后仍必然安全则可跳过全量检测。
 // 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
-// 马：只有腾出马腿才可能新被马将；落到马腿/马位只会挡马或吃马。
+// 马腿是将的正交邻格，已包含在将线判断里，不必再扫 SEARCH_HORSE_CHECKERS。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
     if (wasInCheck || !state || move == null) return false;
     const fromSq = moveFromSq(move);
@@ -856,20 +856,10 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 
     const generalRow = SEARCH_SQ_ROWS[generalSq];
     const generalCol = SEARCH_SQ_COLS[generalSq];
-    if (
-        SEARCH_SQ_ROWS[fromSq] === generalRow ||
-        SEARCH_SQ_COLS[fromSq] === generalCol ||
-        SEARCH_SQ_ROWS[toSq] === generalRow ||
-        SEARCH_SQ_COLS[toSq] === generalCol
-    ) {
-        return false;
-    }
-
-    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-    for (let i = 0; i < horseCheckers.length; i++) {
-        if (fromSq === (horseCheckers[i] >>> 7)) return false;
-    }
-    return true;
+    return SEARCH_SQ_ROWS[fromSq] !== generalRow &&
+        SEARCH_SQ_COLS[fromSq] !== generalCol &&
+        SEARCH_SQ_ROWS[toSq] !== generalRow &&
+        SEARCH_SQ_COLS[toSq] !== generalCol;
 };
 
 // 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
