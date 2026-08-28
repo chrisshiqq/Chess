@@ -846,7 +846,7 @@ const unmakeMove = (board, from, to, captured) => {
 
 // 仅普通节点使用：父局面安全时，走子后仍必然安全则可跳过全量检测。
 // 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
-// 马腿是将的正交邻格，已包含在将线判断里，不必再扫 SEARCH_HORSE_CHECKERS。
+// 马腿是将的对角邻格，不在将线上，腾腿必须走增量马将检测。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
     if (wasInCheck || !state || move == null) return false;
     const fromSq = moveFromSq(move);
@@ -856,10 +856,24 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 
     const generalRow = SEARCH_SQ_ROWS[generalSq];
     const generalCol = SEARCH_SQ_COLS[generalSq];
-    return SEARCH_SQ_ROWS[fromSq] !== generalRow &&
-        SEARCH_SQ_COLS[fromSq] !== generalCol &&
-        SEARCH_SQ_ROWS[toSq] !== generalRow &&
-        SEARCH_SQ_COLS[toSq] !== generalCol;
+    if (
+        SEARCH_SQ_ROWS[fromSq] === generalRow ||
+        SEARCH_SQ_COLS[fromSq] === generalCol ||
+        SEARCH_SQ_ROWS[toSq] === generalRow ||
+        SEARCH_SQ_COLS[toSq] === generalCol
+    ) {
+        return false;
+    }
+
+    const fromR = SEARCH_SQ_ROWS[fromSq];
+    const fromC = SEARCH_SQ_COLS[fromSq];
+    if (Math.abs(fromR - generalRow) === 1 && Math.abs(fromC - generalCol) === 1) {
+        const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
+        for (let i = 0; i < horseCheckers.length; i++) {
+            if (fromSq === (horseCheckers[i] >>> 7)) return false;
+        }
+    }
+    return true;
 };
 
 // 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
@@ -936,15 +950,13 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
         }
     }
 
-    if (Math.abs(fromR - gr) + Math.abs(fromC - gc) === 1) {
+    // 马腿是对角邻格；走子后 from 已空，腾腿即可能被马将。
+    if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
         const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
         for (let i = 0; i < horseCheckers.length; i++) {
             const entry = horseCheckers[i];
-            const legSq = entry >>> 7;
-            if (fromSq !== legSq) continue;
-            if (squareCodes[legSq] !== 0) continue;
-            const horseSq = entry & MOVE_TO_MASK;
-            const pieceCode = squareCodes[horseSq];
+            if (fromSq !== (entry >>> 7)) continue;
+            const pieceCode = squareCodes[entry & 127];
             if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
         }
     }
