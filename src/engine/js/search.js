@@ -856,22 +856,22 @@ const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
 
     const generalRow = SEARCH_SQ_ROWS[generalSq];
     const generalCol = SEARCH_SQ_COLS[generalSq];
+    const fromR = SEARCH_SQ_ROWS[fromSq];
+    const fromC = SEARCH_SQ_COLS[fromSq];
+    const toR = SEARCH_SQ_ROWS[toSq];
+    const toC = SEARCH_SQ_COLS[toSq];
     if (
-        SEARCH_SQ_ROWS[fromSq] === generalRow ||
-        SEARCH_SQ_COLS[fromSq] === generalCol ||
-        SEARCH_SQ_ROWS[toSq] === generalRow ||
-        SEARCH_SQ_COLS[toSq] === generalCol
+        fromR === generalRow ||
+        fromC === generalCol ||
+        toR === generalRow ||
+        toC === generalCol
     ) {
         return false;
     }
 
-    const fromR = SEARCH_SQ_ROWS[fromSq];
-    const fromC = SEARCH_SQ_COLS[fromSq];
+    // 在盘对角邻格相对将必是马腿（日字腿在将的斜邻），无需再扫预表。
     if (Math.abs(fromR - generalRow) === 1 && Math.abs(fromC - generalCol) === 1) {
-        const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-        for (let i = 0; i < horseCheckers.length; i++) {
-            if (fromSq === (horseCheckers[i] >>> 7)) return false;
-        }
+        return false;
     }
     return true;
 };
@@ -901,7 +901,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             const first = RANK_FIRST_HIGH[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
-                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
                 const second = RANK_SECOND_HIGH[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
@@ -913,7 +913,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             const first = RANK_FIRST_LOW[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
-                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
                 const second = RANK_SECOND_LOW[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
@@ -928,7 +928,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             const first = FILE_FIRST_HIGH[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
-                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
                 const second = FILE_SECOND_HIGH[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
@@ -940,7 +940,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             const first = FILE_FIRST_LOW[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
-                if ((pieceCode < 8) === enemyIsRed && ((pieceCode & 7) === 2 || (pieceCode & 7) === 1)) return true;
+                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
                 const second = FILE_SECOND_LOW[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
@@ -1056,20 +1056,22 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
 const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, checkInfo = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.collectMetrics) perfStats.legalityChecks++;
+    const collectMetrics = searchContext.collectMetrics;
+    const profile = searchContext.profile;
+    const __t0 = profile ? performance.now() : 0;
+    if (collectMetrics) perfStats.legalityChecks++;
     const pieceState = activePieceStateFor(board);
     if (kingSafetyIsUnchangedByMove(pieceState, color, move, wasInCheck)) {
-        if (searchContext.collectMetrics) perfStats.kingSafetyFastSkips++;
+        if (collectMetrics) perfStats.kingSafetyFastSkips++;
         return false;
     }
     let unsafe;
     if (!wasInCheck && move != null) {
-        if (searchContext.collectMetrics) perfStats.kingSafetyFullChecks++;
+        if (collectMetrics) perfStats.kingSafetyFullChecks++;
         const toSq = moveToSq(move);
         const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
         // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
-        if (searchContext.collectMetrics) {
+        if (collectMetrics) {
             if (generalSq === toSq) perfStats.kingSafetyFullReasons.generalMove++;
             else perfStats.kingSafetyFullReasons.lineOrHorse++;
         }
@@ -1088,16 +1090,16 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, check
         const toSq = moveToSq(move);
         const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
         if (generalSq === toSq) {
-            if (searchContext.collectMetrics) {
+            if (collectMetrics) {
                 perfStats.kingSafetyFullChecks++;
                 perfStats.kingSafetyFullReasons.inCheck++;
             }
             unsafe = isCheckFromState(pieceState, color);
         } else if (!moveResolvesKnownChecks(moveFromSq(move), toSq, generalSq, checkInfo)) {
-            if (searchContext.collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
+            if (collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
             unsafe = true;
         } else {
-            if (searchContext.collectMetrics) {
+            if (collectMetrics) {
                 perfStats.kingSafetyFullChecks++;
                 perfStats.kingSafetyFullReasons.evasionDiscover++;
             }
@@ -1106,13 +1108,13 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, check
             );
         }
     } else {
-        if (searchContext.collectMetrics) {
+        if (collectMetrics) {
             perfStats.kingSafetyFullChecks++;
             perfStats.kingSafetyFullReasons.inCheck++;
         }
         unsafe = isCheckFromState(pieceState, color);
     }
-    if (searchContext.profile) perfStats.legalityCheckMs += performance.now() - __t0;
+    if (profile) perfStats.legalityCheckMs += performance.now() - __t0;
     return unsafe;
 };
 
@@ -2510,9 +2512,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     const sq = dests[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                        // 将只走己方九宫，空步永远不是对方将安全点
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2523,6 +2523,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 5: {
@@ -2531,9 +2533,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     const sq = dests[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                        // 仕只走己方九宫，空步永远不是对方将安全点
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2544,6 +2544,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 7: {
@@ -2575,9 +2577,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                        // 相不过河，空步到不了对方九宫
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2588,6 +2588,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 3: {
@@ -2611,6 +2613,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 2: {
@@ -2644,25 +2648,41 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     );
                 }
                 const rankControl = RANK_ROOK_CONTROL[rankKey];
-                if ((isRed && r >= 7) || (!isRed && r <= 2)) {
-                    for (let col = 3; col <= 5; col++) {
-                        if (rankControl & (1 << col)) {
-                            const sq = r * 9 + col;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
-                    const firstRow = isRed ? 7 : 0;
-                    const lastRow = isRed ? 9 : 2;
-                    for (let row = firstRow; row <= lastRow; row++) {
-                        if (fileControl & (1 << row)) {
-                            const sq = row * 9 + c;
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 6: {
@@ -2696,35 +2716,47 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     );
                 }
                 const rankControl = RANK_CANNON_CONTROL[rankKey];
-                if ((isRed && r >= 7) || (!isRed && r <= 2)) {
-                    for (let col = 3; col <= 5; col++) {
-                        if (rankControl & (1 << col)) {
-                            const sq = r * 9 + col;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
-                    const firstRow = isRed ? 7 : 0;
-                    const lastRow = isRed ? 9 : 2;
-                    for (let row = firstRow; row <= lastRow; row++) {
-                        if (fileControl & (1 << row)) {
-                            const sq = row * 9 + c;
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             default:
                 break;
         }
-        // 兵仍扫空步做威胁/安全，不进机动分
-        if (pieceType !== 7) {
-            if (isRed) redMobility += mobilityValue;
-            else blackMobility += mobilityValue;
-        }
+        // 兵仍扫空步做威胁/安全，不进机动分；机动已在 1–6 兵种分支内累加
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
@@ -2795,9 +2827,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     const sq = dests[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2816,6 +2845,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 5: {
@@ -2824,9 +2855,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     const sq = dests[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2845,6 +2873,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 7: {
@@ -2884,9 +2914,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
                         mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
@@ -2905,6 +2932,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 3: {
@@ -2936,6 +2965,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 2: {
@@ -2973,25 +3004,41 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     );
                 }
                 const rankControl = RANK_ROOK_CONTROL[rankKey];
-                if ((isRed && r >= 7) || (!isRed && r <= 2)) {
-                    for (let col = 3; col <= 5; col++) {
-                        if (rankControl & (1 << col)) {
-                            const sq = r * 9 + col;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
-                    const firstRow = isRed ? 7 : 0;
-                    const lastRow = isRed ? 9 : 2;
-                    for (let row = firstRow; row <= lastRow; row++) {
-                        if (fileControl & (1 << row)) {
-                            const sq = row * 9 + c;
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 6: {
@@ -3029,35 +3076,47 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     );
                 }
                 const rankControl = RANK_CANNON_CONTROL[rankKey];
-                if ((isRed && r >= 7) || (!isRed && r <= 2)) {
-                    for (let col = 3; col <= 5; col++) {
-                        if (rankControl & (1 << col)) {
-                            const sq = r * 9 + col;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
-                    const firstRow = isRed ? 7 : 0;
-                    const lastRow = isRed ? 9 : 2;
-                    for (let row = firstRow; row <= lastRow; row++) {
-                        if (fileControl & (1 << row)) {
-                            const sq = row * 9 + c;
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             default:
                 break;
         }
-        // 兵仍扫空步做威胁/安全，不进机动分
-        if (pieceType !== 7) {
-            if (isRed) redMobility += mobilityValue;
-            else blackMobility += mobilityValue;
-        }
+        // 兵仍扫空步做威胁/安全，不进机动分；机动已在 1–6 兵种分支内累加
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
@@ -4974,9 +5033,8 @@ const collectCheckersFromState = (state, color, out) => {
     let second = RANK_SECOND_LOW[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
+            addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
         }
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
@@ -4989,9 +5047,8 @@ const collectCheckersFromState = (state, color, out) => {
     second = RANK_SECOND_HIGH[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
+            addChecker(out, gr * COLS + first, CHECK_KIND_RAY);
         }
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
@@ -5004,9 +5061,8 @@ const collectCheckersFromState = (state, color, out) => {
     second = FILE_SECOND_LOW[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
+            addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
         }
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
@@ -5019,9 +5075,8 @@ const collectCheckersFromState = (state, color, out) => {
     second = FILE_SECOND_HIGH[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
+            addChecker(out, first * COLS + gc, CHECK_KIND_RAY);
         }
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
@@ -5089,10 +5144,7 @@ const isCheckFromState = (state, color) => {
     let first = RANK_FIRST_LOW[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) return true;
-        }
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
         const second = RANK_SECOND_LOW[rankKey];
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
@@ -5102,10 +5154,7 @@ const isCheckFromState = (state, color) => {
     first = RANK_FIRST_HIGH[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) return true;
-        }
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
         const second = RANK_SECOND_HIGH[rankKey];
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
@@ -5115,10 +5164,7 @@ const isCheckFromState = (state, color) => {
     first = FILE_FIRST_LOW[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) return true;
-        }
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
         const second = FILE_SECOND_LOW[fileKey];
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
@@ -5128,10 +5174,7 @@ const isCheckFromState = (state, color) => {
     first = FILE_FIRST_HIGH[fileKey];
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
-        if ((pieceCode < 8) === enemyIsRed) {
-            const pieceType = pieceCode & 7;
-            if (pieceType === 2 || pieceType === 1) return true;
-        }
+        if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
         const second = FILE_SECOND_HIGH[fileKey];
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
@@ -6235,11 +6278,9 @@ const alphaBeta = (
     const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
 
     // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
-    const canNmp = allowNull &&
+        const canNmp = allowNull &&
         !inCheck &&
         d >= searchContext.nmpMinDepth &&
-        Number.isFinite(alpha) &&
-        Number.isFinite(beta) &&
         (beta - alpha) <= NULL_WINDOW &&
         Math.abs(alpha) < 90000 &&
         Math.abs(beta) < 90000 &&
@@ -6328,14 +6369,12 @@ const alphaBeta = (
             !isCapture &&
             d >= searchContext.lmrMinDepth &&
             legalMovesFound >= searchContext.lmrMinMove &&
-            !isSameMove(move, ttMove) &&
-            !isSameMove(move, killersAtDepth[0]) &&
-            !isSameMove(move, killersAtDepth[1]);
+            move !== ttMove &&
+            move !== killersAtDepth[0] &&
+            move !== killersAtDepth[1];
 
         // 树内 PVS：非首着且窗口够宽时先空窗；fail-high 再全窗回搜
-        const pvsEligible = legalMovesFound > 1 &&
-            (maximizing ? Number.isFinite(alpha) : Number.isFinite(beta)) &&
-            (beta - alpha) > NULL_WINDOW;
+        const pvsEligible = legalMovesFound > 1 && (beta - alpha) > NULL_WINDOW;
 
         let reducedDepth = d - 1;
         if (canLmr) {
