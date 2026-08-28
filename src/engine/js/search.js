@@ -428,87 +428,89 @@ const runWithPieceState = (board, fn) => {
     }
 };
 
-const updatePieceStateAfterMake = (board, fromSq, toSq) => {
-    const state = activePieceStateFor(board);
-    if (!state) return;
-    const moverSlot = state.squareToSlot[fromSq];
-    const capturedSlot = state.squareToSlot[toSq];
+const updatePieceStateAfterMakeQuiet = (state, fromSq, toSq, moverSlot, moverCode) => {
     const stackIndex = state.stackDepth++;
     state.moverStack[stackIndex] = moverSlot;
-    state.capturedStack[stackIndex] = capturedSlot;
-    if (moverSlot < 0) return;
-
-    const mover = state.records[moverSlot];
-    const moverCode = state.pieceCodes[moverSlot];
+    state.capturedStack[stackIndex] = -1;
     const fromR = SQ_ROW[fromSq];
     const fromC = SQ_COL[fromSq];
     const toR = SQ_ROW[toSq];
     const toC = SQ_COL[toSq];
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
-    if (capturedSlot < 0) {
-        state.rowOccupancy[toR] ^= 1 << toC;
-        state.colOccupancy[toC] ^= 1 << toR;
-    }
+    state.rowOccupancy[toR] ^= 1 << toC;
+    state.colOccupancy[toC] ^= 1 << toR;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
         EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
     const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][toSq] -
         SEARCH_POSITION_VALUES[moverCode][fromSq];
     if (moverCode < 8) state.redPosition += moverPositionDelta;
     else state.blackPosition += moverPositionDelta;
-    if (capturedSlot >= 0) {
-        const capturedCode = state.pieceCodes[capturedSlot];
-        const capturedBit = 1 << capturedSlot;
-        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
-        else state.blackAliveMask = (state.blackAliveMask & ~capturedBit) >>> 0;
-        state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
-        const capturedMaterial = state.materialValues[capturedCode & 7];
-        const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
-        if (capturedCode < 8) {
-            state.redMaterial -= capturedMaterial;
-            state.redPosition -= capturedPosition;
-        } else {
-            state.blackMaterial -= capturedMaterial;
-            state.blackPosition -= capturedPosition;
-        }
-    }
-    mover.sq = toSq;
     state.pieceSquares[moverSlot] = toSq;
-    mover.r = SQ_ROW[toSq];
-    mover.c = SQ_COL[toSq];
     state.squareToSlot[fromSq] = -1;
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
-    state.squareCodes[toSq] = state.pieceCodes[moverSlot];
+    state.squareCodes[toSq] = moverCode;
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = toSq;
         else state.blackGeneralSq = toSq;
     }
-    if (capturedSlot >= 0 && (state.pieceCodes[capturedSlot] & 7) === 1) {
-        if (state.pieceCodes[capturedSlot] < 8) state.redGeneralSq = -1;
-        else state.blackGeneralSq = -1;
-    }
-    if (capturedSlot >= 0) state.records[capturedSlot].alive = false;
 };
 
-const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
-    const state = activePieceStateFor(board);
-    if (!state) return;
+const updatePieceStateAfterMakeCapture = (state, fromSq, toSq, moverSlot, moverCode, capturedSlot) => {
+    const stackIndex = state.stackDepth++;
+    state.moverStack[stackIndex] = moverSlot;
+    state.capturedStack[stackIndex] = capturedSlot;
+    const fromR = SQ_ROW[fromSq];
+    const fromC = SQ_COL[fromSq];
+    state.rowOccupancy[fromR] ^= 1 << fromC;
+    state.colOccupancy[fromC] ^= 1 << fromR;
+    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
+        EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
+    const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][toSq] -
+        SEARCH_POSITION_VALUES[moverCode][fromSq];
+    if (moverCode < 8) state.redPosition += moverPositionDelta;
+    else state.blackPosition += moverPositionDelta;
+    const capturedCode = state.pieceCodes[capturedSlot];
+    const capturedBit = 1 << capturedSlot;
+    if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
+    else state.blackAliveMask = (state.blackAliveMask & ~capturedBit) >>> 0;
+    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
+    const capturedMaterial = state.materialValues[capturedCode & 7];
+    const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
+    if (capturedCode < 8) {
+        state.redMaterial -= capturedMaterial;
+        state.redPosition -= capturedPosition;
+    } else {
+        state.blackMaterial -= capturedMaterial;
+        state.blackPosition -= capturedPosition;
+    }
+    state.pieceSquares[moverSlot] = toSq;
+    state.squareToSlot[fromSq] = -1;
+    state.squareToSlot[toSq] = moverSlot;
+    state.squareCodes[fromSq] = 0;
+    state.squareCodes[toSq] = moverCode;
+    if ((moverCode & 7) === 1) {
+        if (moverCode < 8) state.redGeneralSq = toSq;
+        else state.blackGeneralSq = toSq;
+    }
+    if ((capturedCode & 7) === 1) {
+        if (capturedCode < 8) state.redGeneralSq = -1;
+        else state.blackGeneralSq = -1;
+    }
+};
+
+const updatePieceStateAfterUnmakeQuiet = (state, fromSq, toSq) => {
     const stackIndex = --state.stackDepth;
     const moverSlot = state.moverStack[stackIndex];
-    const capturedSlot = state.capturedStack[stackIndex];
     if (moverSlot < 0) return;
-
-    const mover = state.records[moverSlot];
     const moverCode = state.pieceCodes[moverSlot];
     const fromR = SQ_ROW[fromSq];
     const fromC = SQ_COL[fromSq];
     const toR = SQ_ROW[toSq];
     const toC = SQ_COL[toSq];
-    if (capturedSlot < 0) {
-        state.rowOccupancy[toR] ^= 1 << toC;
-        state.colOccupancy[toC] ^= 1 << toR;
-    }
+    state.rowOccupancy[toR] ^= 1 << toC;
+    state.colOccupancy[toC] ^= 1 << toR;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
@@ -517,39 +519,83 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
         SEARCH_POSITION_VALUES[moverCode][toSq];
     if (moverCode < 8) state.redPosition += moverPositionDelta;
     else state.blackPosition += moverPositionDelta;
-    if (capturedSlot >= 0) {
-        const capturedCode = state.pieceCodes[capturedSlot];
-        const capturedBit = 1 << capturedSlot;
-        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
-        else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
-        state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
-        const capturedMaterial = state.materialValues[capturedCode & 7];
-        const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
-        if (capturedCode < 8) {
-            state.redMaterial += capturedMaterial;
-            state.redPosition += capturedPosition;
-        } else {
-            state.blackMaterial += capturedMaterial;
-            state.blackPosition += capturedPosition;
-        }
-    }
-    mover.sq = fromSq;
     state.pieceSquares[moverSlot] = fromSq;
-    mover.r = SQ_ROW[fromSq];
-    mover.c = SQ_COL[fromSq];
     state.squareToSlot[fromSq] = moverSlot;
-    state.squareToSlot[toSq] = capturedSlot;
-    state.squareCodes[fromSq] = state.pieceCodes[moverSlot];
-    state.squareCodes[toSq] = capturedSlot >= 0 ? state.pieceCodes[capturedSlot] : 0;
+    state.squareToSlot[toSq] = -1;
+    state.squareCodes[fromSq] = moverCode;
+    state.squareCodes[toSq] = 0;
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = fromSq;
         else state.blackGeneralSq = fromSq;
     }
-    if (capturedSlot >= 0 && (state.pieceCodes[capturedSlot] & 7) === 1) {
-        if (state.pieceCodes[capturedSlot] < 8) state.redGeneralSq = toSq;
+};
+
+const updatePieceStateAfterUnmakeCapture = (state, fromSq, toSq) => {
+    const stackIndex = --state.stackDepth;
+    const moverSlot = state.moverStack[stackIndex];
+    const capturedSlot = state.capturedStack[stackIndex];
+    if (moverSlot < 0) return;
+    const moverCode = state.pieceCodes[moverSlot];
+    const fromR = SQ_ROW[fromSq];
+    const fromC = SQ_COL[fromSq];
+    state.rowOccupancy[fromR] ^= 1 << fromC;
+    state.colOccupancy[fromC] ^= 1 << fromR;
+    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
+        EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
+    const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][fromSq] -
+        SEARCH_POSITION_VALUES[moverCode][toSq];
+    if (moverCode < 8) state.redPosition += moverPositionDelta;
+    else state.blackPosition += moverPositionDelta;
+    const capturedCode = state.pieceCodes[capturedSlot];
+    const capturedBit = 1 << capturedSlot;
+    if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
+    else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
+    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
+    const capturedMaterial = state.materialValues[capturedCode & 7];
+    const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
+    if (capturedCode < 8) {
+        state.redMaterial += capturedMaterial;
+        state.redPosition += capturedPosition;
+    } else {
+        state.blackMaterial += capturedMaterial;
+        state.blackPosition += capturedPosition;
+    }
+    state.pieceSquares[moverSlot] = fromSq;
+    state.squareToSlot[fromSq] = moverSlot;
+    state.squareToSlot[toSq] = capturedSlot;
+    state.squareCodes[fromSq] = moverCode;
+    state.squareCodes[toSq] = capturedCode;
+    if ((moverCode & 7) === 1) {
+        if (moverCode < 8) state.redGeneralSq = fromSq;
+        else state.blackGeneralSq = fromSq;
+    }
+    if ((capturedCode & 7) === 1) {
+        if (capturedCode < 8) state.redGeneralSq = toSq;
         else state.blackGeneralSq = toSq;
     }
-    if (capturedSlot >= 0) state.records[capturedSlot].alive = true;
+};
+
+const updatePieceStateAfterMake = (board, fromSq, toSq) => {
+    const state = activePieceStateFor(board);
+    if (!state) return;
+    const moverSlot = state.squareToSlot[fromSq];
+    const capturedSlot = state.squareToSlot[toSq];
+    if (moverSlot < 0) {
+        const stackIndex = state.stackDepth++;
+        state.moverStack[stackIndex] = moverSlot;
+        state.capturedStack[stackIndex] = capturedSlot;
+        return;
+    }
+    const moverCode = state.pieceCodes[moverSlot];
+    if (capturedSlot < 0) updatePieceStateAfterMakeQuiet(state, fromSq, toSq, moverSlot, moverCode);
+    else updatePieceStateAfterMakeCapture(state, fromSq, toSq, moverSlot, moverCode, capturedSlot);
+};
+
+const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
+    const state = activePieceStateFor(board);
+    if (!state) return;
+    if (state.capturedStack[state.stackDepth - 1] < 0) updatePieceStateAfterUnmakeQuiet(state, fromSq, toSq);
+    else updatePieceStateAfterUnmakeCapture(state, fromSq, toSq);
 };
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
@@ -1083,16 +1129,39 @@ const filterLegalMoves = (board, from, piece, pseudoMoves) => {
 };
 
 const makeSearchMove = (board, move) => {
-    const from = moveFromSq(move);
-    const to = moveToSq(move);
-    const state = activePieceStateFor(board);
-    const capturedCode = state ? state.squareCodes[to] : 0;
-    updatePieceStateAfterMake(board, from, to);
+    const state = activeSearchPieceState;
+    const from = move >>> 7;
+    const to = move & MOVE_TO_MASK;
+    if (!state || state.board !== board) {
+        const capturedCode = state ? state.squareCodes[to] : 0;
+        updatePieceStateAfterMake(board, from, to);
+        return capturedCode;
+    }
+    const capturedSlot = state.squareToSlot[to];
+    const moverSlot = state.squareToSlot[from];
+    const moverCode = state.pieceCodes[moverSlot];
+    if (capturedSlot < 0) {
+        updatePieceStateAfterMakeQuiet(state, from, to, moverSlot, moverCode);
+        return 0;
+    }
+    const capturedCode = state.squareCodes[to];
+    updatePieceStateAfterMakeCapture(state, from, to, moverSlot, moverCode, capturedSlot);
     return capturedCode;
 };
 
 const unmakeSearchMove = (board, move) => {
-    updatePieceStateAfterUnmake(board, moveFromSq(move), moveToSq(move));
+    const state = activeSearchPieceState;
+    const from = move >>> 7;
+    const to = move & MOVE_TO_MASK;
+    if (!state || state.board !== board) {
+        updatePieceStateAfterUnmake(board, from, to);
+        return;
+    }
+    if (state.capturedStack[state.stackDepth - 1] < 0) {
+        updatePieceStateAfterUnmakeQuiet(state, from, to);
+    } else {
+        updatePieceStateAfterUnmakeCapture(state, from, to);
+    }
 };
 
 const sortMovePriorityScratch = [];
@@ -1512,6 +1581,7 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
         const squareToSlot = pieceState.squareToSlot;
         const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
+        const isRed = currentPlayer === 'red';
         for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
             const scanRow = (scanSq / COLS) | 0;
             const sq = currentPlayer === 'black'
@@ -1519,9 +1589,14 @@ const prepareSearchInfo = (board, currentPlayer, collectPiecesInfo = true) => {
                 : scanSq;
             const slot = squareToSlot[sq];
             if (slot < 0) continue;
-            const record = records[slot];
-            if (!record.alive || record.piece.color !== currentPlayer) continue;
-            if (piecesInfo) piecesInfo.push({ piece: record.piece, r: record.r, c: record.c });
+            if ((pieceCodes[slot] < 8) !== isRed) continue;
+            if (piecesInfo) {
+                piecesInfo.push({
+                    piece: records[slot].piece,
+                    r: SQ_ROW[sq],
+                    c: SQ_COL[sq]
+                });
+            }
             const generated = appendSearchPseudoMovesForPiece(
                 legalMoveList, sq, pieceCodes[slot], squareCodes, false
             );
@@ -2136,7 +2211,6 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const squareCodes = pieceState.squareCodes;
     const pieceCodes = pieceState.pieceCodes;
     const squareToSlot = pieceState.squareToSlot;
-    const records = pieceState.records;
     const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
     const resolveCount = fallback
         ? 0
@@ -2149,8 +2223,7 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
             : scanSq;
         const slot = squareToSlot[sq];
         if (slot < 0) continue;
-        const record = records[slot];
-        if (!record.alive || record.piece.color !== currentPlayer) continue;
+        if ((pieceCodes[slot] < 8) !== isRed) continue;
         if (fallback || sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
             appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, false);
         } else if (resolveCount > 0) {
@@ -5887,8 +5960,8 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, move, movingPiece, captured) => {
     if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
-    const moverCode = toSearchPieceCode(movingPiece);
-    const capturedCode = toSearchPieceCode(captured);
+    const moverCode = typeof movingPiece === 'number' ? movingPiece : toSearchPieceCode(movingPiece);
+    const capturedCode = typeof captured === 'number' ? captured : toSearchPieceCode(captured);
     const from = moveFromSq(move);
     const to = moveToSq(move);
     let newHash = boardHash;
