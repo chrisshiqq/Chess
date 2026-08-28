@@ -179,6 +179,14 @@ function printSummary(label, run) {
     console.log(`  fastSkips=${ks.fastSkips}`);
     console.log(`  skipRate=${ks.skipRate}%`);
     console.log(`  fullReasons=${JSON.stringify(ks.fullReasons ?? {})}`);
+    if (ks.isCheckFromStateCalls != null) {
+      const scanned = ks.isCheckFromStateCalls;
+      const skipped = ks.isCheckFromStateSkipped || 0;
+      const wouldScan = scanned + skipped;
+      console.log(`  isCheckFromState scanned=${scanned}`);
+      console.log(`  isCheckFromState skipped=${skipped}`);
+      console.log(`  isCheckFromState saved=${skipped}/${wouldScan} (${wouldScan ? ((skipped / wouldScan) * 100).toFixed(2) : 0}%)`);
+    }
   }
 
   if (relations) {

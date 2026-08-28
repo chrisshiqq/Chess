@@ -962,6 +962,10 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     return false;
 };
 
+// 已 make 且着法合法：对方是否被将。与入口 isCheckFromState 同一套检测，结果下传。
+const moveGivesCheck = (state, moverColor) =>
+    isCheckFromState(state, moverColor === 'red' ? 'black' : 'red');
+
 const CHECK_KIND_RAY = 1;
 const CHECK_KIND_HORSE = 2;
 const CHECK_KIND_SOLDIER = 3;
@@ -1828,6 +1832,7 @@ let leafWPosition = VALUE_WEIGHTS.position;
 let leafWThreat = VALUE_WEIGHTS.threat;
 let leafWSafety = VALUE_WEIGHTS.safety;
 let leafWMobility = VALUE_WEIGHTS.mobility;
+let leafUnityWeights = true;
 
 const snapshotLeafWeights = () => {
     leafWMaterial = VALUE_WEIGHTS.material;
@@ -1835,6 +1840,8 @@ const snapshotLeafWeights = () => {
     leafWThreat = VALUE_WEIGHTS.threat;
     leafWSafety = VALUE_WEIGHTS.safety;
     leafWMobility = VALUE_WEIGHTS.mobility;
+    leafUnityWeights = leafWMaterial === 1 && leafWPosition === 1 &&
+        leafWThreat === 1 && leafWSafety === 1 && leafWMobility === 1;
 };
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
@@ -5065,6 +5072,7 @@ const collectCheckersFromState = (state, color, out) => {
 
 // 占位表将军检测：occupancy 查车/将/炮，再查马和兵。白脸将算第一子为敌将。
 const isCheckFromState = (state, color) => {
+    if (searchContext.collectMetrics) perfStats.isCheckFromStateCalls++;
     const ownIsRed = color === 'red';
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
@@ -5483,6 +5491,8 @@ let perfStats = {
     kingSafetyFullChecks: 0,
     kingSafetyFastSkips: 0,
     kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 },
+    isCheckFromStateCalls: 0,
+    isCheckFromStateSkipped: 0,
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
@@ -5545,6 +5555,8 @@ const resetPerfStats = () => {
     perfStats.kingSafetyFullChecks = 0;
     perfStats.kingSafetyFastSkips = 0;
     perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 };
+    perfStats.isCheckFromStateCalls = 0;
+    perfStats.isCheckFromStateSkipped = 0;
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
@@ -5606,7 +5618,9 @@ const snapshotPerfStats = () => {
             skipRate: perfStats.legalityChecks
                 ? Number((perfStats.kingSafetyFastSkips / perfStats.legalityChecks * 100).toFixed(2))
                 : 0,
-            fullReasons: { ...perfStats.kingSafetyFullReasons }
+            fullReasons: { ...perfStats.kingSafetyFullReasons },
+            isCheckFromStateCalls: perfStats.isCheckFromStateCalls,
+            isCheckFromStateSkipped: perfStats.isCheckFromStateSkipped
         } : null,
         leafRelations: searchContext.collectMetrics ? {
             calls: perfStats.leafRelationCalls,
@@ -5817,10 +5831,8 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 };
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
-const childBoardHash = (boardHash, move, movingPiece, captured) => {
+const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
     if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
-    const moverCode = typeof movingPiece === 'number' ? movingPiece : toSearchPieceCode(movingPiece);
-    const capturedCode = typeof captured === 'number' ? captured : toSearchPieceCode(captured);
     const from = moveFromSq(move);
     const to = moveToSq(move);
     let newHash = boardHash;
@@ -5912,23 +5924,32 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
         }
     }
 
-    const wMaterial = leafWMaterial;
-    const wPosition = leafWPosition;
-    const wThreat = leafWThreat;
-    const wSafety = leafWSafety;
-    const wMobility = leafWMobility;
-    const redTotal =
-        pieceState.redMaterial * wMaterial +
-        pieceState.redPosition * wPosition +
-        redThreat * wThreat +
-        redSafety * wSafety +
-        scratchLeafTotals[2] * wMobility;
-    const blackTotal =
-        pieceState.blackMaterial * wMaterial +
-        pieceState.blackPosition * wPosition +
-        blackThreat * wThreat +
-        blackSafety * wSafety +
-        scratchLeafTotals[5] * wMobility;
+    let redTotal;
+    let blackTotal;
+    if (leafUnityWeights) {
+        redTotal = pieceState.redMaterial + pieceState.redPosition +
+            redThreat + redSafety + scratchLeafTotals[2];
+        blackTotal = pieceState.blackMaterial + pieceState.blackPosition +
+            blackThreat + blackSafety + scratchLeafTotals[5];
+    } else {
+        const wMaterial = leafWMaterial;
+        const wPosition = leafWPosition;
+        const wThreat = leafWThreat;
+        const wSafety = leafWSafety;
+        const wMobility = leafWMobility;
+        redTotal =
+            pieceState.redMaterial * wMaterial +
+            pieceState.redPosition * wPosition +
+            redThreat * wThreat +
+            redSafety * wSafety +
+            scratchLeafTotals[2] * wMobility;
+        blackTotal =
+            pieceState.blackMaterial * wMaterial +
+            pieceState.blackPosition * wPosition +
+            blackThreat * wThreat +
+            blackSafety * wSafety +
+            scratchLeafTotals[5] * wMobility;
+    }
 
     if (searchContext.profile) {
         perfStats.fastLeafEvalCount++;
@@ -6044,12 +6065,18 @@ const sortCaptures = (captures, board, gameStage) => {
 
 const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0
+    searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0, knownInCheck = null
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
     const qsState = activePieceStateFor(b);
     const checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
-    const inCheck = isCheckFromState(qsState, currentPlayer);
+    let inCheck;
+    if (knownInCheck == null) {
+        inCheck = isCheckFromState(qsState, currentPlayer);
+    } else {
+        if (searchContext.collectMetrics) perfStats.isCheckFromStateSkipped++;
+        inCheck = knownInCheck;
+    }
     if (inCheck) collectCheckersFromState(qsState, currentPlayer, checkInfo);
     let standPat;
     if (!inCheck) {
@@ -6133,7 +6160,7 @@ const quiescence = (
 const alphaBeta = (
     b, d, alpha, beta, maximizing, currentPlayer,
     searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid', boardHash = 0,
-    allowNull = true
+    allowNull = true, knownInCheck = null
 ) => {
     const originalAlpha = alpha;
     const originalBeta = beta;
@@ -6147,7 +6174,7 @@ const alphaBeta = (
     if (d === 0) {
         return quiescence(
             b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash
+            searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
         );
     }
 
@@ -6166,8 +6193,15 @@ const alphaBeta = (
     const stagedPieceState = activePieceStateFor(b);
     const plyFromRoot = searchDepth - d;
     const checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
+    // TT 截断后才问是否被将。已知结果（空步子节点未将军）才跳过扫描。
     const checkStarted = searchContext.profile ? performance.now() : 0;
-    const inCheck = isCheckFromState(stagedPieceState, currentPlayer);
+    let inCheck;
+    if (knownInCheck == null) {
+        inCheck = isCheckFromState(stagedPieceState, currentPlayer);
+    } else {
+        if (searchContext.collectMetrics) perfStats.isCheckFromStateSkipped++;
+        inCheck = knownInCheck;
+    }
     if (inCheck) collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
     if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
 
@@ -6216,11 +6250,11 @@ const alphaBeta = (
         const nullValue = maximizing
             ? alphaBeta(
                 b, nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, boardHash, false
+                searchDepth, searchInitiator, gameStage, boardHash, false, false
             )
             : alphaBeta(
                 b, nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, boardHash, false
+                searchDepth, searchInitiator, gameStage, boardHash, false, false
             );
         if (searchContext.collectMetrics) {
             perfStats.nmpProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
@@ -6893,6 +6927,21 @@ const searchTestApi = {
       }
     }
     return legal;
+  },
+  givesCheckMatches(board, color, move) {
+    return runWithPieceState(board, () => {
+      const state = activePieceStateFor(board);
+      if (!state) return false;
+      const fromSq = move >>> 7;
+      const toSq = move & MOVE_TO_MASK;
+      const moverCode = state.squareCodes[fromSq];
+      if (!moverCode) return false;
+      makeSearchMove(board, move);
+      const got = moveGivesCheck(state, color);
+      const expect = isCheckFromState(state, color === 'red' ? 'black' : 'red');
+      unmakeSearchMove(board, move);
+      return got === expect;
+    });
   }
 };
 
