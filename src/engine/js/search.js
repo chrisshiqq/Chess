@@ -5954,8 +5954,8 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
     if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
-    const from = moveFromSq(move);
-    const to = moveToSq(move);
+    const from = move >>> 7;
+    const to = move & MOVE_TO_MASK;
     let newHash = boardHash;
     const hashTableFlat = zobristHasher.hashTableFlat;
     const movingIdx = SEARCH_CODE_TO_ZOBRIST[moverCode];
@@ -6246,8 +6246,8 @@ const quiescence = (
     let legalMovesFound = 0;
     for (let i = 0; i < moves.length; i++) {
         const move = moves[i];
-        const moverCode = qsState.squareCodes[moveFromSq(move)];
-        const capturedCode = qsState.squareCodes[moveToSq(move)];
+        const moverCode = qsState.squareCodes[move >>> 7];
+        const capturedCode = qsState.squareCodes[move & MOVE_TO_MASK];
         makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
@@ -6423,8 +6423,8 @@ const alphaBeta = (
             if (moves.length === before) break;
         }
         const move = moves[moveIndex];
-        const fromSq = moveFromSq(move);
-        const toSq = moveToSq(move);
+        const fromSq = move >>> 7;
+        const toSq = move & MOVE_TO_MASK;
         const moverCode = stagedPieceState.squareCodes[fromSq];
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
@@ -6849,8 +6849,9 @@ const getBestMove = (
       const rootToSq = item.to.r * 9 + item.to.c;
       const moverCode = activeSearchPieceState.squareCodes[rootFromSq];
       const capturedCode = activeSearchPieceState.squareCodes[rootToSq];
-      makeSearchMove(workBoard, encodeMove(item.from, item.to));
-      const childHash = childBoardHash(rootHash, item, moverCode, capturedCode);
+      const encodedRootMove = encodeMove(item.from, item.to);
+      makeSearchMove(workBoard, encodedRootMove);
+      const childHash = childBoardHash(rootHash, encodedRootMove, moverCode, capturedCode);
 
       let score;
       let scoreIsExact = true;

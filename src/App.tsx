@@ -60,7 +60,7 @@ type SearchBench = {
     bestPreview?: string;
 };
 
-const formatBenchTime = (value?: number) => `${((value ?? 0) / 1000).toFixed(2)}s`;
+const formatBenchTime = (value?: number) => ((value ?? 0) / 1000).toFixed(2);
 
 let workerRequestSequence = 0;
 
