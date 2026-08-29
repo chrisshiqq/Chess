@@ -275,7 +275,6 @@ const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
-const scratchOwnScanOrder = new Uint16Array(32);
 
 let activeSearchPieceState = null;
 
@@ -1686,10 +1685,6 @@ const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKERS = new Array(REL_SQUARES);
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
-const SEARCH_RELATIVE_SCAN_SQUARES = [
-    new Uint8Array(REL_SQUARES),
-    new Uint8Array(REL_SQUARES)
-];
 // 数值安全只查询对方将所在九宫的空格。
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
 const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
@@ -1724,8 +1719,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
         const c = sq % 9;
         SEARCH_SQ_ROWS[sq] = r;
         SEARCH_SQ_COLS[sq] = c;
-        SEARCH_RELATIVE_SCAN_SQUARES[0][sq] = sq;
-        SEARCH_RELATIVE_SCAN_SQUARES[1][sq] = (ROWS - 1 - r) * COLS + c;
         if (c >= 3 && c <= 5) {
             if (r <= 2) SEARCH_ATTACK_TARGET[sq] = 2;
             else if (r >= 7) SEARCH_ATTACK_TARGET[sq] = 1;
@@ -1864,29 +1857,22 @@ const snapshotLeafWeights = () => {
 };
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
-    const pieceSquares = pieceState.pieceSquares;
     const pieceCodes = pieceState.pieceCodes;
+    const squareToSlot = pieceState.squareToSlot;
+    const rowOccupancy = pieceState.rowOccupancy;
     const slots = scratchOwnScanSlots;
-    const orders = scratchOwnScanOrder;
-    const scanOrder = SEARCH_RELATIVE_SCAN_SQUARES[isRed ? 0 : 1];
-    const slotCount = pieceState.slotCount > 0 ? pieceState.slotCount : 32;
-    const ownMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
     let n = 0;
-    for (let slot = 0; slot < slotCount; slot++) {
-        if ((ownMask & (1 << slot)) === 0) continue;
-        if ((pieceCodes[slot] < 8) !== isRed) continue;
-        const sq = pieceSquares[slot];
-        if (sq >= REL_SQUARES) continue;
-        const order = scanOrder[sq];
-        let j = n - 1;
-        while (j >= 0 && orders[j] > order) {
-            orders[j + 1] = orders[j];
-            slots[j + 1] = slots[j];
-            j--;
+    const startR = isRed ? 0 : 9;
+    const endR = isRed ? 10 : -1;
+    const step = isRed ? 1 : -1;
+    for (let r = startR; r !== endR; r += step) {
+        let bits = rowOccupancy[r];
+        while (bits) {
+            const slot = squareToSlot[r * 9 + lowestSetBitIndex(bits)];
+            bits &= bits - 1;
+            if (slot < 0 || (pieceCodes[slot] < 8) !== isRed) continue;
+            slots[n++] = slot;
         }
-        orders[j + 1] = order;
-        slots[j + 1] = slot;
-        n++;
     }
     return n;
 };
@@ -2372,7 +2358,7 @@ const isCannonScreenSquare = (sq, checkInfo) => {
     return false;
 };
 
-// 与全盘子扫描同一顺序生成应将：己方棋子按 SEARCH_RELATIVE_SCAN_SQUARES 排序。
+// 与全盘子扫描同一顺序生成应将：按 rowOccupancy 行方向取己方子。
 const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const start = moves.length;
     const isRed = currentPlayer === 'red';
