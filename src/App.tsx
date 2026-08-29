@@ -4952,8 +4952,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             <div>
                                                 Time: {isThinking
                                                     ? (aiSearchDebug.postedAt
-                                                        ? `${aiSearchElapsedSeconds}s`
-                                                        : '0.00s')
+                                                        ? `${aiSearchElapsedSeconds}`
+                                                        : '0.00')
                                                     : formatBenchTime(lastSearchBench?.thinkingTime)}
                                             </div>
                                             {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (

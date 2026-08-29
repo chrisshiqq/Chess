@@ -1910,7 +1910,9 @@ const applyOccupiedSliderHitWithCapture = (
     return 0;
 };
 
-const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked, targetMask = null) => {
+const appendSearchShortMoves = (
+    moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
+) => {
     let generated = 0;
     for (let i = 0; i < dests.length; i++) {
         let toSq = dests[i];
@@ -1923,7 +1925,7 @@ const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, captur
         if (targetCode === 0) {
             generated++;
             if (!capturesOnly) moves.push((fromSq << 7) | toSq);
-        } else if ((targetCode < 8) !== isRed) {
+        } else if (!quietsOnly && (targetCode < 8) !== isRed) {
             generated++;
             moves.push((fromSq << 7) | toSq);
         }
@@ -1931,7 +1933,9 @@ const appendSearchShortMoves = (moves, fromSq, dests, squareCodes, isRed, captur
     return generated;
 };
 
-const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, capturesOnly = false, targetMask = null) => {
+const appendSearchPseudoMovesForPiece = (
+    moves, fromSq, pieceCode, squareCodes, capturesOnly = false, targetMask = null, quietsOnly = false
+) => {
     const pieceType = pieceCode & 7;
     const isRed = pieceCode < 8;
     const colorIdx = isRed ? 0 : 1;
@@ -1939,15 +1943,25 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
 
     switch (pieceType) {
         case 1:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
+            return appendSearchShortMoves(
+                moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+            );
         case 5:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
+            return appendSearchShortMoves(
+                moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+            );
         case 4:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true, targetMask);
+            return appendSearchShortMoves(
+                moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+            );
         case 3:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true, targetMask);
+            return appendSearchShortMoves(
+                moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+            );
         case 7:
-            return appendSearchShortMoves(moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask);
+            return appendSearchShortMoves(
+                moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+            );
         case 2:
             for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
                 const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
@@ -1960,7 +1974,7 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
                             if (!capturesOnly) moves.push((fromSq << 7) | toSq);
                         }
                     } else {
-                        if ((targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
+                        if (!quietsOnly && (targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
                             generated++;
                             moves.push((fromSq << 7) | toSq);
                         }
@@ -1986,7 +2000,7 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
                             screenFound = true;
                         }
                     } else if (targetCode !== 0) {
-                        if ((targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
+                        if (!quietsOnly && (targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
                             generated++;
                             moves.push((fromSq << 7) | toSq);
                         }
@@ -1997,6 +2011,80 @@ const appendSearchPseudoMovesForPiece = (moves, fromSq, pieceCode, squareCodes, 
             return generated;
         default:
             return generated;
+    }
+};
+
+const shortDestHas = (dests, toSq) => {
+    for (let i = 0; i < dests.length; i++) {
+        if (dests[i] === toSq) return true;
+    }
+    return false;
+};
+
+const blockedDestHas = (dests, toSq, squareCodes) => {
+    for (let i = 0; i < dests.length; i++) {
+        const packed = dests[i];
+        if ((packed & 127) === toSq) return squareCodes[packed >>> 7] === 0;
+    }
+    return false;
+};
+
+// 与 appendSearchPseudoMovesForPiece 同一套几何，只判单步，不生成整表。
+const isSearchPseudoLegal = (fromSq, toSq, pieceCode, squareCodes) => {
+    const targetCode = squareCodes[toSq];
+    const isRed = pieceCode < 8;
+    if (targetCode !== 0 && (targetCode < 8) === isRed) return false;
+
+    const pieceType = pieceCode & 7;
+    const colorIdx = isRed ? 0 : 1;
+    switch (pieceType) {
+        case 1:
+            return shortDestHas(SEARCH_GENERAL_DEST[colorIdx][fromSq], toSq);
+        case 5:
+            return shortDestHas(SEARCH_ADVISOR_DEST[colorIdx][fromSq], toSq);
+        case 4:
+            return blockedDestHas(SEARCH_ELEPHANT_DEST[colorIdx][fromSq], toSq, squareCodes);
+        case 3:
+            return blockedDestHas(SEARCH_HORSE_DEST[fromSq], toSq, squareCodes);
+        case 7:
+            return shortDestHas(SEARCH_SOLDIER_DEST[colorIdx][fromSq], toSq);
+        case 2:
+            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                    const sq = SEARCH_RAY_SQUARES[rayPos];
+                    const code = squareCodes[sq];
+                    if (code === 0) {
+                        if (sq === toSq) return true;
+                    } else {
+                        if (sq === toSq && (code < 8) !== isRed) return true;
+                        break;
+                    }
+                }
+            }
+            return false;
+        case 6:
+            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
+                let screenFound = false;
+                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
+                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
+                    const sq = SEARCH_RAY_SQUARES[rayPos];
+                    const code = squareCodes[sq];
+                    if (!screenFound) {
+                        if (code === 0) {
+                            if (sq === toSq) return true;
+                        } else {
+                            screenFound = true;
+                        }
+                    } else if (code !== 0) {
+                        if (sq === toSq && (code < 8) !== isRed) return true;
+                        break;
+                    }
+                }
+            }
+            return false;
+        default:
+            return false;
     }
 };
 
@@ -2106,8 +2194,6 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     return moves.length - start;
 };
 
-const stagedGenerationScratch = [];
-
 const containsEncodedMoveBefore = (moves, end, move) => {
     for (let i = 0; i < end; i++) {
         if (moves[i] === move) return true;
@@ -2128,18 +2214,9 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     if ((pieceCode < 8) !== (currentPlayer === 'red')) return false;
     const targetCode = pieceState.squareCodes[toSq];
     if (quietOnly && targetCode !== 0) return false;
-
-    stagedGenerationScratch.length = 0;
-    appendSearchPseudoMovesForPiece(
-        stagedGenerationScratch, fromSq, pieceState.pieceCodes[slot], pieceState.squareCodes, false
-    );
-    for (let i = 0; i < stagedGenerationScratch.length; i++) {
-        if (stagedGenerationScratch[i] === move) {
-            moves.push(move);
-            return true;
-        }
-    }
-    return false;
+    if (!isSearchPseudoLegal(fromSq, toSq, pieceCode, pieceState.squareCodes)) return false;
+    moves.push(move);
+    return true;
 };
 
 // Appends exactly one stage: TT, quiet killers, captures, then quiets.
@@ -2182,17 +2259,16 @@ const appendTrueStagedMoves = (
         for (let i = 0; i < n; i++) {
             const slot = scratchOwnScanSlots[i];
             const sq = pieceSquares[slot];
-            stagedGenerationScratch.length = 0;
+            const pieceStart = moves.length;
             appendSearchPseudoMovesForPiece(
-                stagedGenerationScratch, sq, pieceCodes[slot], squareCodes, false
+                moves, sq, pieceCodes[slot], squareCodes, false, null, true
             );
-            for (let j = 0; j < stagedGenerationScratch.length; j++) {
-                const move = stagedGenerationScratch[j];
-                if (squareCodes[move & MOVE_TO_MASK] === 0 &&
-                    !containsEncodedMoveBefore(moves, start, move)) {
-                    moves.push(move);
-                }
+            let write = pieceStart;
+            for (let read = pieceStart; read < moves.length; read++) {
+                const move = moves[read];
+                if (!containsEncodedMoveBefore(moves, start, move)) moves[write++] = move;
             }
+            moves.length = write;
         }
     }
 
