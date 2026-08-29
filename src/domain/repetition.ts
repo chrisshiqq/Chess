@@ -33,9 +33,19 @@ export const violatesRepeatedCheckCycle = (
 export const isReplyingToOpponentCheck = (
   history: PositionHistoryEntry[],
   mover: Color
+): boolean => isReplyingToOpponentInitiative(history, mover, 'check');
+
+/** 上一手是对方发起的长将或长捉，本方这步是被动应对，不须变招。 */
+export const isReplyingToOpponentInitiative = (
+  history: PositionHistoryEntry[],
+  mover: Color,
+  kind: 'check' | 'chase' | 'either' = 'either'
 ): boolean => {
   const previous = history[history.length - 1];
-  if (!previous?.isCheck) return false;
+  if (!previous) return false;
+  if (kind === 'check' && !previous.isCheck) return false;
+  if (kind === 'chase' && !previous.isChase) return false;
+  if (kind === 'either' && !previous.isCheck && !previous.isChase) return false;
   const previousMover = previous.mover || inferMoverFromHash(previous.hash);
   return previousMover != null && previousMover !== mover;
 };

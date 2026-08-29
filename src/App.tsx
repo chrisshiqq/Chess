@@ -33,7 +33,7 @@ import { generateRoomCode } from './net/roomCode';
 import type { AppScreen, ConnectionStatus, NetMessage, OnlineSessionInfo } from './net/types';
 import {
     generatePositionHash,
-    isReplyingToOpponentCheck,
+    isReplyingToOpponentInitiative,
     violatesRepeatedCheckCycle,
     type PositionHistoryEntry
 } from './domain/repetition';
@@ -1240,9 +1240,14 @@ const App: React.FC = () => {
         }
         const isChase = capturingResult.isThreat && capturingResult.targetPiece;
         const currentTarget = capturingResult.targetPiece;
-        
+
+        // 棋规：只有长将/长捉的发起方须变招；躲将、躲捉、闲着的被动方不须变招。
+        if (!isCheck && !isChase) {
+            return { violation: false, type: null };
+        }
+
         // 确定发起方：如果构成将军或捉子，当前走棋方是发起方
-        const initiator = (isCheck || isChase) ? turn : undefined;
+        const initiator = turn;
 
         // 三个完整循环后不立即判和；同一将军局面第4次出现时，发起方必须变招。
         if (violatesRepeatedCheckCycle(history, newHash, isCheck)) {
@@ -1270,16 +1275,7 @@ const App: React.FC = () => {
                 return { violation: true, type: 'chase' };
             }
         }
-        
-        // 在Auto模式下，当局面重复3次时，也返回违规，触发重新计算走法
-        // 这样可以避免局面重复导致和棋
-        // 只在当前走棋方是Auto模式时才触发
-        const count = history.filter(h => h.hash === newHash).length + 1;
-        if (count >= 4 && ((turn === 'red' && redIsAuto) || (turn === 'black' && blackIsAuto))) {
-            console.log('⚠️ Auto模式：当前局面已重复' + count + '次，触发变招避免和棋');
-            return { violation: true, type: 'chase' }; // 使用'chase'类型，不影响现有逻辑
-        }
-        
+
         return { violation: false, type: null };
     };
 
@@ -1675,8 +1671,24 @@ const App: React.FC = () => {
                     const bestMove = decodeMove(payload.bestMove);
                     if (!isUsableMove(bestMove)) {
                         detachSearchListener(handleWorkerMessage);
+                        let idleFallback: Move | null = null;
+                        for (const candidate of excludedRootMoves) {
+                            if (!isUsableMove(candidate)) continue;
+                            const idle = await checkMoveRepetition(candidate);
+                            if (searchToken.aborted) return;
+                            if (!idle.violation) {
+                                idleFallback = candidate;
+                                break;
+                            }
+                        }
+                        if (idleFallback) {
+                            console.warn('⚠️ 禁着后无剩余根着，改走闲着', idleFallback);
+                            await executeMoveWithDelay(idleFallback, currentTurn, isAutoMode, delay);
+                            return;
+                        }
+                        const winner = currentTurn === 'red' ? 'black' : 'red';
+                        handleGameOver('checkmate', winner, 'LONG CHECK!');
                         setIsThinking(false);
-                        setTimeout(() => setGameId(prev => prev + 1), 500);
                         return;
                     }
 
@@ -1689,8 +1701,14 @@ const App: React.FC = () => {
                             repetition.type
                         );
                         if (excludedRootMoves.some(move => isSameMove(move, bestMove))) {
-                            console.error('❌ 根节点禁着后仍返回同一走法，停止搜索:', bestMove);
+                            console.error('❌ 根节点禁着后仍返回同一走法，发起方不变招判负:', bestMove);
                             detachSearchListener(handleWorkerMessage);
+                            const winner = currentTurn === 'red' ? 'black' : 'red';
+                            handleGameOver(
+                                'checkmate',
+                                winner,
+                                repetition.type === 'chase' ? 'LONG CHASE!' : 'LONG CHECK!'
+                            );
                             setIsThinking(false);
                             return;
                         }
@@ -1966,13 +1984,13 @@ const App: React.FC = () => {
         if (hashCount >= 4) {
             // 复用上面的 isCheck，避免同一步再次 isBoardInCheck
             const isThreat = capturingResult.isThreat;
-            const completedLongCheckCycle = isReplyingToOpponentCheck(positionHistory, currentTurn);
+            const answeringInitiative = isReplyingToOpponentInitiative(positionHistory, currentTurn);
             
-            if (!isCheck && !isThreat && !completedLongCheckCycle) {
-                // 调用游戏结束处理函数
+            if (!isCheck && !isThreat && !answeringInitiative) {
+                // 双方都是闲着重复：不变作和
                 handleGameOver('draw', null, 'REPETITION!');
-            } else if (completedLongCheckCycle) {
-                console.log('⚠️ 长将循环已完成3次，等待将军方下一回合变招');
+            } else if (answeringInitiative) {
+                console.log('⚠️ 对方长将/长捉循环已满，等待发起方变招；本方闲着不须变招');
             }
         }
 
