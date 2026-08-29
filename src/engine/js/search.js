@@ -1933,13 +1933,244 @@ const appendSearchShortMoves = (
     return generated;
 };
 
-const appendSearchPseudoMovesForPiece = (
-    moves, fromSq, pieceCode, squareCodes, capturesOnly = false, targetMask = null, quietsOnly = false
+const appendLineEmpties = (moves, fromSq, firstSq, lastSq, stride, targetMask) => {
+    let generated = 0;
+    if (stride > 0) {
+        for (let sq = firstSq; sq <= lastSq; sq += stride) {
+            if (!targetMask || targetMask[sq]) {
+                generated++;
+                moves.push((fromSq << 7) | sq);
+            }
+        }
+    } else {
+        for (let sq = firstSq; sq >= lastSq; sq += stride) {
+            if (!targetMask || targetMask[sq]) {
+                generated++;
+                moves.push((fromSq << 7) | sq);
+            }
+        }
+    }
+    return generated;
+};
+
+const appendSliderCapture = (moves, fromSq, sq, squareCodes, isRed, quietsOnly, targetMask) => {
+    if (quietsOnly) return 0;
+    const targetCode = squareCodes[sq];
+    if ((targetCode < 8) !== isRed && (!targetMask || targetMask[sq])) {
+        moves.push((fromSq << 7) | sq);
+        return 1;
+    }
+    return 0;
+};
+
+// 方向与 ORTH_DIRS / 射线表一致：行高列、行低列、列高行、列低行。空步从本子往外走。
+const appendOccupancyRookMoves = (
+    moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
 ) => {
+    const squareCodes = pieceState.squareCodes;
+    const r = SEARCH_SQ_ROWS[fromSq];
+    const c = SEARCH_SQ_COLS[fromSq];
+    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
+    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
+    let generated = 0;
+
+    const t0 = RANK_FIRST_HIGH[rankKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
+        );
+    }
+    if (t0 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, r * 9 + t0, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t1 = RANK_FIRST_LOW[rankKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
+        );
+    }
+    if (t1 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, r * 9 + t1, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t2 = FILE_FIRST_HIGH[fileKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
+        );
+    }
+    if (t2 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, t2 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t3 = FILE_FIRST_LOW[fileKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
+        );
+    }
+    if (t3 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, t3 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    return generated;
+};
+
+const appendOccupancyCannonMoves = (
+    moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
+) => {
+    const squareCodes = pieceState.squareCodes;
+    const r = SEARCH_SQ_ROWS[fromSq];
+    const c = SEARCH_SQ_COLS[fromSq];
+    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
+    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
+    let generated = 0;
+
+    const t0 = RANK_FIRST_HIGH[rankKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
+        );
+    }
+    const s0 = RANK_SECOND_HIGH[rankKey];
+    if (s0 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, r * 9 + s0, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t1 = RANK_FIRST_LOW[rankKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
+        );
+    }
+    const s1 = RANK_SECOND_LOW[rankKey];
+    if (s1 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, r * 9 + s1, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t2 = FILE_FIRST_HIGH[fileKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
+        );
+    }
+    const s2 = FILE_SECOND_HIGH[fileKey];
+    if (s2 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, s2 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    const t3 = FILE_FIRST_LOW[fileKey];
+    if (!capturesOnly) {
+        generated += appendLineEmpties(
+            moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
+        );
+    }
+    const s3 = FILE_SECOND_LOW[fileKey];
+    if (s3 !== 255) {
+        generated += appendSliderCapture(
+            moves, fromSq, s3 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
+        );
+    }
+
+    return generated;
+};
+
+const isOccupancyRookLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupancy) => {
+    const r = SEARCH_SQ_ROWS[fromSq];
+    const c = SEARCH_SQ_COLS[fromSq];
+    const toR = SEARCH_SQ_ROWS[toSq];
+    const toC = SEARCH_SQ_COLS[toSq];
+    if (toR === r) {
+        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+        if (toC > c) {
+            const first = RANK_FIRST_HIGH[rankKey];
+            return targetCode === 0 ? (first === 255 || first > toC) : first === toC;
+        }
+        if (toC < c) {
+            const first = RANK_FIRST_LOW[rankKey];
+            return targetCode === 0 ? (first === 255 || first < toC) : first === toC;
+        }
+        return false;
+    }
+    if (toC === c) {
+        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+        if (toR > r) {
+            const first = FILE_FIRST_HIGH[fileKey];
+            return targetCode === 0 ? (first === 255 || first > toR) : first === toR;
+        }
+        if (toR < r) {
+            const first = FILE_FIRST_LOW[fileKey];
+            return targetCode === 0 ? (first === 255 || first < toR) : first === toR;
+        }
+    }
+    return false;
+};
+
+const isOccupancyCannonLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupancy) => {
+    const r = SEARCH_SQ_ROWS[fromSq];
+    const c = SEARCH_SQ_COLS[fromSq];
+    const toR = SEARCH_SQ_ROWS[toSq];
+    const toC = SEARCH_SQ_COLS[toSq];
+    if (toR === r) {
+        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+        if (toC > c) {
+            if (targetCode === 0) {
+                const first = RANK_FIRST_HIGH[rankKey];
+                return first === 255 || first > toC;
+            }
+            return RANK_SECOND_HIGH[rankKey] === toC;
+        }
+        if (toC < c) {
+            if (targetCode === 0) {
+                const first = RANK_FIRST_LOW[rankKey];
+                return first === 255 || first < toC;
+            }
+            return RANK_SECOND_LOW[rankKey] === toC;
+        }
+        return false;
+    }
+    if (toC === c) {
+        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+        if (toR > r) {
+            if (targetCode === 0) {
+                const first = FILE_FIRST_HIGH[fileKey];
+                return first === 255 || first > toR;
+            }
+            return FILE_SECOND_HIGH[fileKey] === toR;
+        }
+        if (toR < r) {
+            if (targetCode === 0) {
+                const first = FILE_FIRST_LOW[fileKey];
+                return first === 255 || first < toR;
+            }
+            return FILE_SECOND_LOW[fileKey] === toR;
+        }
+    }
+    return false;
+};
+
+const appendSearchPseudoMovesForPiece = (
+    moves, fromSq, pieceCode, pieceState, capturesOnly = false, targetMask = null, quietsOnly = false
+) => {
+    const squareCodes = pieceState.squareCodes;
     const pieceType = pieceCode & 7;
     const isRed = pieceCode < 8;
     const colorIdx = isRed ? 0 : 1;
-    let generated = 0;
 
     switch (pieceType) {
         case 1:
@@ -1963,54 +2194,15 @@ const appendSearchPseudoMovesForPiece = (
                 moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
         case 2:
-            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-                    const toSq = SEARCH_RAY_SQUARES[rayPos];
-                    const targetCode = squareCodes[toSq];
-                    if (targetCode === 0) {
-                        if (!targetMask || targetMask[toSq]) {
-                            generated++;
-                            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
-                        }
-                    } else {
-                        if (!quietsOnly && (targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
-                            generated++;
-                            moves.push((fromSq << 7) | toSq);
-                        }
-                        break;
-                    }
-                }
-            }
-            return generated;
+            return appendOccupancyRookMoves(
+                moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
+            );
         case 6:
-            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-                let screenFound = false;
-                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-                    const toSq = SEARCH_RAY_SQUARES[rayPos];
-                    const targetCode = squareCodes[toSq];
-                    if (!screenFound) {
-                        if (targetCode === 0) {
-                            if (!targetMask || targetMask[toSq]) {
-                                generated++;
-                                if (!capturesOnly) moves.push((fromSq << 7) | toSq);
-                            }
-                        } else {
-                            screenFound = true;
-                        }
-                    } else if (targetCode !== 0) {
-                        if (!quietsOnly && (targetCode < 8) !== isRed && (!targetMask || targetMask[toSq])) {
-                            generated++;
-                            moves.push((fromSq << 7) | toSq);
-                        }
-                        break;
-                    }
-                }
-            }
-            return generated;
+            return appendOccupancyCannonMoves(
+                moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
+            );
         default:
-            return generated;
+            return 0;
     }
 };
 
@@ -2030,7 +2222,8 @@ const blockedDestHas = (dests, toSq, squareCodes) => {
 };
 
 // 与 appendSearchPseudoMovesForPiece 同一套几何，只判单步，不生成整表。
-const isSearchPseudoLegal = (fromSq, toSq, pieceCode, squareCodes) => {
+const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
+    const squareCodes = pieceState.squareCodes;
     const targetCode = squareCodes[toSq];
     const isRed = pieceCode < 8;
     if (targetCode !== 0 && (targetCode < 8) === isRed) return false;
@@ -2049,40 +2242,13 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, squareCodes) => {
         case 7:
             return shortDestHas(SEARCH_SOLDIER_DEST[colorIdx][fromSq], toSq);
         case 2:
-            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-                    const sq = SEARCH_RAY_SQUARES[rayPos];
-                    const code = squareCodes[sq];
-                    if (code === 0) {
-                        if (sq === toSq) return true;
-                    } else {
-                        if (sq === toSq && (code < 8) !== isRed) return true;
-                        break;
-                    }
-                }
-            }
-            return false;
+            return isOccupancyRookLegal(
+                fromSq, toSq, targetCode, pieceState.rowOccupancy, pieceState.colOccupancy
+            );
         case 6:
-            for (let dir = 0, rayIndex = fromSq << 2; dir < SEARCH_RAY_DIRS; dir++, rayIndex++) {
-                let screenFound = false;
-                const rayEnd = SEARCH_RAY_OFFSETS[rayIndex + 1];
-                for (let rayPos = SEARCH_RAY_OFFSETS[rayIndex]; rayPos < rayEnd; rayPos++) {
-                    const sq = SEARCH_RAY_SQUARES[rayPos];
-                    const code = squareCodes[sq];
-                    if (!screenFound) {
-                        if (code === 0) {
-                            if (sq === toSq) return true;
-                        } else {
-                            screenFound = true;
-                        }
-                    } else if (code !== 0) {
-                        if (sq === toSq && (code < 8) !== isRed) return true;
-                        break;
-                    }
-                }
-            }
-            return false;
+            return isOccupancyCannonLegal(
+                fromSq, toSq, targetCode, pieceState.rowOccupancy, pieceState.colOccupancy
+            );
         default:
             return false;
     }
@@ -2167,7 +2333,6 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const start = moves.length;
     const isRed = currentPlayer === 'red';
     const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
-    const squareCodes = pieceState.squareCodes;
     const pieceCodes = pieceState.pieceCodes;
     const squareToSlot = pieceState.squareToSlot;
     const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
@@ -2184,10 +2349,10 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
         if (slot < 0) continue;
         if ((pieceCodes[slot] < 8) !== isRed) continue;
         if (fallback || sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
-            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, false);
+            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, false);
         } else if (resolveCount > 0) {
             appendSearchPseudoMovesForPiece(
-                moves, sq, pieceCodes[slot], squareCodes, false, evasionResolveMask
+                moves, sq, pieceCodes[slot], pieceState, false, evasionResolveMask
             );
         }
     }
@@ -2214,7 +2379,7 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     if ((pieceCode < 8) !== (currentPlayer === 'red')) return false;
     const targetCode = pieceState.squareCodes[toSq];
     if (quietOnly && targetCode !== 0) return false;
-    if (!isSearchPseudoLegal(fromSq, toSq, pieceCode, pieceState.squareCodes)) return false;
+    if (!isSearchPseudoLegal(fromSq, toSq, pieceCode, pieceState)) return false;
     moves.push(move);
     return true;
 };
@@ -2235,7 +2400,6 @@ const appendTrueStagedMoves = (
             appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
         }
     } else if (stage === 2) {
-        const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
         const pieceSquares = pieceState.pieceSquares;
         const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === 'red');
@@ -2243,7 +2407,7 @@ const appendTrueStagedMoves = (
             const slot = scratchOwnScanSlots[i];
             const sq = pieceSquares[slot];
             const pieceStart = moves.length;
-            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], squareCodes, true);
+            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, true);
             let write = pieceStart;
             for (let read = pieceStart; read < moves.length; read++) {
                 const move = moves[read];
@@ -2252,7 +2416,6 @@ const appendTrueStagedMoves = (
             moves.length = write;
         }
     } else if (stage === 3) {
-        const squareCodes = pieceState.squareCodes;
         const pieceCodes = pieceState.pieceCodes;
         const pieceSquares = pieceState.pieceSquares;
         const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === 'red');
@@ -2261,7 +2424,7 @@ const appendTrueStagedMoves = (
             const sq = pieceSquares[slot];
             const pieceStart = moves.length;
             appendSearchPseudoMovesForPiece(
-                moves, sq, pieceCodes[slot], squareCodes, false, null, true
+                moves, sq, pieceCodes[slot], pieceState, false, null, true
             );
             let write = pieceStart;
             for (let read = pieceStart; read < moves.length; read++) {
@@ -6131,7 +6294,6 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     const moves = destination || [];
     moves.length = 0;
     const pieceState = activePieceStateFor(board);
-    const squareCodes = pieceState.squareCodes;
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
     const isRed = currentPlayer === 'red';
@@ -6139,7 +6301,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         const generated = appendSearchPseudoMovesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], squareCodes, capturesOnly
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, capturesOnly
         );
         if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
     }

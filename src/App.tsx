@@ -4725,24 +4725,88 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         const newGameId = gameId + 1;
                                         setGameId(newGameId);
                                         const currentTurn = turn;
+                                        const postedAt = Date.now();
+                                        setAiSearchDebug({
+                                            active: true,
+                                            gameId: newGameId,
+                                            turn: currentTurn,
+                                            targetDepth: analysisDepth,
+                                            completedDepth: -2,
+                                            currentDepth: 0,
+                                            rootMoves: 0,
+                                            phase: 'posted',
+                                            bestPreview: '',
+                                            score: null,
+                                            startedAt: null,
+                                            lastProgressAt: postedAt,
+                                            lastEvent: 'SEARCH posted',
+                                            postedAt
+                                        });
                                         if (workerRef.current) {
                                             const handleAnalysisMessage = (e: MessageEvent) => {
                                                 const { type, payload } = e.data;
+                                                if (payload?.gameId !== newGameId) return;
+                                                if (type === 'SEARCH_STARTED' || type === 'SEARCH_PROGRESS') {
+                                                    const now = Date.now();
+                                                    const best = payload.bestMove;
+                                                    const bestPreview = best?.from && best?.to
+                                                        ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
+                                                        : '';
+                                                    scheduleAiSearchProgress(prev => ({
+                                                        ...prev,
+                                                        active: true,
+                                                        gameId: payload.gameId,
+                                                        turn: payload.turn ?? prev.turn,
+                                                        targetDepth: payload.maxDepth ?? payload.depth ?? prev.targetDepth,
+                                                        completedDepth: payload.completedDepth ?? prev.completedDepth,
+                                                        rootMoves: payload.rootMoves ?? prev.rootMoves,
+                                                        phase: payload.phase ?? type,
+                                                        bestPreview: bestPreview || prev.bestPreview,
+                                                        score: payload.score ?? prev.score,
+                                                        startedAt: type === 'SEARCH_STARTED' ? now : (prev.startedAt ?? now),
+                                                        lastProgressAt: now,
+                                                        lastEvent: type === 'SEARCH_STARTED'
+                                                            ? `STARTED d=${payload.depth}`
+                                                            : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`
+                                                    }));
+                                                    return;
+                                                }
                                                 if (type === 'SEARCH_COMPLETE') {
                                                     workerRef.current?.removeEventListener('message', handleAnalysisMessage);
-                                                    if (payload.gameId === newGameId) {
-                                                        const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
-                                                            move: moveData.move,
-                                                            score: moveData.score,
-                                                            moveSequence: moveData.moveSequence || []
-                                                        }));
-                                                        setAnalysisMoves(formattedAnalysisMoves);
-                                                        setSelectedAnalysisMove(null);
-                                                        setIsPreviewing(false);
-                                                        setOriginalBoardForPreview(null);
-                                                        setAnalysisBestMove(payload.bestMove ?? formattedAnalysisMoves[0]?.move ?? null);
-                                                        setAnalysisSecondBestMove(payload.secondBestMove ?? formattedAnalysisMoves[1]?.move ?? null);
-                                                    }
+                                                    flushAiSearchProgress();
+                                                    const prevDbg = aiSearchDebugRef.current;
+                                                    const best = payload.bestMove;
+                                                    const bestPreview = best?.from && best?.to
+                                                        ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
+                                                        : prevDbg.bestPreview;
+                                                    const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
+                                                    setAiSearchDebug(prev => ({
+                                                        ...prev,
+                                                        active: false,
+                                                        phase: 'complete',
+                                                        completedDepth,
+                                                        bestPreview,
+                                                        lastEvent: `COMPLETE ${payload.thinkingTime}ms`,
+                                                        lastProgressAt: Date.now()
+                                                    }));
+                                                    setLastSearchBench({
+                                                        thinkingTime: payload.thinkingTime ?? 0,
+                                                        completedDepth,
+                                                        targetDepth: prevDbg.targetDepth || analysisDepth,
+                                                        rootMoves: prevDbg.rootMoves,
+                                                        bestPreview
+                                                    });
+                                                    const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
+                                                        move: moveData.move,
+                                                        score: moveData.score,
+                                                        moveSequence: moveData.moveSequence || []
+                                                    }));
+                                                    setAnalysisMoves(formattedAnalysisMoves);
+                                                    setSelectedAnalysisMove(null);
+                                                    setIsPreviewing(false);
+                                                    setOriginalBoardForPreview(null);
+                                                    setAnalysisBestMove(payload.bestMove ?? formattedAnalysisMoves[0]?.move ?? null);
+                                                    setAnalysisSecondBestMove(payload.secondBestMove ?? formattedAnalysisMoves[1]?.move ?? null);
                                                     setIsThinking(false);
                                                 }
                                             };
@@ -4763,9 +4827,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 }
                                             });
                                         }
-                                        setTimeout(() => {
-                                            setIsThinking(false);
-                                        }, DIFFICULTIES[difficulty].timeLimit + 1000);
                                     }}
                                     disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
                                     style={getButtonStyle()}
@@ -4939,15 +5000,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     </div>
                                 )}
                                 
-                                {/* Try模式下的临时No和Yes按钮 */}
-                                {!isAnalysisMode && (isThinking || lastSearchBench) && (
+                                {/* 对弈与分析共用 AI Bench；分析模式放在着法列表下方 */}
+                                {(isThinking || lastSearchBench) && (
                                     <div className={`col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
                                         <div className="mb-1 text-stone-400">{isThinking ? 'Thinking' : 'Done'}</div>
                                         <div className="space-y-1">
                                             <div>
                                                 Depth: {isThinking
-                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || playDepth}`
-                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? playDepth}`}
+                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || (isAnalysisMode ? analysisDepth : playDepth)}`
+                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? (isAnalysisMode ? analysisDepth : playDepth)}`}
                                             </div>
                                             <div>
                                                 Time: {isThinking
