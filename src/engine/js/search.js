@@ -1050,8 +1050,7 @@ const acquireCheckInfo = (pool, ply) => {
 const abCheckInfoPool = [];
 const qsCheckInfoPool = [];
 const evasionResolveMask = new Uint8Array(REL_SQUARES);
-const evasionResolveList = new Uint8Array(16);
-let evasionResolveListCount = 0;
+const evasionResolveScratch = new Uint8Array(REL_SQUARES);
 
 const isStrictlyBetweenOnRay = (sq, a, b) => {
     const sr = SEARCH_SQ_ROWS[sq];
@@ -2269,24 +2268,20 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
     }
 };
 
-const pushResolveSquare = (mask, sq) => {
-    if (mask[sq]) return;
-    mask[sq] = 1;
-    evasionResolveList[evasionResolveListCount++] = sq;
-};
-
-const clearResolveSquares = (mask) => {
-    for (let i = 0; i < evasionResolveListCount; i++) mask[evasionResolveList[i]] = 0;
-    evasionResolveListCount = 0;
-};
-
 const markCheckerResolveSquares = (state, generalSq, checkerSq, kind, legSq, mask) => {
-    if (checkerSq >= 0 && checkerSq < REL_SQUARES) pushResolveSquare(mask, checkerSq);
-    if (kind === CHECK_KIND_HORSE) {
-        if (legSq >= 0 && state.squareCodes[legSq] === 0) pushResolveSquare(mask, legSq);
-        return evasionResolveListCount;
+    let marked = 0;
+    if (checkerSq >= 0 && checkerSq < REL_SQUARES) {
+        mask[checkerSq] = 1;
+        marked++;
     }
-    if (kind === CHECK_KIND_SOLDIER || checkerSq < 0 || generalSq < 0) return evasionResolveListCount;
+    if (kind === CHECK_KIND_HORSE) {
+        if (legSq >= 0 && state.squareCodes[legSq] === 0) {
+            mask[legSq] = 1;
+            marked++;
+        }
+        return marked;
+    }
+    if (kind === CHECK_KIND_SOLDIER || checkerSq < 0 || generalSq < 0) return marked;
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
     const cr = SEARCH_SQ_ROWS[checkerSq];
@@ -2298,71 +2293,46 @@ const markCheckerResolveSquares = (state, generalSq, checkerSq, kind, legSq, mas
         const rowBase = gr * COLS;
         for (let c = lo + 1; c < hi; c++) {
             const sq = rowBase + c;
-            if (squareCodes[sq] === 0) pushResolveSquare(mask, sq);
+            if (squareCodes[sq] === 0) {
+                mask[sq] = 1;
+                marked++;
+            }
         }
-        return evasionResolveListCount;
+        return marked;
     }
     if (gc === cc) {
         const lo = gr < cr ? gr : cr;
         const hi = gr < cr ? cr : gr;
         for (let r = lo + 1; r < hi; r++) {
             const sq = r * COLS + gc;
-            if (squareCodes[sq] === 0) pushResolveSquare(mask, sq);
+            if (squareCodes[sq] === 0) {
+                mask[sq] = 1;
+                marked++;
+            }
         }
     }
-    return evasionResolveListCount;
-};
-
-const isCheckerResolveSquare = (state, generalSq, checkerSq, kind, legSq, sq) => {
-    if (checkerSq >= 0 && checkerSq < REL_SQUARES && sq === checkerSq) return true;
-    if (kind === CHECK_KIND_HORSE) {
-        return legSq >= 0 && sq === legSq && state.squareCodes[legSq] === 0;
-    }
-    if (kind === CHECK_KIND_SOLDIER || checkerSq < 0 || generalSq < 0) return false;
-    const gr = SEARCH_SQ_ROWS[generalSq];
-    const gc = SEARCH_SQ_COLS[generalSq];
-    const cr = SEARCH_SQ_ROWS[checkerSq];
-    const cc = SEARCH_SQ_COLS[checkerSq];
-    if (gr === cr) {
-        if (SEARCH_SQ_ROWS[sq] !== gr) return false;
-        const lo = gc < cc ? gc : cc;
-        const hi = gc < cc ? cc : gc;
-        const c = SEARCH_SQ_COLS[sq];
-        return c > lo && c < hi && state.squareCodes[sq] === 0;
-    }
-    if (gc === cc) {
-        if (SEARCH_SQ_COLS[sq] !== gc) return false;
-        const lo = gr < cr ? gr : cr;
-        const hi = gr < cr ? cr : gr;
-        const r = SEARCH_SQ_ROWS[sq];
-        return r > lo && r < hi && state.squareCodes[sq] === 0;
-    }
-    return false;
+    return marked;
 };
 
 const fillResolveSquares = (state, generalSq, checkInfo, mask) => {
-    clearResolveSquares(mask);
+    mask.fill(0);
     if (checkInfo.count <= 0 || checkInfo.count > CHECK_INFO_CAP) return 0;
-    markCheckerResolveSquares(
+    let marked = markCheckerResolveSquares(
         state, generalSq, checkInfo.sq[0], checkInfo.kind[0], checkInfo.leg[0], mask
     );
-    if (checkInfo.count === 1) return evasionResolveListCount;
+    if (checkInfo.count === 1) return marked;
     for (let i = 1; i < checkInfo.count; i++) {
-        let keep = 0;
-        for (let j = 0; j < evasionResolveListCount; j++) {
-            const sq = evasionResolveList[j];
-            if (isCheckerResolveSquare(
-                state, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i], sq
-            )) {
-                evasionResolveList[keep++] = sq;
-            } else {
-                mask[sq] = 0;
-            }
+        evasionResolveScratch.fill(0);
+        markCheckerResolveSquares(
+            state, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i], evasionResolveScratch
+        );
+        marked = 0;
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            if (mask[sq] && evasionResolveScratch[sq]) marked++;
+            else mask[sq] = 0;
         }
-        evasionResolveListCount = keep;
-        if (keep === 0) break;
     }
-    return evasionResolveListCount;
+    return marked;
 };
 
 const isCannonScreenSquare = (sq, checkInfo) => {
@@ -2372,22 +2342,26 @@ const isCannonScreenSquare = (sq, checkInfo) => {
     return false;
 };
 
-// 与全盘子扫描同一顺序生成应将：己方棋子按 SEARCH_RELATIVE_SCAN_SQUARES 排序。
+// 与全盘子扫描同一顺序生成应将，保证合法着相对顺序不变。
 const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const start = moves.length;
     const isRed = currentPlayer === 'red';
     const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
+    const squareToSlot = pieceState.squareToSlot;
     const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
     const resolveCount = fallback
         ? 0
         : fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
 
-    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
-    for (let i = 0; i < n; i++) {
-        const slot = scratchOwnScanSlots[i];
-        const sq = pieceSquares[slot];
+    for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
+        const scanRow = (scanSq / COLS) | 0;
+        const sq = currentPlayer === 'black'
+            ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
+            : scanSq;
+        const slot = squareToSlot[sq];
+        if (slot < 0) continue;
+        if ((pieceCodes[slot] < 8) !== isRed) continue;
         if (fallback || sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
             appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, false);
         } else if (resolveCount > 0) {
@@ -7057,17 +7031,22 @@ const getBestMove = (
   const rootSeqs = [];
 
   const wantRed = turn === 'red';
-  const rootOwnCount = collectOwnSlotsInScanOrder(rootPieceState, wantRed);
-  const rootPieceSquares = rootPieceState.pieceSquares;
-  for (let i = 0; i < rootOwnCount; i++) {
-    const fromSq = rootPieceSquares[scratchOwnScanSlots[i]];
-    const validDestinations = getValidMovesFromSq(searchBoard, fromSq);
-    for (let di = 0; di < validDestinations.length; di++) {
-      const encoded = (fromSq << 7) | validDestinations[di];
-      if (excludedRootMoveSet.has(encoded)) continue;
-      rootMoves.push(encoded);
-      rootScores.push(0);
-      rootSeqs.push(null);
+  for (let scanRow = 0; scanRow < ROWS; scanRow++) {
+    const r = turn === 'black'
+      ? ROWS - 1 - scanRow
+      : scanRow;
+    for (let c = 0; c < COLS; c++) {
+      const fromSq = r * 9 + c;
+      const code = rootPieceState.squareCodes[fromSq];
+      if (!code || (code < 8) !== wantRed) continue;
+      const validDestinations = getValidMovesFromSq(searchBoard, fromSq);
+      for (let di = 0; di < validDestinations.length; di++) {
+        const encoded = (fromSq << 7) | validDestinations[di];
+        if (excludedRootMoveSet.has(encoded)) continue;
+        rootMoves.push(encoded);
+        rootScores.push(0);
+        rootSeqs.push(null);
+      }
     }
   }
 
