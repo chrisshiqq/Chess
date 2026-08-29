@@ -47,6 +47,7 @@ import {
 } from './src/utils/chessEngine';
 */
 import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, CompactBoard } from './domain/types';
+import { decodeAnalysisMoves, decodeMove, decodeMoves, previewMove } from './engine/codec';
 import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 
 const ROWS = 10;
@@ -822,13 +823,27 @@ const App: React.FC = () => {
     const workerCheckGameState = useRef((board: Board, turn: Color): Promise<GameStatusResult> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'checkGameState', { board, turn }, 'gameState', data => data.state);
+        return requestWorker(worker, 'checkGameState', { board, turn }, 'gameState', data => data.state)
+            .catch(error => {
+                if (error instanceof Error && error.message === 'checkGameState timeout') {
+                    console.warn('⚠️ workerCheckGameState timeout, worker busy');
+                    return { status: 'playing' };
+                }
+                throw error;
+            });
     }).current;
 
     const workerIsCheck = useRef((board: Board, color: Color): Promise<boolean> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'isCheck', { board, color }, 'check', data => data.isCheck);
+        return requestWorker(worker, 'isCheck', { board, color }, 'check', data => data.isCheck)
+            .catch(error => {
+                if (error instanceof Error && error.message === 'isCheck timeout') {
+                    console.warn('⚠️ workerIsCheck timeout, worker busy');
+                    return false;
+                }
+                throw error;
+            });
     }).current;
 
     const workerIsValidPlacement = useRef((type: PieceType, color: Color, r: number, c: number): Promise<boolean> => {
@@ -1341,6 +1356,27 @@ const App: React.FC = () => {
         }
     };
 
+    const clearPendingGameOver = () => {
+        setPendingGameOver(null);
+        if (gameOverTimerRef.current) {
+            clearTimeout(gameOverTimerRef.current);
+            gameOverTimerRef.current = null;
+        }
+    };
+
+    const armPendingGameOver = (state: GameStatusResult) => {
+        setPendingGameOver(state);
+        if (state.status === 'checkmate') setCheckAlert(true);
+        else setCheckAlert(false);
+        if (gameOverTimerRef.current) {
+            clearTimeout(gameOverTimerRef.current);
+        }
+        gameOverTimerRef.current = setTimeout(() => {
+            handleGameOver(state.status, state.winner);
+            setPendingGameOver(null);
+        }, 5000);
+    };
+
     // 切换音乐开关
 
     const toggleMusic = (enabled: boolean) => {
@@ -1563,10 +1599,7 @@ const App: React.FC = () => {
             if (type === 'SEARCH_STARTED' || type === 'SEARCH_PROGRESS') {
                 if (payload?.gameId !== capturedGameId) return;
                 const now = Date.now();
-                const best = payload.bestMove;
-                const bestPreview = best?.from && best?.to
-                    ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
-                    : '';
+                const bestPreview = previewMove(payload.bestMove);
                 scheduleAiSearchProgress(prev => ({
                     ...prev,
                     active: true,
@@ -1605,11 +1638,8 @@ const App: React.FC = () => {
                 
                 if (payload.gameId === capturedGameId) {
                     {
-                        const best = payload.bestMove;
                         const prevDbg = aiSearchDebugRef.current;
-                        const bestPreview = best?.from && best?.to
-                            ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
-                            : prevDbg.bestPreview;
+                        const bestPreview = previewMove(payload.bestMove) || prevDbg.bestPreview;
                         const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
                         setAiSearchDebug(prev => ({
                             ...prev,
@@ -1629,14 +1659,10 @@ const App: React.FC = () => {
                         });
                     }
                     // 设置隐藏最优着法和次优着法
-                    setHiddenBestMove(payload.bestMove);
-                    setSuboptimalMove(payload.secondBestMove);
+                    setHiddenBestMove(decodeMove(payload.bestMove));
+                    setSuboptimalMove(decodeMove(payload.secondBestMove));
                     
-                    const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
-                        move: moveData.move,
-                        score: moveData.score,
-                        moveSequence: moveData.moveSequence || []
-                    }));
+                    const formattedAnalysisMoves = decodeAnalysisMoves(payload.allMovesWithScores);
                     // 对弈路径只保留 best/次优到 React state；全量仍用于本地变招选择
                     // 分析模式（isAnalysisMode）保留全量列表
                     setAnalysisMoves(isAnalysisMode ? formattedAnalysisMoves : formattedAnalysisMoves.slice(0, 2));
@@ -1646,7 +1672,7 @@ const App: React.FC = () => {
                     setIsPreviewing(false);
                     setOriginalBoardForPreview(null);
                     
-                    const bestMove = payload.bestMove as Move | null | undefined;
+                    const bestMove = decodeMove(payload.bestMove);
                     if (!isUsableMove(bestMove)) {
                         detachSearchListener(handleWorkerMessage);
                         setIsThinking(false);
@@ -1913,7 +1939,8 @@ const App: React.FC = () => {
                 return false; // 不执行这步棋，也不更新历史记录
             }
         }
-        
+
+        const terminal = await workerCheckGameState(newBoard, nextTurn);
         
         // 只有在没有长将/长捉违规的情况下，才更新历史记录
         // boardHistory包含初始局面和每一步移动后的局面，长度为moveHistory.length + 1
@@ -2005,8 +2032,11 @@ const App: React.FC = () => {
                 setTimeout(() => setRecentlyCaptured(null), 4000);
             }, 0);
         };
-        // 走子后立刻根据已算好的将军结果更新提示（将/帅闪动），避免等 checkGameState 才显示
+        // 走子后立刻根据已算好的将军结果更新提示（将/帅闪动）
         setCheckAlert(isCheck);
+        if (isCheck) playCheckSound();
+        if (terminal.status !== 'playing') armPendingGameOver(terminal);
+        else clearPendingGameOver();
         setHintMove(null);
         setSelectedPieceEval(null);
         setAnalysisBestMove(null);
@@ -3009,94 +3039,21 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         // boardHistory已经包含了初始状态和所有移动后的状态，直接返回即可
         return boardHistory;
     }, [boardHistory, board]);
-    
-    // 异步检查游戏状态（移动到allReplayBoards声明之后）
-    useEffect(() => {
-        if (isSetupMode) return;
-        if (appScreen !== 'game') return;
 
-        // 防止旧请求在 AI SEARCH 排队后晚到，把 executeMove 已设好的 checkAlert 盖掉
-        let cancelled = false;
-        
-        // 异步检查游戏状态
-        const checkGameStatus = async () => {
-            let currentBoard = board;
-            let currentTurn = turn;
-            
-            // 如果是Replay模式，使用当前回放的棋盘和回合
-            if (isReplaying) {
-                // 直接计算当前回放的棋盘，不使用displayBoard变量
-                const replayBoard = allReplayBoards[replayIndex] || createInitialBoard();
-                currentBoard = replayBoard;
-                currentTurn = replayIndex % 2 === 0 ? 'red' : 'black';
-            }
-            
-            // 在Replay模式下只检查将军状态，不处理游戏结束逻辑
-            if (isReplaying) {
-                const isCheckState = await workerIsCheck(currentBoard, currentTurn);
-                if (cancelled) return;
-                setCheckAlert(isCheckState);
-                
-                // 如果是将军状态，播放将军音效
-                if (isCheckState) {
-                    playCheckSound();
-                }
-            } else {
-                // 非Replay模式，执行完整的游戏状态检查
-                const state = await workerCheckGameState(currentBoard, currentTurn);
-                if (cancelled) return;
-                if (state.status !== 'playing') {
-                    // 设置待定的游戏结束状态
-                    setPendingGameOver(state);
-                    
-                    // 将死时仍显示被将闪动；困毙则清除
-                    if (state.status === 'checkmate') {
-                        setCheckAlert(true);
-                        playCheckSound();
-                    } else {
-                        setCheckAlert(false);
-                    }
-                    
-                    // 清除之前的定时器（如果存在）
-                    if (gameOverTimerRef.current) {
-                        clearTimeout(gameOverTimerRef.current);
-                    }
-                    
-                    // 5秒后显示游戏结束界面
-                    gameOverTimerRef.current = setTimeout(() => {
-                        // 调用游戏结束处理函数
-                        handleGameOver(state.status, state.winner);
-                        setPendingGameOver(null);
-                    }, 5000);
-                } else {
-                    // 游戏继续进行，清除待定状态
-                    setPendingGameOver(null);
-                    if (gameOverTimerRef.current) {
-                        clearTimeout(gameOverTimerRef.current);
-                        gameOverTimerRef.current = null;
-                    }
-                    const isCheckState = await workerIsCheck(currentBoard, currentTurn);
-                    if (cancelled) return;
-                    setCheckAlert(isCheckState);
-                    
-                    // 如果是将军状态，播放将军音效
-                    if (isCheckState) {
-                        playCheckSound();
-                    }
-                }
-            }
-        };
-        
-        checkGameStatus();
-        
-        // 清理函数
-        return () => {
-            cancelled = true;
-            if (gameOverTimerRef.current) {
-                clearTimeout(gameOverTimerRef.current);
-            }
-        };
-    }, [appScreen, board, turn, isReplaying, isSetupMode, replayIndex, allReplayBoards]);
+    const showReplayCheck = async (index: number) => {
+        const replayBoard = allReplayBoards[index] || createInitialBoard();
+        const replayTurn: Color = index % 2 === 0 ? 'red' : 'black';
+        const inCheck = await workerIsCheck(replayBoard, replayTurn);
+        setCheckAlert(inCheck);
+        if (inCheck) playCheckSound();
+    };
+
+    const jumpReplay = (index: number) => {
+        const last = Math.max(0, allReplayBoards.length - 1);
+        const next = Math.max(0, Math.min(index, last));
+        setReplayIndex(next);
+        void showReplayCheck(next);
+    };
 
     // Replay Evaluation Logic
     const [replayEvaluation, setReplayEvaluation] = useState<MoveEvaluation>({
@@ -3300,19 +3257,19 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     if (e.data.type === 'SEARCH_COMPLETE') {
                         workerRef.current?.removeEventListener('message', handleWorkerMessage);
                         resolve({
-                            bestMove: e.data.payload.bestMove,
-                            secondMove: e.data.payload.secondBestMove,
-                            moveSequence: e.data.payload.moveSequence || [],
+                            bestMove: decodeMove(e.data.payload.bestMove),
+                            secondMove: decodeMove(e.data.payload.secondBestMove),
+                            moveSequence: decodeMoves(e.data.payload.moveSequence),
                             bestMoveScore: e.data.payload.bestMoveScore || 0,
                             secondBestMoveScore: e.data.payload.secondBestMoveScore || 0,
-                            allMovesWithScores: e.data.payload.allMovesWithScores || []
+                            allMovesWithScores: decodeAnalysisMoves(e.data.payload.allMovesWithScores)
                         });
                     } else if (e.data.type === 'bestMove') {
                         workerRef.current?.removeEventListener('message', handleWorkerMessage);
                         resolve({
-                            bestMove: e.data.move,
-                            secondMove: e.data.secondMove,
-                            moveSequence: e.data.moveSequence || [],
+                            bestMove: decodeMove(e.data.move),
+                            secondMove: decodeMove(e.data.secondMove),
+                            moveSequence: decodeMoves(e.data.moveSequence),
                             bestMoveScore: e.data.bestMoveScore || 0,
                             secondBestMoveScore: e.data.secondBestMoveScore || 0,
                             allMovesWithScores: []
@@ -3420,6 +3377,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setIsReplaying(true);
         setActiveTab('replay'); // 切换到Replay页签
         setReplayIndex(0);
+        void showReplayCheck(0);
         setSelectedPos(null);
         setValidMoves([]);
         setFlyingPiece(null);
@@ -3486,14 +3444,18 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 }, 300);
             }
             
-            setReplayIndex(prev => prev + 1);
+            const next = replayIndex + 1;
+            setReplayIndex(next);
+            void showReplayCheck(next);
         }
     };
 
     const prevReplay = () => {
         if (replayIndex > 0) {
-            setReplayIndex(prev => prev - 1);
+            const next = replayIndex - 1;
+            setReplayIndex(next);
             playMoveSound();
+            void showReplayCheck(next);
         }
     };
 
@@ -3566,6 +3528,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         
         // 增加 gameId 以重置 AI 状态
         setGameId(prev => prev + 1);
+
+        void (async () => {
+            const inCheck = await workerIsCheck(currentBoard, currentTurn);
+            setCheckAlert(inCheck);
+            if (inCheck) playCheckSound();
+            const terminal = await workerCheckGameState(currentBoard, currentTurn);
+            if (terminal.status !== 'playing') armPendingGameOver(terminal);
+            else clearPendingGameOver();
+        })();
     };
 
     // 将坐标移动转换为传统棋谱格式
@@ -3795,6 +3766,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 // 进入回放模式
                 setIsReplaying(true);
                 setReplayIndex(0);
+                void showReplayCheck(0);
                 setGameOver(null);
                 setHasStarted(false);
                 
@@ -4147,7 +4119,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         >
                             <button
                                 type="button"
-                                onClick={() => setReplayIndex(0)}
+                                onClick={() => jumpReplay(0)}
                                 disabled={replayIndex === 0}
                                 className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="First move"
@@ -4177,7 +4149,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setReplayIndex(allReplayBoards.length - 1)}
+                                onClick={() => jumpReplay(allReplayBoards.length - 1)}
                                 disabled={replayIndex === allReplayBoards.length - 1}
                                 className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
                                 aria-label="Last move"
@@ -4748,10 +4720,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 if (payload?.gameId !== newGameId) return;
                                                 if (type === 'SEARCH_STARTED' || type === 'SEARCH_PROGRESS') {
                                                     const now = Date.now();
-                                                    const best = payload.bestMove;
-                                                    const bestPreview = best?.from && best?.to
-                                                        ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
-                                                        : '';
+                                                    const bestPreview = previewMove(payload.bestMove);
                                                     scheduleAiSearchProgress(prev => ({
                                                         ...prev,
                                                         active: true,
@@ -4775,10 +4744,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     workerRef.current?.removeEventListener('message', handleAnalysisMessage);
                                                     flushAiSearchProgress();
                                                     const prevDbg = aiSearchDebugRef.current;
-                                                    const best = payload.bestMove;
-                                                    const bestPreview = best?.from && best?.to
-                                                        ? `${best.from.r},${best.from.c}->${best.to.r},${best.to.c}`
-                                                        : prevDbg.bestPreview;
+                                                    const bestPreview = previewMove(payload.bestMove) || prevDbg.bestPreview;
                                                     const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
                                                     setAiSearchDebug(prev => ({
                                                         ...prev,
@@ -4796,17 +4762,13 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         rootMoves: prevDbg.rootMoves,
                                                         bestPreview
                                                     });
-                                                    const formattedAnalysisMoves = (payload.allMovesWithScores || []).map(moveData => ({
-                                                        move: moveData.move,
-                                                        score: moveData.score,
-                                                        moveSequence: moveData.moveSequence || []
-                                                    }));
+                                                    const formattedAnalysisMoves = decodeAnalysisMoves(payload.allMovesWithScores);
                                                     setAnalysisMoves(formattedAnalysisMoves);
                                                     setSelectedAnalysisMove(null);
                                                     setIsPreviewing(false);
                                                     setOriginalBoardForPreview(null);
-                                                    setAnalysisBestMove(payload.bestMove ?? formattedAnalysisMoves[0]?.move ?? null);
-                                                    setAnalysisSecondBestMove(payload.secondBestMove ?? formattedAnalysisMoves[1]?.move ?? null);
+                                                    setAnalysisBestMove(decodeMove(payload.bestMove) ?? formattedAnalysisMoves[0]?.move ?? null);
+                                                    setAnalysisSecondBestMove(decodeMove(payload.secondBestMove) ?? formattedAnalysisMoves[1]?.move ?? null);
                                                     setIsThinking(false);
                                                 }
                                             };
@@ -5225,7 +5187,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 <div
                                                     key={index}
                                                     className={`inline-block px-2 py-0.5 border border-stone-700/50 hover:bg-stone-700/30 transition-colors cursor-pointer mx-1 mb-1 ${replayIndex === index + 1 ? 'bg-amber-600/30 text-amber-300 font-bold' : ''}`}
-                                                    onClick={() => setReplayIndex(index + 1)}
+                                                    onClick={() => jumpReplay(index + 1)}
                                                     style={{ fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'nowrap' }}
                                                 >
                                                     {index + 1}.{move}

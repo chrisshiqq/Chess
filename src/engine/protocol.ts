@@ -47,20 +47,23 @@ export type WorkerRequest =
   | { type: 'notationToMoves'; payload: { notation: string | string[]; initialBoard?: WireBoard; requestId: string } }
   | { type: 'setValueWeights'; payload: Partial<Record<'material' | 'position' | 'threat' | 'safety' | 'mobility', number>> };
 
+/** 引擎编码着法：((from.r * 9 + from.c) << 7) | (to.r * 9 + to.c) */
+export type EncodedMove = number;
+
 export interface SearchMoveScore {
-  move: Move;
+  move: EncodedMove;
   score: number;
-  moveSequence: Move[];
+  moveSequence: EncodedMove[];
 }
 
 export interface SearchCompletePayload {
-  bestMove: Move | null;
-  secondBestMove: Move | null;
+  bestMove: EncodedMove | null;
+  secondBestMove: EncodedMove | null;
   gameId: number;
   fromBook: boolean;
   thinkingTime: number;
-  moveSequence: Move[];
-  secondMoveSequence: Move[];
+  moveSequence: EncodedMove[];
+  secondMoveSequence: EncodedMove[];
   bestMoveScore: number;
   secondBestMoveScore: number;
   allMovesWithScores: SearchMoveScore[];
@@ -75,7 +78,7 @@ export interface SearchProgressPayload {
   maxDepth?: number;
   completedDepth?: number;
   rootMoves?: number;
-  bestMove?: Move | null;
+  bestMove?: EncodedMove | null;
   score?: number;
   elapsedMs?: number;
 }

@@ -1,8 +1,7 @@
 /// <reference lib="webworker" />
 
-import { decodeBoard, formatMove } from '../engine/codec.ts';
-import type { Move } from '../domain/types';
-import type { WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
+import { decodeBoard, decodeMove, decodeSquares, formatMove } from '../engine/codec.ts';
+import type { EncodedMove, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
   evaluateBoardForUi,
@@ -51,7 +50,7 @@ const buildSquareInspection = (
   turn: Parameters<typeof evaluateBoardForUi>[1],
   needMoves: boolean
 ) => {
-  const moves = needMoves ? getValidMoves(board, pos) : [];
+  const moves = needMoves ? decodeSquares(getValidMoves(board, pos)) : [];
   const piece = board[pos.r][pos.c];
   // 点棋专用函数，不走通用 evaluateBoard
   const boardEvaluation = evaluateBoardForUi(board, turn, gameStage());
@@ -123,7 +122,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
               maxDepth: info.maxDepth as number | undefined,
               completedDepth: info.completedDepth as number | undefined,
               rootMoves: info.rootMoves as number | undefined,
-              bestMove: info.bestMove as Move | null | undefined,
+              bestMove: info.bestMove as EncodedMove | null | undefined,
               score: info.score as number | undefined,
               elapsedMs: info.elapsedMs as number | undefined
             }
@@ -147,7 +146,12 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         }
         const thinkingTime = Math.round(performance.now() - started);
         const bookMove = openingBook.getBookMove(board, payload.ply ?? 0);
-        const fromBook = !!bookMove && JSON.stringify(bookMove) === JSON.stringify(result.bestMove);
+        const decodedBest = decodeMove(result.bestMove);
+        const fromBook = !!bookMove && !!decodedBest &&
+          bookMove.from.r === decodedBest.from.r &&
+          bookMove.from.c === decodedBest.from.c &&
+          bookMove.to.r === decodedBest.to.r &&
+          bookMove.to.c === decodedBest.to.c;
 
         logPerfStats(payload.turn);
         console.log(
@@ -181,7 +185,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         syncGeneralPosCache(board);
         emit({
           type: 'validMoves',
-          moves: getValidMoves(board, payload.pos),
+          moves: decodeSquares(getValidMoves(board, payload.pos)),
           requestId: payload.requestId
         });
         return;
