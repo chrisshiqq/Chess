@@ -231,6 +231,7 @@ let packedCaptureVerificationKey = 0;
 let packedCaptureCombinedKey = 0;
 let packedCaptureGeneration = 0;
 let packedCapturePlayer = null;
+let leafRelationScratchFresh = false;
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
 const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
@@ -3019,6 +3020,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
         perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
     }
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
+    leafRelationScratchFresh = true;
 };
 
 const calculatePackedSearchLeafRelationsNumericWithCaptures = (
@@ -3410,6 +3412,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
         const offset = fromSq * PACKED_CAPTURE_STRIDE;
         for (let i = 0; i < count; i++) packedCaptures.push(captureMoves[offset + i]);
     }
+    leafRelationScratchFresh = true;
 };
 
 const calculatePackedSearchLeafRelationsNumeric = (
@@ -6340,6 +6343,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
         evalCacheKeys[cacheSlot] === combinedKey) {
         if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
+        leafRelationScratchFresh = false;
         return evalCacheValues[cacheSlot];
     }
     if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
@@ -6393,6 +6397,37 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     }
     if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
     return moves;
+};
+
+// Fast 叶关系已写入 attackBySlot。有吃才走原几何，落点顺序与 generateQuiescenceMoves 一致。
+const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
+    const attacked = scratchLeafAttackedTargetMask >>> 0;
+    if (attacked === 0) return 0;
+    const isRed = currentPlayer === 'red';
+    const pieceSquares = pieceState.pieceSquares;
+    const pieceCodes = pieceState.pieceCodes;
+    const attackBySlot = scratchLeafAttackBySlot;
+    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
+    const start = moves.length;
+    for (let i = 0; i < n; i++) {
+        const slot = scratchOwnScanSlots[i];
+        const attackerBit = 1 << slot;
+        let targets = attacked;
+        let hits = false;
+        while (targets) {
+            const targetBit = targets & -targets;
+            targets ^= targetBit;
+            if ((attackBySlot[31 - Math.clz32(targetBit)] & attackerBit) !== 0) {
+                hits = true;
+                break;
+            }
+        }
+        if (!hits) continue;
+        appendSearchPseudoMovesForPiece(
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
+        );
+    }
+    return moves.length - start;
 };
 
 // generateCapturesForSearch removed (unused alias)
@@ -6451,7 +6486,7 @@ const quiescence = (
     if (!inCheck) {
         standPat = staticSearchEval(
             b, searchInitiator, gameStage, boardHash,
-            qsDepth > 0 ? currentPlayer : null
+            null
         );
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
@@ -6472,6 +6507,9 @@ const quiescence = (
     }
     if (inCheck) {
         const generated = generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
+        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+    } else if (leafRelationScratchFresh) {
+        const generated = emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
         if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
     } else if (!copyPackedRelationCaptures(
         moves, currentPlayer, boardHash, searchInitiator, gameStage, b
