@@ -1853,14 +1853,12 @@ const RANK_FIRST_HIGH = SEARCH_RANK_LOOKUP.firstHigh;
 const RANK_FIRST_LOW = SEARCH_RANK_LOOKUP.firstLow;
 const RANK_SECOND_HIGH = SEARCH_RANK_LOOKUP.secondHigh;
 const RANK_SECOND_LOW = SEARCH_RANK_LOOKUP.secondLow;
-const RANK_ROOK_CONTROL = SEARCH_RANK_LOOKUP.rookControl;
 const RANK_CANNON_CONTROL = SEARCH_RANK_LOOKUP.cannonControl;
 const FILE_MOBILITY = SEARCH_FILE_LOOKUP.mobility;
 const FILE_FIRST_HIGH = SEARCH_FILE_LOOKUP.firstHigh;
 const FILE_FIRST_LOW = SEARCH_FILE_LOOKUP.firstLow;
 const FILE_SECOND_HIGH = SEARCH_FILE_LOOKUP.secondHigh;
 const FILE_SECOND_LOW = SEARCH_FILE_LOOKUP.secondLow;
-const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
 const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
 
 let leafWMaterial = VALUE_WEIGHTS.material;
@@ -1906,6 +1904,13 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
     }
     return n;
 };
+
+// 车空控：目标格在 from 与第一挡之间（不含本格、不含挡子）。
+const rookEmptyBetween = (from, pal, firstHigh, firstLow) => (
+    pal > from
+        ? (firstHigh === 255 || firstHigh > pal)
+        : pal < from && (firstLow === 255 || firstLow < pal)
+);
 
 const applyOccupiedSliderHit = (
     sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
@@ -2888,7 +2893,6 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
@@ -2913,40 +2917,37 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
+                mobilityValue = (t0 === 255 ? 8 - c : t0 - c - 1)
+                    + (t1 === 255 ? c : c - t1 - 1)
+                    + (t2 === 255 ? 9 - r : t2 - r - 1)
+                    + (t3 === 255 ? r : r - t3 - 1);
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_ROOK_CONTROL[rankKey];
-                    if (rankControl & 0x38) {
-                        if (rankControl & 8) {
-                            const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 16) {
-                            const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 32) {
-                            const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                    if (rookEmptyBetween(c, 3, t0, t1)) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(c, 4, t0, t1)) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(c, 5, t0, t1)) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_ROOK_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
-                        let sq = firstRow * 9 + c;
-                        if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                    const firstRow = isRed ? 7 : 0;
+                    if (rookEmptyBetween(r, firstRow, t2, t3)) {
+                        const sq = firstRow * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(r, firstRow + 1, t2, t3)) {
+                        const sq = (firstRow + 1) * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(r, firstRow + 2, t2, t3)) {
+                        const sq = (firstRow + 2) * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 if (isRed) redMobility += mobilityValue;
@@ -3244,7 +3245,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
@@ -3273,40 +3273,37 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
+                mobilityValue = (t0 === 255 ? 8 - c : t0 - c - 1)
+                    + (t1 === 255 ? c : c - t1 - 1)
+                    + (t2 === 255 ? 9 - r : t2 - r - 1)
+                    + (t3 === 255 ? r : r - t3 - 1);
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_ROOK_CONTROL[rankKey];
-                    if (rankControl & 0x38) {
-                        if (rankControl & 8) {
-                            const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 16) {
-                            const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 32) {
-                            const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                    if (rookEmptyBetween(c, 3, t0, t1)) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(c, 4, t0, t1)) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(c, 5, t0, t1)) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_ROOK_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
-                        let sq = firstRow * 9 + c;
-                        if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
+                    const firstRow = isRed ? 7 : 0;
+                    if (rookEmptyBetween(r, firstRow, t2, t3)) {
+                        const sq = firstRow * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(r, firstRow + 1, t2, t3)) {
+                        const sq = (firstRow + 1) * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rookEmptyBetween(r, firstRow + 2, t2, t3)) {
+                        const sq = (firstRow + 2) * 9 + c;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
                     }
                 }
                 if (isRed) redMobility += mobilityValue;
