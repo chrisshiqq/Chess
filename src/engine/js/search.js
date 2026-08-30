@@ -2406,14 +2406,14 @@ const appendTrueStagedMoves = (
 ) => {
     const start = moves.length;
     if (stage === 0) {
+        if (!isEncodedMove(ttMove)) return 0;
         appendValidatedStagedSpecial(moves, ttMove, pieceState, currentPlayer, false);
         return moves.length - start;
     }
     if (stage === 1) {
-        if (killers) {
-            appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
-            appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
-        }
+        if (!killers) return 0;
+        appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
+        appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
     } else if (stage === 2) {
         const pieceCodes = pieceState.pieceCodes;
         const pieceSquares = pieceState.pieceSquares;
@@ -6409,20 +6409,17 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const attackBySlot = scratchLeafAttackBySlot;
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     const start = moves.length;
+    let attackerUnion = 0;
+    let targets = attacked;
+    while (targets !== 0) {
+        const targetBit = targets & -targets;
+        attackerUnion |= attackBySlot[31 - Math.clz32(targetBit)];
+        targets ^= targetBit;
+    }
+    if (attackerUnion === 0) return 0;
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
-        const attackerBit = 1 << slot;
-        let targets = attacked;
-        let hits = false;
-        while (targets) {
-            const targetBit = targets & -targets;
-            targets ^= targetBit;
-            if ((attackBySlot[31 - Math.clz32(targetBit)] & attackerBit) !== 0) {
-                hits = true;
-                break;
-            }
-        }
-        if (!hits) continue;
+        if ((attackerUnion & (1 << slot)) === 0) continue;
         appendSearchPseudoMovesForPiece(
             moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
         );
