@@ -892,7 +892,8 @@ const unmakeMove = (board, from, to, captured) => {
 // 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
 // 马腿是将的对角邻格，不在将线上，腾腿必须走增量马将检测。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
-    if (wasInCheck || !state || move == null) return false;
+    // 热路径：被将必走逃避，不必先判 state/move（搜索 make 后两者都在；UI/回放默认 wasInCheck=true）
+    if (wasInCheck) return false;
     const fromSq = moveFromSq(move);
     const toSq = moveToSq(move);
     const generalSq = color === 'red' ? state.redGeneralSq : state.blackGeneralSq;
@@ -1953,8 +1954,9 @@ const appendSearchShortMoves = (
         if (targetMask && !targetMask[toSq]) continue;
         const targetCode = squareCodes[toSq];
         if (targetCode === 0) {
+            if (capturesOnly) continue;
             generated++;
-            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
+            moves.push((fromSq << 7) | toSq);
         } else if (!quietsOnly && (targetCode < 8) !== isRed) {
             generated++;
             moves.push((fromSq << 7) | toSq);
@@ -2649,7 +2651,7 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
             const dests = SOLDIER_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
-                mobilityValue += applyRelationSquare(
+                applyRelationSquare(
                     board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
                 );
             }
@@ -2822,7 +2824,6 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2912,23 +2913,25 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const rankControl = RANK_ROOK_CONTROL[rankKey];
-                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
-                    if (rankControl & 8) {
-                        const sq = r * 9 + 3;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 16) {
-                        const sq = r * 9 + 4;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 32) {
-                        const sq = r * 9 + 5;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                if (isRed ? r >= 7 : r <= 2) {
+                    const rankControl = RANK_ROOK_CONTROL[rankKey];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
                     }
                 }
-                const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
+                    const fileControl = FILE_ROOK_CONTROL[fileKey];
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -2980,23 +2983,25 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const rankControl = RANK_CANNON_CONTROL[rankKey];
-                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
-                    if (rankControl & 8) {
-                        const sq = r * 9 + 3;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 16) {
-                        const sq = r * 9 + 4;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 32) {
-                        const sq = r * 9 + 5;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                if (isRed ? r >= 7 : r <= 2) {
+                    const rankControl = RANK_CANNON_CONTROL[rankKey];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
                     }
                 }
-                const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
+                    const fileControl = FILE_CANNON_CONTROL[fileKey];
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -3152,7 +3157,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
-                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -3269,23 +3273,25 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const rankControl = RANK_ROOK_CONTROL[rankKey];
-                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
-                    if (rankControl & 8) {
-                        const sq = r * 9 + 3;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 16) {
-                        const sq = r * 9 + 4;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 32) {
-                        const sq = r * 9 + 5;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                if (isRed ? r >= 7 : r <= 2) {
+                    const rankControl = RANK_ROOK_CONTROL[rankKey];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
                     }
                 }
-                const fileControl = FILE_ROOK_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
+                    const fileControl = FILE_ROOK_CONTROL[fileKey];
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -3341,23 +3347,25 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const rankControl = RANK_CANNON_CONTROL[rankKey];
-                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
-                    if (rankControl & 8) {
-                        const sq = r * 9 + 3;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 16) {
-                        const sq = r * 9 + 4;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
-                    }
-                    if (rankControl & 32) {
-                        const sq = r * 9 + 5;
-                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                if (isRed ? r >= 7 : r <= 2) {
+                    const rankControl = RANK_CANNON_CONTROL[rankKey];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
                     }
                 }
-                const fileControl = FILE_CANNON_CONTROL[fileKey];
                 if (c >= 3 && c <= 5) {
+                    const fileControl = FILE_CANNON_CONTROL[fileKey];
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
