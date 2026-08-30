@@ -189,6 +189,17 @@ function printSummary(label, run) {
     }
   }
 
+  const checkFilter = perf.checkFilter;
+  if (checkFilter) {
+    console.log('checkFilter:');
+    console.log(`  attempts=${checkFilter.attempts}`);
+    console.log(`  rejects=${checkFilter.rejects}`);
+    console.log(`  fallthrough=${checkFilter.fallthrough}`);
+    console.log(`  rejectRate=${checkFilter.rejectRate}%`);
+    console.log(`  fullTrue=${checkFilter.fullTrue}`);
+    console.log(`  fullFalse=${checkFilter.fullFalse}`);
+  }
+
   if (relations) {
     console.log('leafRelations:');
     console.log(`  calls=${relations.calls}`);

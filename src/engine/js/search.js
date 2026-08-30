@@ -1684,6 +1684,7 @@ const SEARCH_RAY_OFFSETS = new Uint16Array(REL_SQUARES * ORTH_DIRS.length + 1);
 let SEARCH_RAY_SQUARES = null;
 const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKERS = new Array(REL_SQUARES);
+const SEARCH_GIVES_CHECK_NEAR = Array.from({ length: REL_SQUARES }, () => new Uint8Array(REL_SQUARES));
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
 const SEARCH_RELATIVE_SCAN_SQUARES = [
@@ -1750,6 +1751,21 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
             horseCheckers.push((legR * 9 + legC) * 128 + horseR * 9 + horseC);
         }
         SEARCH_HORSE_CHECKERS[sq] = new Uint16Array(horseCheckers);
+        const near = SEARCH_GIVES_CHECK_NEAR[sq];
+        for (let i = 0; i < horseCheckers.length; i++) {
+            const entry = horseCheckers[i];
+            near[entry & 127] = 1;
+            near[entry >>> 7] = 1;
+        }
+        if (r <= 2) {
+            if (r + 1 < ROWS) near[(r + 1) * 9 + c] = 1;
+            if (c > 0) near[sq - 1] = 1;
+            if (c < COLS - 1) near[sq + 1] = 1;
+        } else if (r >= 7) {
+            if (r > 0) near[(r - 1) * 9 + c] = 1;
+            if (c > 0) near[sq - 1] = 1;
+            if (c < COLS - 1) near[sq + 1] = 1;
+        }
     }
     SEARCH_RAY_OFFSETS[REL_SQUARES << 2] = searchRaySquares.length;
     SEARCH_RAY_SQUARES = new Uint8Array(searchRaySquares);
@@ -5514,6 +5530,38 @@ const isCheckFromState = (state, color) => {
     return false;
 };
 
+// 父节点：走子后对方是否被将。第 0 级只看坐标（将线 / 马位腿 / 兵位），否证则不再全量扫。
+const probeMoveGivesCheck = (state, checkedColor, fromSq, toSq) => {
+    const collect = searchContext.collectMetrics;
+    if (collect) perfStats.checkFilterAttempts++;
+    const generalSq = checkedColor === 'red' ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) {
+        if (collect) perfStats.checkFilterFallthrough++;
+        return true;
+    }
+    const gr = SEARCH_SQ_ROWS[generalSq];
+    const gc = SEARCH_SQ_COLS[generalSq];
+    if (
+        SEARCH_SQ_ROWS[fromSq] !== gr &&
+        SEARCH_SQ_ROWS[toSq] !== gr &&
+        SEARCH_SQ_COLS[fromSq] !== gc &&
+        SEARCH_SQ_COLS[toSq] !== gc
+    ) {
+        const near = SEARCH_GIVES_CHECK_NEAR[generalSq];
+        if (near[fromSq] === 0 && near[toSq] === 0) {
+            if (collect) perfStats.checkFilterRejects++;
+            return false;
+        }
+    }
+    if (collect) perfStats.checkFilterFallthrough++;
+    const hit = isCheckFromState(state, checkedColor);
+    if (collect) {
+        if (hit) perfStats.checkFilterFullTrue++;
+        else perfStats.checkFilterFullFalse++;
+    }
+    return hit;
+};
+
 const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
     if (boardInfo) {
         return color === 'red' ? boardInfo.redIsInCheck : boardInfo.blackIsInCheck;
@@ -5849,6 +5897,11 @@ let perfStats = {
     kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 },
     isCheckFromStateCalls: 0,
     isCheckFromStateSkipped: 0,
+    checkFilterAttempts: 0,
+    checkFilterRejects: 0,
+    checkFilterFallthrough: 0,
+    checkFilterFullTrue: 0,
+    checkFilterFullFalse: 0,
     illegalMovesSkipped: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
@@ -5912,6 +5965,11 @@ const resetPerfStats = () => {
     perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 };
     perfStats.isCheckFromStateCalls = 0;
     perfStats.isCheckFromStateSkipped = 0;
+    perfStats.checkFilterAttempts = 0;
+    perfStats.checkFilterRejects = 0;
+    perfStats.checkFilterFallthrough = 0;
+    perfStats.checkFilterFullTrue = 0;
+    perfStats.checkFilterFullFalse = 0;
     perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
@@ -5976,6 +6034,16 @@ const snapshotPerfStats = () => {
             fullReasons: { ...perfStats.kingSafetyFullReasons },
             isCheckFromStateCalls: perfStats.isCheckFromStateCalls,
             isCheckFromStateSkipped: perfStats.isCheckFromStateSkipped
+        } : null,
+        checkFilter: searchContext.collectMetrics ? {
+            attempts: perfStats.checkFilterAttempts,
+            rejects: perfStats.checkFilterRejects,
+            fallthrough: perfStats.checkFilterFallthrough,
+            rejectRate: perfStats.checkFilterAttempts
+                ? Number((perfStats.checkFilterRejects / perfStats.checkFilterAttempts * 100).toFixed(2))
+                : 0,
+            fullTrue: perfStats.checkFilterFullTrue,
+            fullFalse: perfStats.checkFilterFullFalse
         } : null,
         leafRelations: searchContext.collectMetrics ? {
             calls: perfStats.leafRelationCalls,
@@ -6533,11 +6601,14 @@ const quiescence = (
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
+        const childInCheck = probeMoveGivesCheck(
+            qsState, nextPlayer, move >>> 7, move & MOVE_TO_MASK
+        );
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const value = quiescence(
             b, alpha, beta, !maximizing, nextPlayer,
-            searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1
+            searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1, childInCheck
         );
         unmakeSearchMove(b, move);
 
@@ -6713,6 +6784,7 @@ const alphaBeta = (
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
+        const childInCheck = probeMoveGivesCheck(stagedPieceState, nextPlayer, fromSq, toSq);
         legalMovesFound++;
         if (searchContext.collectMetrics && legalMovesFound === 1) {
             recordFirstLegalMove(d, moveIndex);
@@ -6745,7 +6817,7 @@ const alphaBeta = (
             if (canLmr) {
                 value = alphaBeta(
                     b, reducedDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash
+                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.lmrReSearches++;
@@ -6753,19 +6825,19 @@ const alphaBeta = (
                         if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                         value = alphaBeta(
                             b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash
+                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                         );
                         if (value > alpha) {
                             if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                             value = alphaBeta(
                                 b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                                searchDepth, searchInitiator, gameStage, nextHash
+                                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                             );
                         }
                     } else {
                         value = alphaBeta(
                             b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash
+                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                         );
                     }
                 }
@@ -6773,25 +6845,25 @@ const alphaBeta = (
                 if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
                     b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash
+                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                     value = alphaBeta(
                         b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash
+                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                     );
                 }
             } else {
                 value = alphaBeta(
                     b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash
+                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                 );
             }
         } else if (canLmr) {
             value = alphaBeta(
                 b, reducedDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash
+                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.lmrReSearches++;
@@ -6799,19 +6871,19 @@ const alphaBeta = (
                     if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
                         b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash
+                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                     );
                     if (value < beta) {
                         if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
                             b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash
+                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                         );
                     }
                 } else {
                     value = alphaBeta(
                         b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash
+                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                     );
                 }
             }
@@ -6819,19 +6891,19 @@ const alphaBeta = (
             if (searchContext.collectMetrics) perfStats.pvsAttempts++;
             value = alphaBeta(
                 b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash
+                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
                     b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash
+                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
                 );
             }
         } else {
             value = alphaBeta(
                 b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash
+                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
             );
         }
         unmakeSearchMove(b, move);
@@ -7201,6 +7273,9 @@ const getBestMove = (
       const capturedCode = activeSearchPieceState.squareCodes[rootToSq];
       makeSearchMove(searchBoard, encodedRootMove);
       const childHash = childBoardHash(rootHash, encodedRootMove, moverCode, capturedCode);
+      const childInCheck = probeMoveGivesCheck(
+        activeSearchPieceState, nextTurn, rootFromSq, rootToSq
+      );
 
       let score;
       let scoreIsExact = true;
@@ -7217,7 +7292,7 @@ const getBestMove = (
       if (i === 0 || rootAlpha === -Infinity) {
         score = alphaBeta(
           searchBoard, remaining, -Infinity, Infinity,
-          false, nextTurn, currentDepth, turn, gameStage, childHash
+          false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
         );
       } else {
         const cachedExact = exactThisMove ? exactFromTt() : null;
@@ -7227,12 +7302,12 @@ const getBestMove = (
           const probe = alphaBeta(
             searchBoard, remaining,
             rootAlpha, rootAlpha + NULL_WINDOW,
-            false, nextTurn, currentDepth, turn, gameStage, childHash
+            false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
           );
           if (probe > rootAlpha) {
             score = alphaBeta(
               searchBoard, remaining, rootAlpha, Infinity,
-              false, nextTurn, currentDepth, turn, gameStage, childHash
+              false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
             );
           } else if (exactThisMove) {
             const afterProbe = exactFromTt();
@@ -7242,7 +7317,7 @@ const getBestMove = (
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
                 searchBoard, remaining, -Infinity, rootAlpha + NULL_WINDOW,
-                false, nextTurn, currentDepth, turn, gameStage, childHash
+                false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
               );
               if (score > rootAlpha) {
                 // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
