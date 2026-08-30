@@ -892,8 +892,7 @@ const unmakeMove = (board, from, to, captured) => {
 // 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
 // 马腿是将的对角邻格，不在将线上，腾腿必须走增量马将检测。
 const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
-    // 搜索热路径 make 之后必有 state 和编码着法；UI/回放走 wasInCheck=true，进不了这里。
-    if (wasInCheck) return false;
+    if (wasInCheck || !state || move == null) return false;
     const fromSq = moveFromSq(move);
     const toSq = moveToSq(move);
     const generalSq = color === 'red' ? state.redGeneralSq : state.blackGeneralSq;
@@ -1938,9 +1937,8 @@ const appendSearchShortMoves = (
         if (targetMask && !targetMask[toSq]) continue;
         const targetCode = squareCodes[toSq];
         if (targetCode === 0) {
-            if (capturesOnly) continue;
             generated++;
-            moves.push((fromSq << 7) | toSq);
+            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
         } else if (!quietsOnly && (targetCode < 8) !== isRed) {
             generated++;
             moves.push((fromSq << 7) | toSq);
@@ -2808,6 +2806,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
