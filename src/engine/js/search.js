@@ -941,7 +941,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     const toOnFile = toC === gc;
 
     if (fromOnRank || toOnRank) {
-        const rankKey = gc * RANK_OCC_COUNT + packLineOcc(state.rowOccupancy[gr], gc);
+        const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
         if ((fromOnRank && fromC > gc) || (toOnRank && toC > gc)) {
             const first = RANK_FIRST_HIGH[rankKey];
             if (first !== 255) {
@@ -968,7 +968,7 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
         }
     }
     if (fromOnFile || toOnFile) {
-        const fileKey = gr * FILE_OCC_COUNT + packLineOcc(state.colOccupancy[gc], gr);
+        const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
         if ((fromOnFile && fromR > gr) || (toOnFile && toR > gr)) {
             const first = FILE_FIRST_HIGH[fileKey];
             if (first !== 255) {
@@ -1772,13 +1772,11 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
     SEARCH_RAY_SQUARES = new Uint8Array(searchRaySquares);
 })();
 
-// 行/列占用 LUT：本格占用位不参与扫描，只存 2^(n-1) 种占用（约一半体积）。
-// 查找前用 packLineOcc 挤掉 from 位。每条记录仍是 first/second、机动、车/炮空控。
-const packLineOcc = (occupancy, from) =>
-    (occupancy & ((1 << from) - 1)) | ((occupancy >>> (from + 1)) << from);
-
+// Ranks use 9-bit occupancy and files use 10-bit occupancy. Each lookup returns
+// the first/second blocker in both directions, empty mobility before the first
+// blocker, and empty control squares before/between blockers for rook/cannon.
 const createOrthogonalLineLookup = (length) => {
-    const occupancyCount = 1 << (length - 1);
+    const occupancyCount = 1 << length;
     const entryCount = length * occupancyCount;
     const firstLow = new Uint8Array(entryCount);
     const firstHigh = new Uint8Array(entryCount);
@@ -1794,10 +1792,8 @@ const createOrthogonalLineLookup = (length) => {
 
     for (let from = 0; from < length; from++) {
         const base = from * occupancyCount;
-        const fromLowMask = (1 << from) - 1;
-        for (let packed = 0; packed < occupancyCount; packed++) {
-            const occupancy = (packed & fromLowMask) | ((packed >>> from) << (from + 1));
-            const key = base + packed;
+        for (let occupancy = 0; occupancy < occupancyCount; occupancy++) {
+            const key = base + occupancy;
             let first = -1;
             for (let pos = from - 1; pos >= 0; pos--) {
                 if (occupancy & (1 << pos)) {
@@ -2006,8 +2002,8 @@ const appendOccupancyRookMoves = (
     const squareCodes = pieceState.squareCodes;
     const r = SEARCH_SQ_ROWS[fromSq];
     const c = SEARCH_SQ_COLS[fromSq];
-    const rankKey = c * RANK_OCC_COUNT + packLineOcc(pieceState.rowOccupancy[r], c);
-    const fileKey = r * FILE_OCC_COUNT + packLineOcc(pieceState.colOccupancy[c], r);
+    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
+    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
     let generated = 0;
 
     const t0 = RANK_FIRST_HIGH[rankKey];
@@ -2067,8 +2063,8 @@ const appendOccupancyCannonMoves = (
     const squareCodes = pieceState.squareCodes;
     const r = SEARCH_SQ_ROWS[fromSq];
     const c = SEARCH_SQ_COLS[fromSq];
-    const rankKey = c * RANK_OCC_COUNT + packLineOcc(pieceState.rowOccupancy[r], c);
-    const fileKey = r * FILE_OCC_COUNT + packLineOcc(pieceState.colOccupancy[c], r);
+    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
+    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
     let generated = 0;
 
     const t0 = RANK_FIRST_HIGH[rankKey];
@@ -2132,7 +2128,7 @@ const isOccupancyRookLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupan
     const toR = SEARCH_SQ_ROWS[toSq];
     const toC = SEARCH_SQ_COLS[toSq];
     if (toR === r) {
-        const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
+        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
         if (toC > c) {
             const first = RANK_FIRST_HIGH[rankKey];
             return targetCode === 0 ? (first === 255 || first > toC) : first === toC;
@@ -2144,7 +2140,7 @@ const isOccupancyRookLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupan
         return false;
     }
     if (toC === c) {
-        const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
         if (toR > r) {
             const first = FILE_FIRST_HIGH[fileKey];
             return targetCode === 0 ? (first === 255 || first > toR) : first === toR;
@@ -2163,7 +2159,7 @@ const isOccupancyCannonLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccup
     const toR = SEARCH_SQ_ROWS[toSq];
     const toC = SEARCH_SQ_COLS[toSq];
     if (toR === r) {
-        const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
+        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
         if (toC > c) {
             if (targetCode === 0) {
                 const first = RANK_FIRST_HIGH[rankKey];
@@ -2181,7 +2177,7 @@ const isOccupancyCannonLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccup
         return false;
     }
     if (toC === c) {
-        const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
         if (toR > r) {
             if (targetCode === 0) {
                 const first = FILE_FIRST_HIGH[fileKey];
@@ -2890,8 +2886,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
             case 2: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
-                const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
@@ -2960,8 +2956,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
             case 6: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
-                const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
@@ -3246,8 +3242,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
             case 2: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
-                const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
@@ -3320,8 +3316,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
             case 6: {
                 const r = SEARCH_SQ_ROWS[fromSq];
                 const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + packLineOcc(rowOccupancy[r], c);
-                const fileKey = r * FILE_OCC_COUNT + packLineOcc(colOccupancy[c], r);
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
@@ -5358,8 +5354,8 @@ const collectCheckersFromState = (state, color, out) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    const rankKey = gc * RANK_OCC_COUNT + packLineOcc(state.rowOccupancy[gr], gc);
-    const fileKey = gr * FILE_OCC_COUNT + packLineOcc(state.colOccupancy[gc], gr);
+    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
+    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
     let first = RANK_FIRST_LOW[rankKey];
     let second = RANK_SECOND_LOW[rankKey];
     if (first !== 255) {
@@ -5470,8 +5466,8 @@ const isCheckFromState = (state, color) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    const rankKey = gc * RANK_OCC_COUNT + packLineOcc(state.rowOccupancy[gr], gc);
-    const fileKey = gr * FILE_OCC_COUNT + packLineOcc(state.colOccupancy[gc], gr);
+    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
+    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
     let first = RANK_FIRST_LOW[rankKey];
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
