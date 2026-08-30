@@ -1865,16 +1865,15 @@ const snapshotLeafWeights = () => {
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
     const pieceSquares = pieceState.pieceSquares;
-    const pieceCodes = pieceState.pieceCodes;
     const slots = scratchOwnScanSlots;
     const orders = scratchOwnScanOrder;
     const scanOrder = SEARCH_RELATIVE_SCAN_SQUARES[isRed ? 0 : 1];
-    const slotCount = pieceState.slotCount > 0 ? pieceState.slotCount : 32;
-    const ownMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
     let n = 0;
-    for (let slot = 0; slot < slotCount; slot++) {
-        if ((ownMask & (1 << slot)) === 0) continue;
-        if ((pieceCodes[slot] < 8) !== isRed) continue;
+    let mask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
+    while (mask !== 0) {
+        const bit = mask & -mask;
+        const slot = 31 - Math.clz32(bit);
+        mask ^= bit;
         const sq = pieceSquares[slot];
         if (sq >= REL_SQUARES) continue;
         const order = scanOrder[sq];
@@ -2349,20 +2348,16 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const isRed = currentPlayer === 'red';
     const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     const pieceCodes = pieceState.pieceCodes;
-    const squareToSlot = pieceState.squareToSlot;
+    const pieceSquares = pieceState.pieceSquares;
     const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
     const resolveCount = fallback
         ? 0
         : fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
 
-    for (let scanSq = 0; scanSq < REL_SQUARES; scanSq++) {
-        const scanRow = (scanSq / COLS) | 0;
-        const sq = currentPlayer === 'black'
-            ? (ROWS - 1 - scanRow) * COLS + (scanSq % COLS)
-            : scanSq;
-        const slot = squareToSlot[sq];
-        if (slot < 0) continue;
-        if ((pieceCodes[slot] < 8) !== isRed) continue;
+    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
+    for (let i = 0; i < n; i++) {
+        const slot = scratchOwnScanSlots[i];
+        const sq = pieceSquares[slot];
         if (fallback || sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
             appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, false);
         } else if (resolveCount > 0) {
