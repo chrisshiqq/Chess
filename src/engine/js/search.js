@@ -219,6 +219,18 @@ const hasAttackBit = (bits, sq) => (bits[sq >>> 5] & (1 << (sq & 31))) !== 0;
 const makeEmptyControllerGrid = () =>
     Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
 
+// 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
+const PACKED_CAPTURE_STRIDE = 8;
+const scratchPackedCaptureCounts = new Uint8Array(REL_SQUARES);
+const scratchPackedCaptureMoves = new Uint16Array(REL_SQUARES * PACKED_CAPTURE_STRIDE);
+const scratchPackedCaptureSources = new Uint8Array(16);
+const scratchPackedCaptures = [];
+let scratchPackedCaptureSourceCount = 0;
+let packedCaptureCacheKey = 0;
+let packedCaptureVerificationKey = 0;
+let packedCaptureCombinedKey = 0;
+let packedCaptureGeneration = 0;
+let packedCapturePlayer = null;
 let leafRelationScratchFresh = false;
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
@@ -1883,13 +1895,33 @@ const applyOccupiedSliderHit = (
 ) => {
     const targetCode = squareCodes[sq];
     const targetSlot = squareToSlot[sq];
-    // 开局车炮第一子多为己方，先友后敌。
-    if ((targetCode < 8) === isRed) {
-        if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
-        return 0;
+    if ((targetCode < 8) !== isRed) {
+        attackBySlot[targetSlot] |= bit;
+        return 1 << targetSlot;
     }
-    attackBySlot[targetSlot] |= bit;
-    return 1 << targetSlot;
+    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+    return 0;
+};
+
+const applyOccupiedSliderHitWithCapture = (
+    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+    recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+) => {
+    const targetCode = squareCodes[sq];
+    const targetSlot = squareToSlot[sq];
+    if ((targetCode < 8) !== isRed) {
+        attackBySlot[targetSlot] |= bit;
+        if (recordCaptures) {
+            if (captureCounts[fromSq] === 0) {
+                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+            }
+            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                (fromSq << 7) | sq;
+        }
+        return 1 << targetSlot;
+    }
+    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+    return 0;
 };
 
 const appendSearchShortMoves = (
@@ -1905,9 +1937,8 @@ const appendSearchShortMoves = (
         if (targetMask && !targetMask[toSq]) continue;
         const targetCode = squareCodes[toSq];
         if (targetCode === 0) {
-            if (capturesOnly) continue;
             generated++;
-            moves.push((fromSq << 7) | toSq);
+            if (!capturesOnly) moves.push((fromSq << 7) | toSq);
         } else if (!quietsOnly && (targetCode < 8) !== isRed) {
             generated++;
             moves.push((fromSq << 7) | toSq);
@@ -2775,6 +2806,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2986,6 +3018,407 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     leafRelationScratchFresh = true;
 };
 
+const calculatePackedSearchLeafRelationsNumericWithCaptures = (
+    pieceState, aliveMask, capturePlayer
+) => {
+    const profileRelations = searchContext.profile;
+    const relationStart = profileRelations ? performance.now() : 0;
+    const squareCodes = pieceState.squareCodes;
+    const squareToSlot = pieceState.squareToSlot;
+    const pieceCodes = pieceState.pieceCodes;
+    const pieceSquares = pieceState.pieceSquares;
+    const rowOccupancy = pieceState.rowOccupancy;
+    const colOccupancy = pieceState.colOccupancy;
+    const attackBySlot = scratchLeafAttackBySlot;
+    const guardBySlot = scratchLeafGuardBySlot;
+    const attackTarget = SEARCH_ATTACK_TARGET;
+    const generalDest = SEARCH_GENERAL_DEST;
+    const advisorDest = SEARCH_ADVISOR_DEST;
+    const soldierDest = SEARCH_SOLDIER_DEST;
+    const elephantDest = SEARCH_ELEPHANT_DEST;
+    const horseDest = SEARCH_HORSE_DEST;
+    const captureCounts = scratchPackedCaptureCounts;
+    const captureSources = scratchPackedCaptureSources;
+    const captureMoves = scratchPackedCaptureMoves;
+    attackBySlot.fill(0);
+    guardBySlot.fill(0);
+    clearAttackBits(scratchRedAttack);
+    clearAttackBits(scratchBlackAttack);
+    const captureIsRed = capturePlayer === 'red';
+    for (let i = 0; i < scratchPackedCaptureSourceCount; i++) {
+        captureCounts[captureSources[i]] = 0;
+    }
+    scratchPackedCaptureSourceCount = 0;
+
+    const redAttack = scratchRedAttack;
+    const blackAttack = scratchBlackAttack;
+    let redMobility = 0;
+    let blackMobility = 0;
+    let attackedTargetMask = 0;
+
+    const slotCount = pieceState.slotCount;
+    for (let slot = 0; slot < slotCount; slot++) {
+        const bit = 1 << slot;
+        if ((aliveMask & bit) === 0) continue;
+        const fromSq = pieceSquares[slot];
+        const pieceCode = pieceCodes[slot];
+        const pieceType = pieceCode & 7;
+        const isRed = pieceCode < 8;
+        const colorIdx = isRed ? 0 : 1;
+        const attackTargetBit = isRed ? 1 : 2;
+        const attackBits = isRed ? redAttack : blackAttack;
+        const recordCaptures = isRed === captureIsRed;
+        let mobilityValue = 0;
+
+        switch (pieceType) {
+            case 1: {
+                const dests = generalDest[colorIdx][fromSq];
+                for (let i = 0, n = dests.length; i < n; i++) {
+                    const sq = dests[i];
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        mobilityValue += 1;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (captureCounts[fromSq] === 0) {
+                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                    (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            case 5: {
+                const dests = advisorDest[colorIdx][fromSq];
+                for (let i = 0, n = dests.length; i < n; i++) {
+                    const sq = dests[i];
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        mobilityValue += 1;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (captureCounts[fromSq] === 0) {
+                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                    (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            case 7: {
+                const dests = soldierDest[colorIdx][fromSq];
+                for (let i = 0, n = dests.length; i < n; i++) {
+                    const sq = dests[i];
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        if (attackTarget[sq] & attackTargetBit) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        mobilityValue += 1;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (captureCounts[fromSq] === 0) {
+                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                    (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                break;
+            }
+            case 4: {
+                const dests = elephantDest[colorIdx][fromSq];
+                for (let i = 0, n = dests.length; i < n; i++) {
+                    const packed = dests[i];
+                    if (squareCodes[packed >>> 7] !== 0) continue;
+                    const sq = packed & 127;
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        mobilityValue += 1;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (captureCounts[fromSq] === 0) {
+                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                    (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            case 3: {
+                const dests = horseDest[fromSq];
+                for (let i = 0, n = dests.length; i < n; i++) {
+                    const packed = dests[i];
+                    if (squareCodes[packed >>> 7] !== 0) continue;
+                    const sq = packed & 127;
+                    const targetCode = squareCodes[sq];
+                    if (targetCode === 0) {
+                        if (attackTarget[sq] & attackTargetBit) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        mobilityValue += 1;
+                    } else {
+                        const targetSlot = squareToSlot[sq];
+                        if ((targetCode < 8) !== isRed) {
+                            attackedTargetMask |= 1 << targetSlot;
+                            attackBySlot[targetSlot] |= bit;
+                            if (recordCaptures) {
+                                if (captureCounts[fromSq] === 0) {
+                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
+                                }
+                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
+                                    (fromSq << 7) | sq;
+                            }
+                        } else if ((targetCode & 7) !== 1) {
+                            guardBySlot[targetSlot] |= bit;
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            case 2: {
+                const r = SEARCH_SQ_ROWS[fromSq];
+                const c = SEARCH_SQ_COLS[fromSq];
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_FIRST_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t1 = RANK_FIRST_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t2 = FILE_FIRST_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t3 = FILE_FIRST_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const rankControl = RANK_ROOK_CONTROL[rankKey];
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                }
+                const fileControl = FILE_ROOK_CONTROL[fileKey];
+                if (c >= 3 && c <= 5) {
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            case 6: {
+                const r = SEARCH_SQ_ROWS[fromSq];
+                const c = SEARCH_SQ_COLS[fromSq];
+                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
+                const t0 = RANK_SECOND_HIGH[rankKey];
+                if (t0 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t1 = RANK_SECOND_LOW[rankKey];
+                if (t1 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t2 = FILE_SECOND_HIGH[fileKey];
+                if (t2 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const t3 = FILE_SECOND_LOW[fileKey];
+                if (t3 !== 255) {
+                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
+                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
+                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
+                    );
+                }
+                const rankControl = RANK_CANNON_CONTROL[rankKey];
+                if ((isRed ? r >= 7 : r <= 2) && (rankControl & 0x38)) {
+                    if (rankControl & 8) {
+                        const sq = r * 9 + 3;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 16) {
+                        const sq = r * 9 + 4;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                    if (rankControl & 32) {
+                        const sq = r * 9 + 5;
+                        attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    }
+                }
+                const fileControl = FILE_CANNON_CONTROL[fileKey];
+                if (c >= 3 && c <= 5) {
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
+                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                        }
+                    }
+                }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
+                break;
+            }
+            default:
+                break;
+        }
+        // 兵仍扫空步做威胁/安全，不进机动分；机动已在 1–6 兵种分支内累加
+    }
+    scratchLeafTotals[2] = redMobility;
+    scratchLeafTotals[5] = blackMobility;
+    scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+    if (searchContext.collectMetrics) {
+        perfStats.leafRelationCalls++;
+        perfStats.leafRelationCaptureCalls++;
+        perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
+    }
+    if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
+
+    const packedCaptures = scratchPackedCaptures;
+    packedCaptures.length = 0;
+    const sourceCount = scratchPackedCaptureSourceCount;
+    // Match generateQuiescenceMoves: black scans from its own back rank toward red.
+    // QS behavior must not depend on whether static eval supplied the capture list.
+    const relativeBlackScan = !captureIsRed;
+    for (let i = 1; i < sourceCount; i++) {
+        const sq = captureSources[i];
+        const sqOrder = relativeBlackScan
+            ? (ROWS - 1 - SEARCH_SQ_ROWS[sq]) * COLS + SEARCH_SQ_COLS[sq]
+            : sq;
+        let j = i - 1;
+        while (j >= 0) {
+            const candidate = captureSources[j];
+            const candidateOrder = relativeBlackScan
+                ? (ROWS - 1 - SEARCH_SQ_ROWS[candidate]) * COLS + SEARCH_SQ_COLS[candidate]
+                : candidate;
+            if (candidateOrder <= sqOrder) break;
+            captureSources[j + 1] = captureSources[j];
+            j--;
+        }
+        captureSources[j + 1] = sq;
+    }
+    for (let sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++) {
+        const fromSq = captureSources[sourceIndex];
+        const count = captureCounts[fromSq];
+        const offset = fromSq * PACKED_CAPTURE_STRIDE;
+        for (let i = 0; i < count; i++) packedCaptures.push(captureMoves[offset + i]);
+    }
+    leafRelationScratchFresh = true;
+};
+
+const calculatePackedSearchLeafRelationsNumeric = (
+    pieceState, aliveMask, capturePlayer = null
+) => {
+    if (capturePlayer != null) {
+        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
+    } else {
+        calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
+    }
+};
 
 const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
     const attackMask = boardInfo.attackMask;
@@ -5785,7 +6218,7 @@ const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
 };
 
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluateLeafNumeric = (board, searchInitiator, gameStage) => {
+const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const stateCodes = pieceState.pieceCodes;
@@ -5793,7 +6226,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage) => {
     const squareCodes = pieceState.squareCodes;
     const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
 
-    calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
+    calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
 
     if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = CHECK_BONUS;
@@ -5895,6 +6328,72 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage) => {
     return searchInitiator === 'red' ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
+// 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
+const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capturePlayer = null) => {
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
+    const pieceState = activePieceStateFor(board);
+    const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
+    const combinedKey = cacheKey ^ verificationKey;
+    const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
+    if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
+        evalCacheKeys[cacheSlot] === combinedKey) {
+        if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
+        leafRelationScratchFresh = false;
+        return evalCacheValues[cacheSlot];
+    }
+    if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
+    const net = evaluateLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
+    if (capturePlayer != null) {
+        packedCaptureCacheKey = cacheKey;
+        packedCaptureCombinedKey = combinedKey;
+        packedCaptureGeneration = evalCacheGeneration;
+        packedCapturePlayer = capturePlayer;
+    }
+    evalCacheGenerations[cacheSlot] = evalCacheGeneration;
+    evalCacheKeys[cacheSlot] = combinedKey;
+    evalCacheValues[cacheSlot] = net;
+    return net;
+};
+
+// Generate captures for normal QS nodes, or every pseudo move when the side to
+// move is in check and must search all evasions.
+const quiescenceMoveBuffers = [];
+
+const copyPackedRelationCaptures = (
+    moves, currentPlayer, boardHash, searchInitiator, gameStage, board
+) => {
+    const pieceState = activePieceStateFor(board);
+    if (packedCaptureGeneration !== evalCacheGeneration) return false;
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
+    const verificationKey = pieceState.evalVerificationHash;
+    if (packedCaptureCombinedKey !== (cacheKey ^ verificationKey)) return false;
+    if (packedCapturePlayer !== currentPlayer) return false;
+    const captures = scratchPackedCaptures;
+    for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
+    return true;
+};
+
+const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
+    const __t0 = searchContext.profile ? performance.now() : 0;
+    if (searchContext.profile) perfStats.captureGenCount++;
+    const moves = destination || [];
+    moves.length = 0;
+    const pieceState = activePieceStateFor(board);
+    const pieceCodes = pieceState.pieceCodes;
+    const pieceSquares = pieceState.pieceSquares;
+    const isRed = currentPlayer === 'red';
+    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
+    for (let i = 0; i < n; i++) {
+        const slot = scratchOwnScanSlots[i];
+        const generated = appendSearchPseudoMovesForPiece(
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, capturesOnly
+        );
+        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+    }
+    if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
+    return moves;
+};
+
 // Fast 叶关系已写入 attackBySlot。有吃才走原几何，落点顺序与 generateQuiescenceMoves 一致。
 const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const attacked = scratchLeafAttackedTargetMask >>> 0;
@@ -5921,52 +6420,6 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         );
     }
     return moves.length - start;
-};
-
-// 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0) => {
-    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
-    const pieceState = activePieceStateFor(board);
-    const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
-    const combinedKey = cacheKey ^ verificationKey;
-    const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
-    if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
-        evalCacheKeys[cacheSlot] === combinedKey) {
-        if (searchContext.collectMetrics) perfStats.staticEvalCacheHits++;
-        leafRelationScratchFresh = false;
-        return evalCacheValues[cacheSlot];
-    }
-    if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
-    const net = evaluateLeafNumeric(board, searchInitiator, gameStage);
-    evalCacheGenerations[cacheSlot] = evalCacheGeneration;
-    evalCacheKeys[cacheSlot] = combinedKey;
-    evalCacheValues[cacheSlot] = net;
-    return net;
-};
-
-// Generate captures for normal QS nodes, or every pseudo move when the side to
-// move is in check and must search all evasions.
-const quiescenceMoveBuffers = [];
-
-const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
-    const __t0 = searchContext.profile ? performance.now() : 0;
-    if (searchContext.profile) perfStats.captureGenCount++;
-    const moves = destination || [];
-    moves.length = 0;
-    const pieceState = activePieceStateFor(board);
-    const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
-    const isRed = currentPlayer === 'red';
-    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
-    for (let i = 0; i < n; i++) {
-        const slot = scratchOwnScanSlots[i];
-        const generated = appendSearchPseudoMovesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState, capturesOnly
-        );
-        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
-    }
-    if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
-    return moves;
 };
 
 // generateCapturesForSearch removed (unused alias)
@@ -6023,7 +6476,10 @@ const quiescence = (
     if (inCheck) collectCheckersFromState(qsState, currentPlayer, checkInfo);
     let standPat;
     if (!inCheck) {
-        standPat = staticSearchEval(b, searchInitiator, gameStage, boardHash);
+        standPat = staticSearchEval(
+            b, searchInitiator, gameStage, boardHash,
+            null
+        );
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
             if (standPat >= beta) return standPat;
@@ -6047,7 +6503,9 @@ const quiescence = (
     } else if (leafRelationScratchFresh) {
         const generated = emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
         if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
-    } else {
+    } else if (!copyPackedRelationCaptures(
+        moves, currentPlayer, boardHash, searchInitiator, gameStage, b
+    )) {
         generateQuiescenceMoves(b, currentPlayer, true, moves);
     }
     if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
@@ -6491,7 +6949,7 @@ const fillRootSortHints = (pieceState, turn) => {
         return scratchRootSortInfo;
     }
     const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
-    calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
+    calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, null);
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const pieceCodes = pieceState.pieceCodes;
