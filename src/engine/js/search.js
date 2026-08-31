@@ -7175,7 +7175,19 @@ const getBestMove = (
         !excludedRootMoveSet.has(encodedBook)) {
       const validDestinations = getValidMovesFromSq(searchBoard, fromSq);
       if (validDestinations.some((dest) => dest === toSq)) {
-        return { bestMove: encodedBook, secondBestMove: null, moveSequence: [], secondMoveSequence: [], bestMoveScore: 0, secondBestMoveScore: 0, allMovesWithScores: [] };
+        resetPerfStats();
+        return {
+          bestMove: encodedBook,
+          secondBestMove: null,
+          moveSequence: [],
+          secondMoveSequence: [],
+          bestMoveScore: 0,
+          secondBestMoveScore: 0,
+          allMovesWithScores: [],
+          completedDepth: 0,
+          fromBook: true,
+          thinkingTime: 0
+        };
       }
     }
   }
@@ -7487,7 +7499,9 @@ const getBestMove = (
     bestMoveScore,
     secondBestMoveScore,
     allMovesWithScores,
-    completedDepth
+    completedDepth,
+    fromBook: false,
+    thinkingTime: Date.now() - startTime
   };
   return result;
   } finally {

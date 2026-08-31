@@ -53,15 +53,26 @@ import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 const ROWS = 10;
 const COLS = 9;
 
+type DepthTime = { depth: number; ms: number };
+
 type SearchBench = {
     thinkingTime: number;
     completedDepth?: number;
     targetDepth?: number;
     rootMoves?: number;
     bestPreview?: string;
+    depthTimes?: DepthTime[];
 };
 
 const formatBenchTime = (value?: number) => ((value ?? 0) / 1000).toFixed(2);
+
+const appendDepthTime = (times: DepthTime[] | undefined, depth: number, ms: number): DepthTime[] => {
+    const list = times ? times.slice() : [];
+    const i = list.findIndex((t) => t.depth === depth);
+    if (i >= 0) list[i] = { depth, ms };
+    else list.push({ depth, ms });
+    return list;
+};
 
 let workerRequestSequence = 0;
 
@@ -587,6 +598,7 @@ const App: React.FC = () => {
         lastProgressAt: number | null;
         lastEvent: string;
         postedAt: number | null;
+        depthTimes: DepthTime[];
     }>({
         active: false,
         gameId: null,
@@ -601,7 +613,8 @@ const App: React.FC = () => {
         startedAt: null,
         lastProgressAt: null,
         lastEvent: '',
-        postedAt: null
+        postedAt: null,
+        depthTimes: []
     });
     const aiSearchDebugRef = useRef(aiSearchDebug);
     aiSearchDebugRef.current = aiSearchDebug;
@@ -1491,7 +1504,8 @@ const App: React.FC = () => {
             startedAt: null,
             lastProgressAt: postedAt,
             lastEvent: 'SEARCH posted',
-            postedAt
+            postedAt,
+            depthTimes: []
         });
         console.info('[AI] SEARCH posted', {
             gameId: capturedGameId,
@@ -1611,7 +1625,10 @@ const App: React.FC = () => {
                     lastProgressAt: now,
                     lastEvent: type === 'SEARCH_STARTED'
                         ? `STARTED d=${payload.depth}`
-                        : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`
+                        : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`,
+                    depthTimes: payload.phase === 'depth' && (payload.completedDepth | 0) > 0
+                        ? appendDepthTime(prev.depthTimes, payload.completedDepth | 0, payload.elapsedMs ?? 0)
+                        : prev.depthTimes
                 }));
                 // 仅关键节点打日志，避免每层 depth 刷屏拖慢 DevTools
                 if (type === 'SEARCH_STARTED' || payload.phase === 'root-eval' || payload.phase === 'start') {
@@ -1651,7 +1668,8 @@ const App: React.FC = () => {
                             completedDepth,
                             targetDepth: prevDbg.targetDepth || searchDepth,
                             rootMoves: prevDbg.rootMoves,
-                            bestPreview
+                            bestPreview,
+                            depthTimes: prevDbg.depthTimes
                         });
                     }
                     // 设置隐藏最优着法和次优着法
@@ -1782,14 +1800,9 @@ const App: React.FC = () => {
         return cleanup;
     };
 
-    // AI 搜索调试：刷新耗时显示 + 无进度看门狗
-    const [aiDebugTick, setAiDebugTick] = useState(0);
-    const aiSearchElapsedSeconds = aiSearchDebug.postedAt
-        ? ((Date.now() - aiSearchDebug.postedAt + aiDebugTick * 0) / 1000).toFixed(2)
-        : '0.00';
+    // AI 搜索调试：无进度看门狗（不再每秒刷 UI）
     useEffect(() => {
         if (!isThinking) return;
-        const tickId = window.setInterval(() => setAiDebugTick(v => v + 1), 1000);
         const watchId = window.setInterval(() => {
             const dbg = aiSearchDebugRef.current;
             if (!dbg.active || !dbg.postedAt) return;
@@ -1824,7 +1837,6 @@ const App: React.FC = () => {
             now: Date.now()
         });
         return () => {
-            window.clearInterval(tickId);
             window.clearInterval(watchId);
         };
     }, [isThinking, turn, playDepth, enableTimeLimit]);
@@ -4730,7 +4742,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             startedAt: null,
                                             lastProgressAt: postedAt,
                                             lastEvent: 'SEARCH posted',
-                                            postedAt
+                                            postedAt,
+                                            depthTimes: []
                                         });
                                         if (workerRef.current) {
                                             const handleAnalysisMessage = (e: MessageEvent) => {
@@ -4754,7 +4767,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         lastProgressAt: now,
                                                         lastEvent: type === 'SEARCH_STARTED'
                                                             ? `STARTED d=${payload.depth}`
-                                                            : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`
+                                                            : `${payload.phase} d=${payload.completedDepth}/${payload.maxDepth ?? '?'}`,
+                                                        depthTimes: payload.phase === 'depth' && (payload.completedDepth | 0) > 0
+                                                            ? appendDepthTime(prev.depthTimes, payload.completedDepth | 0, payload.elapsedMs ?? 0)
+                                                            : prev.depthTimes
                                                     }));
                                                     return;
                                                 }
@@ -4778,7 +4794,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         completedDepth,
                                                         targetDepth: prevDbg.targetDepth || analysisDepth,
                                                         rootMoves: prevDbg.rootMoves,
-                                                        bestPreview
+                                                        bestPreview,
+                                                        depthTimes: prevDbg.depthTimes
                                                     });
                                                     const formattedAnalysisMoves = decodeAnalysisMoves(payload.allMovesWithScores);
                                                     setAnalysisMoves(formattedAnalysisMoves);
@@ -4985,18 +5002,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     <div className={`col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
                                         <div className="mb-1 text-stone-400">{isThinking ? 'Thinking' : 'Done'}</div>
                                         <div className="space-y-1">
-                                            <div>
-                                                Depth: {isThinking
-                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || (isAnalysisMode ? analysisDepth : playDepth)}`
-                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? (isAnalysisMode ? analysisDepth : playDepth)}`}
-                                            </div>
-                                            <div>
-                                                Time: {isThinking
-                                                    ? (aiSearchDebug.postedAt
-                                                        ? `${aiSearchElapsedSeconds}`
-                                                        : '0.00')
-                                                    : formatBenchTime(lastSearchBench?.thinkingTime)}
-                                            </div>
                                             {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (
                                                 <div>Root: {isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves}</div>
                                             ) : null}
@@ -5004,6 +5009,17 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 <div className="truncate">
                                                     PV: {isThinking ? aiSearchDebug.bestPreview : lastSearchBench?.bestPreview}
                                                 </div>
+                                            ) : null}
+                                            <div>
+                                                Depth: {isThinking
+                                                    ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || (isAnalysisMode ? analysisDepth : playDepth)}`
+                                                    : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? (isAnalysisMode ? analysisDepth : playDepth)}`}
+                                            </div>
+                                            {(isThinking ? aiSearchDebug.depthTimes : lastSearchBench?.depthTimes)?.map((t) => (
+                                                <div key={t.depth}>d{t.depth} {formatBenchTime(t.ms)}</div>
+                                            ))}
+                                            {!isThinking && lastSearchBench && !lastSearchBench.depthTimes?.length ? (
+                                                <div>Time: {formatBenchTime(lastSearchBench.thinkingTime)}</div>
                                             ) : null}
                                         </div>
                                     </div>

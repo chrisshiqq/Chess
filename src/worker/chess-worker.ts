@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { decodeBoard, decodeMove, decodeSquares, formatMove } from '../engine/codec.ts';
+import { decodeBoard, decodeSquares, formatMove } from '../engine/codec.ts';
 import type { EncodedMove, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
@@ -129,7 +129,6 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
           });
         };
 
-        const started = performance.now();
         let result;
         try {
           result = getBestMove(
@@ -144,16 +143,10 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         } finally {
           searchContext.reportSearchProgress = null;
         }
-        const thinkingTime = Math.round(performance.now() - started);
-        const bookMove = openingBook.getBookMove(board, payload.ply ?? 0);
-        const decodedBest = decodeMove(result.bestMove);
-        const fromBook = !!bookMove && !!decodedBest &&
-          bookMove.from.r === decodedBest.from.r &&
-          bookMove.from.c === decodedBest.from.c &&
-          bookMove.to.r === decodedBest.to.r &&
-          bookMove.to.c === decodedBest.to.c;
+        const fromBook = !!result.fromBook;
+        const thinkingTime = fromBook ? 0 : (result.thinkingTime ?? 0);
 
-        logPerfStats(payload.turn);
+        if (!fromBook) logPerfStats(payload.turn);
         console.log(
           `Search complete: game=${payload.gameId}, time=${thinkingTime}ms, ` +
           `best=${formatMove(result.bestMove)} score=${result.bestMoveScore}, ` +
