@@ -941,13 +941,13 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     const toOnFile = toC === gc;
 
     if (fromOnRank || toOnRank) {
-        const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
+        const rankBlockers = RANK_BLOCKERS[gc * RANK_OCC_COUNT + state.rowOccupancy[gr]];
         if ((fromOnRank && fromC > gc) || (toOnRank && toC > gc)) {
-            const first = RANK_FIRST_HIGH[rankKey];
+            const first = (rankBlockers >>> 8) & 255;
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
                 if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-                const second = RANK_SECOND_HIGH[rankKey];
+                const second = (rankBlockers >>> 24) & 255;
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -955,11 +955,11 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             }
         }
         if ((fromOnRank && fromC < gc) || (toOnRank && toC < gc)) {
-            const first = RANK_FIRST_LOW[rankKey];
+            const first = rankBlockers & 255;
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
                 if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-                const second = RANK_SECOND_LOW[rankKey];
+                const second = (rankBlockers >>> 16) & 255;
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -968,13 +968,13 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
         }
     }
     if (fromOnFile || toOnFile) {
-        const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
+        const fileBlockers = FILE_BLOCKERS[gr * FILE_OCC_COUNT + state.colOccupancy[gc]];
         if ((fromOnFile && fromR > gr) || (toOnFile && toR > gr)) {
-            const first = FILE_FIRST_HIGH[fileKey];
+            const first = (fileBlockers >>> 8) & 255;
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
                 if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-                const second = FILE_SECOND_HIGH[fileKey];
+                const second = (fileBlockers >>> 24) & 255;
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -982,11 +982,11 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
             }
         }
         if ((fromOnFile && fromR < gr) || (toOnFile && toR < gr)) {
-            const first = FILE_FIRST_LOW[fileKey];
+            const first = fileBlockers & 255;
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
                 if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-                const second = FILE_SECOND_LOW[fileKey];
+                const second = (fileBlockers >>> 16) & 255;
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
                     if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
@@ -1806,43 +1806,41 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
     SEARCH_RAY_SQUARES = new Uint8Array(searchRaySquares);
 })();
 
-// Ranks use 9-bit occupancy and files use 10-bit occupancy. Each lookup returns
-// the first/second blocker in both directions, empty mobility before the first
-// blocker, and empty control squares before/between blockers for rook/cannon.
+// Ranks use 9-bit occupancy and files use 10-bit occupancy. Packed SoA keeps
+// table[key] (no stride shift): blockers = firstLow | firstHigh<<8 |
+// secondLow<<16 | secondHigh<<24; meta = mobility | rook<<5 | cannon<<16.
 const createOrthogonalLineLookup = (length) => {
     const occupancyCount = 1 << length;
     const entryCount = length * occupancyCount;
-    const firstLow = new Uint8Array(entryCount);
-    const firstHigh = new Uint8Array(entryCount);
-    const secondLow = new Uint8Array(entryCount);
-    const secondHigh = new Uint8Array(entryCount);
-    const mobility = new Uint8Array(entryCount);
-    const rookControl = new Uint16Array(entryCount);
-    const cannonControl = new Uint16Array(entryCount);
-    firstLow.fill(255);
-    firstHigh.fill(255);
-    secondLow.fill(255);
-    secondHigh.fill(255);
+    const blockers = new Uint32Array(entryCount);
+    const meta = new Uint32Array(entryCount);
 
     for (let from = 0; from < length; from++) {
         const base = from * occupancyCount;
         for (let occupancy = 0; occupancy < occupancyCount; occupancy++) {
             const key = base + occupancy;
+            let firstLow = 255;
+            let firstHigh = 255;
+            let secondLow = 255;
+            let secondHigh = 255;
+            let mobility = 0;
+            let rookControl = 0;
+            let cannonControl = 0;
             let first = -1;
             for (let pos = from - 1; pos >= 0; pos--) {
                 if (occupancy & (1 << pos)) {
                     if (first < 0) {
                         first = pos;
-                        firstLow[key] = pos;
+                        firstLow = pos;
                     } else {
-                        secondLow[key] = pos;
+                        secondLow = pos;
                         break;
                     }
                 } else if (first < 0) {
-                    mobility[key]++;
-                    rookControl[key] |= 1 << pos;
+                    mobility++;
+                    rookControl |= 1 << pos;
                 } else {
-                    cannonControl[key] |= 1 << pos;
+                    cannonControl |= 1 << pos;
                 }
             }
 
@@ -1851,51 +1849,35 @@ const createOrthogonalLineLookup = (length) => {
                 if (occupancy & (1 << pos)) {
                     if (first < 0) {
                         first = pos;
-                        firstHigh[key] = pos;
+                        firstHigh = pos;
                     } else {
-                        secondHigh[key] = pos;
+                        secondHigh = pos;
                         break;
                     }
                 } else if (first < 0) {
-                    mobility[key]++;
-                    rookControl[key] |= 1 << pos;
+                    mobility++;
+                    rookControl |= 1 << pos;
                 } else {
-                    cannonControl[key] |= 1 << pos;
+                    cannonControl |= 1 << pos;
                 }
             }
+
+            blockers[key] = (firstLow | (firstHigh << 8) | (secondLow << 16) | (secondHigh << 24)) >>> 0;
+            meta[key] = mobility | (rookControl << 5) | (cannonControl << 16);
         }
     }
 
-    return {
-        occupancyCount,
-        firstLow,
-        firstHigh,
-        secondLow,
-        secondHigh,
-        mobility,
-        rookControl,
-        cannonControl
-    };
+    return { occupancyCount, blockers, meta };
 };
 
 const SEARCH_RANK_LOOKUP = createOrthogonalLineLookup(COLS);
 const SEARCH_FILE_LOOKUP = createOrthogonalLineLookup(ROWS);
 const RANK_OCC_COUNT = SEARCH_RANK_LOOKUP.occupancyCount;
 const FILE_OCC_COUNT = SEARCH_FILE_LOOKUP.occupancyCount;
-const RANK_MOBILITY = SEARCH_RANK_LOOKUP.mobility;
-const RANK_FIRST_HIGH = SEARCH_RANK_LOOKUP.firstHigh;
-const RANK_FIRST_LOW = SEARCH_RANK_LOOKUP.firstLow;
-const RANK_SECOND_HIGH = SEARCH_RANK_LOOKUP.secondHigh;
-const RANK_SECOND_LOW = SEARCH_RANK_LOOKUP.secondLow;
-const RANK_ROOK_CONTROL = SEARCH_RANK_LOOKUP.rookControl;
-const RANK_CANNON_CONTROL = SEARCH_RANK_LOOKUP.cannonControl;
-const FILE_MOBILITY = SEARCH_FILE_LOOKUP.mobility;
-const FILE_FIRST_HIGH = SEARCH_FILE_LOOKUP.firstHigh;
-const FILE_FIRST_LOW = SEARCH_FILE_LOOKUP.firstLow;
-const FILE_SECOND_HIGH = SEARCH_FILE_LOOKUP.secondHigh;
-const FILE_SECOND_LOW = SEARCH_FILE_LOOKUP.secondLow;
-const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
-const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
+const RANK_BLOCKERS = SEARCH_RANK_LOOKUP.blockers;
+const RANK_META = SEARCH_RANK_LOOKUP.meta;
+const FILE_BLOCKERS = SEARCH_FILE_LOOKUP.blockers;
+const FILE_META = SEARCH_FILE_LOOKUP.meta;
 
 let leafWMaterial = VALUE_WEIGHTS.material;
 let leafWPosition = VALUE_WEIGHTS.position;
@@ -2036,11 +2018,11 @@ const appendOccupancyRookMoves = (
     const squareCodes = pieceState.squareCodes;
     const r = SEARCH_SQ_ROWS[fromSq];
     const c = SEARCH_SQ_COLS[fromSq];
-    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
-    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
+    const rankBlockers = RANK_BLOCKERS[c * RANK_OCC_COUNT + pieceState.rowOccupancy[r]];
+    const fileBlockers = FILE_BLOCKERS[r * FILE_OCC_COUNT + pieceState.colOccupancy[c]];
     let generated = 0;
 
-    const t0 = RANK_FIRST_HIGH[rankKey];
+    const t0 = (rankBlockers >>> 8) & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
@@ -2052,7 +2034,7 @@ const appendOccupancyRookMoves = (
         );
     }
 
-    const t1 = RANK_FIRST_LOW[rankKey];
+    const t1 = rankBlockers & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
@@ -2064,7 +2046,7 @@ const appendOccupancyRookMoves = (
         );
     }
 
-    const t2 = FILE_FIRST_HIGH[fileKey];
+    const t2 = (fileBlockers >>> 8) & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
@@ -2076,7 +2058,7 @@ const appendOccupancyRookMoves = (
         );
     }
 
-    const t3 = FILE_FIRST_LOW[fileKey];
+    const t3 = fileBlockers & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
@@ -2097,56 +2079,56 @@ const appendOccupancyCannonMoves = (
     const squareCodes = pieceState.squareCodes;
     const r = SEARCH_SQ_ROWS[fromSq];
     const c = SEARCH_SQ_COLS[fromSq];
-    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
-    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
+    const rankBlockers = RANK_BLOCKERS[c * RANK_OCC_COUNT + pieceState.rowOccupancy[r]];
+    const fileBlockers = FILE_BLOCKERS[r * FILE_OCC_COUNT + pieceState.colOccupancy[c]];
     let generated = 0;
 
-    const t0 = RANK_FIRST_HIGH[rankKey];
+    const t0 = (rankBlockers >>> 8) & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
         );
     }
-    const s0 = RANK_SECOND_HIGH[rankKey];
+    const s0 = (rankBlockers >>> 24) & 255;
     if (s0 !== 255) {
         generated += appendSliderCapture(
             moves, fromSq, r * 9 + s0, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
-    const t1 = RANK_FIRST_LOW[rankKey];
+    const t1 = rankBlockers & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
         );
     }
-    const s1 = RANK_SECOND_LOW[rankKey];
+    const s1 = (rankBlockers >>> 16) & 255;
     if (s1 !== 255) {
         generated += appendSliderCapture(
             moves, fromSq, r * 9 + s1, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
-    const t2 = FILE_FIRST_HIGH[fileKey];
+    const t2 = (fileBlockers >>> 8) & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
         );
     }
-    const s2 = FILE_SECOND_HIGH[fileKey];
+    const s2 = (fileBlockers >>> 24) & 255;
     if (s2 !== 255) {
         generated += appendSliderCapture(
             moves, fromSq, s2 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
-    const t3 = FILE_FIRST_LOW[fileKey];
+    const t3 = fileBlockers & 255;
     if (!capturesOnly) {
         generated += appendLineEmpties(
             moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
         );
     }
-    const s3 = FILE_SECOND_LOW[fileKey];
+    const s3 = (fileBlockers >>> 16) & 255;
     if (s3 !== 255) {
         generated += appendSliderCapture(
             moves, fromSq, s3 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
@@ -2162,25 +2144,25 @@ const isOccupancyRookLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupan
     const toR = SEARCH_SQ_ROWS[toSq];
     const toC = SEARCH_SQ_COLS[toSq];
     if (toR === r) {
-        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+        const rankBlockers = RANK_BLOCKERS[c * RANK_OCC_COUNT + rowOccupancy[r]];
         if (toC > c) {
-            const first = RANK_FIRST_HIGH[rankKey];
+            const first = (rankBlockers >>> 8) & 255;
             return targetCode === 0 ? (first === 255 || first > toC) : first === toC;
         }
         if (toC < c) {
-            const first = RANK_FIRST_LOW[rankKey];
+            const first = rankBlockers & 255;
             return targetCode === 0 ? (first === 255 || first < toC) : first === toC;
         }
         return false;
     }
     if (toC === c) {
-        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+        const fileBlockers = FILE_BLOCKERS[r * FILE_OCC_COUNT + colOccupancy[c]];
         if (toR > r) {
-            const first = FILE_FIRST_HIGH[fileKey];
+            const first = (fileBlockers >>> 8) & 255;
             return targetCode === 0 ? (first === 255 || first > toR) : first === toR;
         }
         if (toR < r) {
-            const first = FILE_FIRST_LOW[fileKey];
+            const first = fileBlockers & 255;
             return targetCode === 0 ? (first === 255 || first < toR) : first === toR;
         }
     }
@@ -2193,38 +2175,38 @@ const isOccupancyCannonLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccup
     const toR = SEARCH_SQ_ROWS[toSq];
     const toC = SEARCH_SQ_COLS[toSq];
     if (toR === r) {
-        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+        const rankBlockers = RANK_BLOCKERS[c * RANK_OCC_COUNT + rowOccupancy[r]];
         if (toC > c) {
             if (targetCode === 0) {
-                const first = RANK_FIRST_HIGH[rankKey];
+                const first = (rankBlockers >>> 8) & 255;
                 return first === 255 || first > toC;
             }
-            return RANK_SECOND_HIGH[rankKey] === toC;
+            return ((rankBlockers >>> 24) & 255) === toC;
         }
         if (toC < c) {
             if (targetCode === 0) {
-                const first = RANK_FIRST_LOW[rankKey];
+                const first = rankBlockers & 255;
                 return first === 255 || first < toC;
             }
-            return RANK_SECOND_LOW[rankKey] === toC;
+            return ((rankBlockers >>> 16) & 255) === toC;
         }
         return false;
     }
     if (toC === c) {
-        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+        const fileBlockers = FILE_BLOCKERS[r * FILE_OCC_COUNT + colOccupancy[c]];
         if (toR > r) {
             if (targetCode === 0) {
-                const first = FILE_FIRST_HIGH[fileKey];
+                const first = (fileBlockers >>> 8) & 255;
                 return first === 255 || first > toR;
             }
-            return FILE_SECOND_HIGH[fileKey] === toR;
+            return ((fileBlockers >>> 24) & 255) === toR;
         }
         if (toR < r) {
             if (targetCode === 0) {
-                const first = FILE_FIRST_LOW[fileKey];
+                const first = fileBlockers & 255;
                 return first === 255 || first < toR;
             }
-            return FILE_SECOND_LOW[fileKey] === toR;
+            return ((fileBlockers >>> 16) & 255) === toR;
         }
     }
     return false;
@@ -2969,33 +2951,37 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_FIRST_HIGH[rankKey];
+                const rankBlockers = RANK_BLOCKERS[rankKey];
+                const fileBlockers = FILE_BLOCKERS[fileKey];
+                const rankMeta = RANK_META[rankKey];
+                const fileMeta = FILE_META[fileKey];
+                mobilityValue = (rankMeta & 31) + (fileMeta & 31);
+                const t0 = (rankBlockers >>> 8) & 255;
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t1 = RANK_FIRST_LOW[rankKey];
+                const t1 = rankBlockers & 255;
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t2 = FILE_FIRST_HIGH[fileKey];
+                const t2 = (fileBlockers >>> 8) & 255;
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t3 = FILE_FIRST_LOW[fileKey];
+                const t3 = fileBlockers & 255;
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_ROOK_CONTROL[rankKey];
+                    const rankControl = (rankMeta >>> 5) & 1023;
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
@@ -3012,7 +2998,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_ROOK_CONTROL[fileKey];
+                    const fileControl = (fileMeta >>> 5) & 1023;
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -3039,33 +3025,37 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_SECOND_HIGH[rankKey];
+                const rankBlockers = RANK_BLOCKERS[rankKey];
+                const fileBlockers = FILE_BLOCKERS[fileKey];
+                const rankMeta = RANK_META[rankKey];
+                const fileMeta = FILE_META[fileKey];
+                mobilityValue = (rankMeta & 31) + (fileMeta & 31);
+                const t0 = (rankBlockers >>> 24) & 255;
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t1 = RANK_SECOND_LOW[rankKey];
+                const t1 = (rankBlockers >>> 16) & 255;
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t2 = FILE_SECOND_HIGH[fileKey];
+                const t2 = (fileBlockers >>> 24) & 255;
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                const t3 = FILE_SECOND_LOW[fileKey];
+                const t3 = (fileBlockers >>> 16) & 255;
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_CANNON_CONTROL[rankKey];
+                    const rankControl = (rankMeta >>> 16) & 1023;
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
@@ -3082,7 +3072,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_CANNON_CONTROL[fileKey];
+                    const fileControl = (fileMeta >>> 16) & 1023;
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -3329,29 +3319,33 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_FIRST_HIGH[rankKey];
+                const rankBlockers = RANK_BLOCKERS[rankKey];
+                const fileBlockers = FILE_BLOCKERS[fileKey];
+                const rankMeta = RANK_META[rankKey];
+                const fileMeta = FILE_META[fileKey];
+                mobilityValue = (rankMeta & 31) + (fileMeta & 31);
+                const t0 = (rankBlockers >>> 8) & 255;
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t1 = RANK_FIRST_LOW[rankKey];
+                const t1 = rankBlockers & 255;
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t2 = FILE_FIRST_HIGH[fileKey];
+                const t2 = (fileBlockers >>> 8) & 255;
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t3 = FILE_FIRST_LOW[fileKey];
+                const t3 = fileBlockers & 255;
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
@@ -3359,7 +3353,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_ROOK_CONTROL[rankKey];
+                    const rankControl = (rankMeta >>> 5) & 1023;
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
@@ -3376,7 +3370,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_ROOK_CONTROL[fileKey];
+                    const fileControl = (fileMeta >>> 5) & 1023;
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -3403,29 +3397,33 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 const c = SEARCH_SQ_COLS[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_SECOND_HIGH[rankKey];
+                const rankBlockers = RANK_BLOCKERS[rankKey];
+                const fileBlockers = FILE_BLOCKERS[fileKey];
+                const rankMeta = RANK_META[rankKey];
+                const fileMeta = FILE_META[fileKey];
+                mobilityValue = (rankMeta & 31) + (fileMeta & 31);
+                const t0 = (rankBlockers >>> 24) & 255;
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t1 = RANK_SECOND_LOW[rankKey];
+                const t1 = (rankBlockers >>> 16) & 255;
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t2 = FILE_SECOND_HIGH[fileKey];
+                const t2 = (fileBlockers >>> 24) & 255;
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
                         recordCaptures, fromSq, captureCounts, captureSources, captureMoves
                     );
                 }
-                const t3 = FILE_SECOND_LOW[fileKey];
+                const t3 = (fileBlockers >>> 16) & 255;
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHitWithCapture(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
@@ -3433,7 +3431,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_CANNON_CONTROL[rankKey];
+                    const rankControl = (rankMeta >>> 16) & 1023;
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
@@ -3450,7 +3448,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                     }
                 }
                 if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_CANNON_CONTROL[fileKey];
+                    const fileControl = (fileMeta >>> 16) & 1023;
                     const fileMask = isRed ? 0x380 : 0x7;
                     if (fileControl & fileMask) {
                         const firstRow = isRed ? 7 : 0;
@@ -5438,10 +5436,10 @@ const collectCheckersFromState = (state, color, out) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
-    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
-    let first = RANK_FIRST_LOW[rankKey];
-    let second = RANK_SECOND_LOW[rankKey];
+    const rankBlockers = RANK_BLOCKERS[gc * RANK_OCC_COUNT + state.rowOccupancy[gr]];
+    const fileBlockers = FILE_BLOCKERS[gr * FILE_OCC_COUNT + state.colOccupancy[gc]];
+    let first = rankBlockers & 255;
+    let second = (rankBlockers >>> 16) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
@@ -5454,8 +5452,8 @@ const collectCheckersFromState = (state, color, out) => {
             }
         }
     }
-    first = RANK_FIRST_HIGH[rankKey];
-    second = RANK_SECOND_HIGH[rankKey];
+    first = (rankBlockers >>> 8) & 255;
+    second = (rankBlockers >>> 24) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
@@ -5468,8 +5466,8 @@ const collectCheckersFromState = (state, color, out) => {
             }
         }
     }
-    first = FILE_FIRST_LOW[fileKey];
-    second = FILE_SECOND_LOW[fileKey];
+    first = fileBlockers & 255;
+    second = (fileBlockers >>> 16) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
@@ -5482,8 +5480,8 @@ const collectCheckersFromState = (state, color, out) => {
             }
         }
     }
-    first = FILE_FIRST_HIGH[fileKey];
-    second = FILE_SECOND_HIGH[fileKey];
+    first = (fileBlockers >>> 8) & 255;
+    second = (fileBlockers >>> 24) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) {
@@ -5550,43 +5548,43 @@ const isCheckFromState = (state, color) => {
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
 
-    const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
-    const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[gc];
-    let first = RANK_FIRST_LOW[rankKey];
+    const rankBlockers = RANK_BLOCKERS[gc * RANK_OCC_COUNT + state.rowOccupancy[gr]];
+    const fileBlockers = FILE_BLOCKERS[gr * FILE_OCC_COUNT + state.colOccupancy[gc]];
+    let first = rankBlockers & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-        const second = RANK_SECOND_LOW[rankKey];
+        const second = (rankBlockers >>> 16) & 255;
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = RANK_FIRST_HIGH[rankKey];
+    first = (rankBlockers >>> 8) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[gr * COLS + first];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-        const second = RANK_SECOND_HIGH[rankKey];
+        const second = (rankBlockers >>> 24) & 255;
         if (second !== 255) {
             pieceCode = squareCodes[gr * COLS + second];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = FILE_FIRST_LOW[fileKey];
+    first = fileBlockers & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-        const second = FILE_SECOND_LOW[fileKey];
+        const second = (fileBlockers >>> 16) & 255;
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
         }
     }
-    first = FILE_FIRST_HIGH[fileKey];
+    first = (fileBlockers >>> 8) & 255;
     if (first !== 255) {
         let pieceCode = squareCodes[first * COLS + gc];
         if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
-        const second = FILE_SECOND_HIGH[fileKey];
+        const second = (fileBlockers >>> 24) & 255;
         if (second !== 255) {
             pieceCode = squareCodes[second * COLS + gc];
             if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
