@@ -997,9 +997,9 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
 
     // 马腿是对角邻格；走子后 from 已空，腾腿即可能被马将。
     if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
-        const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-        for (let i = 0; i < horseCheckers.length; i++) {
-            const entry = horseCheckers[i];
+        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+            const entry = horseCheckerData[i];
             if (fromSq !== (entry >>> 7)) continue;
             const pieceCode = squareCodes[entry & 127];
             if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
@@ -1674,18 +1674,72 @@ const SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
     }
 })();
 
-const SEARCH_GENERAL_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
-const SEARCH_ADVISOR_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
-const SEARCH_ELEPHANT_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
-const SEARCH_HORSE_DEST = new Array(REL_SQUARES);
-const SEARCH_SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
+// 短步/挡腿目的地压成 data+offset，避免每格一个小 TypedArray。
+const DEST_OFF_STRIDE = REL_SQUARES + 1;
+const packColorShortDests = (src) => {
+    const offsets = new Uint16Array(2 * DEST_OFF_STRIDE);
+    const bytes = [];
+    for (let color = 0; color < 2; color++) {
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            offsets[color * DEST_OFF_STRIDE + sq] = bytes.length;
+            const dests = src[color][sq];
+            for (let i = 0; i < dests.length; i++) bytes.push(dests[i].r * 9 + dests[i].c);
+        }
+        offsets[color * DEST_OFF_STRIDE + REL_SQUARES] = bytes.length;
+    }
+    return { offsets, data: new Uint8Array(bytes) };
+};
+const packColorBlockedDests = (src) => {
+    const offsets = new Uint16Array(2 * DEST_OFF_STRIDE);
+    const words = [];
+    for (let color = 0; color < 2; color++) {
+        for (let sq = 0; sq < REL_SQUARES; sq++) {
+            offsets[color * DEST_OFF_STRIDE + sq] = words.length;
+            const dests = src[color][sq];
+            for (let i = 0; i < dests.length; i++) {
+                words.push((dests[i].br * 9 + dests[i].bc) * 128 + dests[i].r * 9 + dests[i].c);
+            }
+        }
+        offsets[color * DEST_OFF_STRIDE + REL_SQUARES] = words.length;
+    }
+    return { offsets, data: new Uint16Array(words) };
+};
+const packSquareBlockedDests = (src) => {
+    const offsets = new Uint16Array(DEST_OFF_STRIDE);
+    const words = [];
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        offsets[sq] = words.length;
+        const dests = src[sq];
+        for (let i = 0; i < dests.length; i++) {
+            words.push((dests[i].br * 9 + dests[i].bc) * 128 + dests[i].r * 9 + dests[i].c);
+        }
+    }
+    offsets[REL_SQUARES] = words.length;
+    return { offsets, data: new Uint16Array(words) };
+};
+const packedGeneralDest = packColorShortDests(GENERAL_DEST);
+const packedAdvisorDest = packColorShortDests(ADVISOR_DEST);
+const packedSoldierDest = packColorShortDests(SOLDIER_DEST);
+const packedElephantDest = packColorBlockedDests(ELEPHANT_DEST);
+const packedHorseDest = packSquareBlockedDests(HORSE_DEST);
+const SEARCH_GENERAL_DEST_OFF = packedGeneralDest.offsets;
+const SEARCH_GENERAL_DEST_DATA = packedGeneralDest.data;
+const SEARCH_ADVISOR_DEST_OFF = packedAdvisorDest.offsets;
+const SEARCH_ADVISOR_DEST_DATA = packedAdvisorDest.data;
+const SEARCH_SOLDIER_DEST_OFF = packedSoldierDest.offsets;
+const SEARCH_SOLDIER_DEST_DATA = packedSoldierDest.data;
+const SEARCH_ELEPHANT_DEST_OFF = packedElephantDest.offsets;
+const SEARCH_ELEPHANT_DEST_DATA = packedElephantDest.data;
+const SEARCH_HORSE_DEST_OFF = packedHorseDest.offsets;
+const SEARCH_HORSE_DEST_DATA = packedHorseDest.data;
 // All orthogonal rays live in one compact buffer. The offset table avoids
 // hundreds of tiny TypedArrays in the relation, pseudo-move, and check paths.
 const SEARCH_RAY_OFFSETS = new Uint16Array(REL_SQUARES * ORTH_DIRS.length + 1);
 let SEARCH_RAY_SQUARES = null;
 const SEARCH_RAY_DIRS = 4;
-const SEARCH_HORSE_CHECKERS = new Array(REL_SQUARES);
-const SEARCH_GIVES_CHECK_NEAR = Array.from({ length: REL_SQUARES }, () => new Uint8Array(REL_SQUARES));
+const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
+let SEARCH_HORSE_CHECKER_DATA = null;
+const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
 const SEARCH_RELATIVE_SCAN_SQUARES = [
@@ -1698,30 +1752,12 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
 
 (() => {
     const searchRaySquares = [];
-    const squareDestinations = (dests) => {
-        const packed = new Uint8Array(dests.length);
-        for (let i = 0; i < dests.length; i++) packed[i] = dests[i].r * 9 + dests[i].c;
-        return packed;
-    };
-    const blockedDestinations = (dests) => {
-        const packed = new Uint16Array(dests.length);
-        for (let i = 0; i < dests.length; i++) {
-            packed[i] = (dests[i].br * 9 + dests[i].bc) * 128 + dests[i].r * 9 + dests[i].c;
-        }
-        return packed;
+    const horseCheckerWords = [];
+    const markGiveCheckNear = (kingSq, target) => {
+        SEARCH_GIVES_CHECK_NEAR[kingSq * 3 + (target >>> 5)] |= 1 << (target & 31);
     };
 
     for (let sq = 0; sq < REL_SQUARES; sq++) {
-        SEARCH_GENERAL_DEST[0][sq] = squareDestinations(GENERAL_DEST[0][sq]);
-        SEARCH_GENERAL_DEST[1][sq] = squareDestinations(GENERAL_DEST[1][sq]);
-        SEARCH_ADVISOR_DEST[0][sq] = squareDestinations(ADVISOR_DEST[0][sq]);
-        SEARCH_ADVISOR_DEST[1][sq] = squareDestinations(ADVISOR_DEST[1][sq]);
-        SEARCH_ELEPHANT_DEST[0][sq] = blockedDestinations(ELEPHANT_DEST[0][sq]);
-        SEARCH_ELEPHANT_DEST[1][sq] = blockedDestinations(ELEPHANT_DEST[1][sq]);
-        SEARCH_HORSE_DEST[sq] = blockedDestinations(HORSE_DEST[sq]);
-        SEARCH_SOLDIER_DEST[0][sq] = squareDestinations(SOLDIER_DEST[0][sq]);
-        SEARCH_SOLDIER_DEST[1][sq] = squareDestinations(SOLDIER_DEST[1][sq]);
-
         const r = (sq / 9) | 0;
         const c = sq % 9;
         SEARCH_SQ_ROWS[sq] = r;
@@ -1741,7 +1777,7 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
             }
         }
 
-        const horseCheckers = [];
+        SEARCH_HORSE_CHECKER_OFF[sq] = horseCheckerWords.length;
         for (let i = 0; i < HORSE_DIRS.length; i++) {
             const d = HORSE_DIRS[i];
             const horseR = r + d.dr;
@@ -1749,25 +1785,23 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
             if (horseR < 0 || horseR >= ROWS || horseC < 0 || horseC >= COLS) continue;
             const legR = horseR - d.legDr;
             const legC = horseC - d.legDc;
-            horseCheckers.push((legR * 9 + legC) * 128 + horseR * 9 + horseC);
-        }
-        SEARCH_HORSE_CHECKERS[sq] = new Uint16Array(horseCheckers);
-        const near = SEARCH_GIVES_CHECK_NEAR[sq];
-        for (let i = 0; i < horseCheckers.length; i++) {
-            const entry = horseCheckers[i];
-            near[entry & 127] = 1;
-            near[entry >>> 7] = 1;
+            const entry = (legR * 9 + legC) * 128 + horseR * 9 + horseC;
+            horseCheckerWords.push(entry);
+            markGiveCheckNear(sq, entry & 127);
+            markGiveCheckNear(sq, entry >>> 7);
         }
         if (r <= 2) {
-            if (r + 1 < ROWS) near[(r + 1) * 9 + c] = 1;
-            if (c > 0) near[sq - 1] = 1;
-            if (c < COLS - 1) near[sq + 1] = 1;
+            if (r + 1 < ROWS) markGiveCheckNear(sq, (r + 1) * 9 + c);
+            if (c > 0) markGiveCheckNear(sq, sq - 1);
+            if (c < COLS - 1) markGiveCheckNear(sq, sq + 1);
         } else if (r >= 7) {
-            if (r > 0) near[(r - 1) * 9 + c] = 1;
-            if (c > 0) near[sq - 1] = 1;
-            if (c < COLS - 1) near[sq + 1] = 1;
+            if (r > 0) markGiveCheckNear(sq, (r - 1) * 9 + c);
+            if (c > 0) markGiveCheckNear(sq, sq - 1);
+            if (c < COLS - 1) markGiveCheckNear(sq, sq + 1);
         }
     }
+    SEARCH_HORSE_CHECKER_OFF[REL_SQUARES] = horseCheckerWords.length;
+    SEARCH_HORSE_CHECKER_DATA = new Uint16Array(horseCheckerWords);
     SEARCH_RAY_OFFSETS[REL_SQUARES << 2] = searchRaySquares.length;
     SEARCH_RAY_SQUARES = new Uint8Array(searchRaySquares);
 })();
@@ -1942,11 +1976,11 @@ const applyOccupiedSliderHitWithCapture = (
 };
 
 const appendSearchShortMoves = (
-    moves, fromSq, dests, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
+    moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
 ) => {
     let generated = 0;
-    for (let i = 0; i < dests.length; i++) {
-        let toSq = dests[i];
+    for (let i = destStart; i < destEnd; i++) {
+        let toSq = destData[i];
         if (blocked) {
             if (squareCodes[toSq >>> 7] !== 0) continue;
             toSq &= 127;
@@ -2205,26 +2239,44 @@ const appendSearchPseudoMovesForPiece = (
     const colorIdx = isRed ? 0 : 1;
 
     switch (pieceType) {
-        case 1:
+        case 1: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
             return appendSearchShortMoves(
-                moves, fromSq, SEARCH_GENERAL_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+                moves, fromSq, SEARCH_GENERAL_DEST_DATA,
+                SEARCH_GENERAL_DEST_OFF[destBase], SEARCH_GENERAL_DEST_OFF[destBase + 1],
+                squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
-        case 5:
+        }
+        case 5: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
             return appendSearchShortMoves(
-                moves, fromSq, SEARCH_ADVISOR_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+                moves, fromSq, SEARCH_ADVISOR_DEST_DATA,
+                SEARCH_ADVISOR_DEST_OFF[destBase], SEARCH_ADVISOR_DEST_OFF[destBase + 1],
+                squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
-        case 4:
+        }
+        case 4: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
             return appendSearchShortMoves(
-                moves, fromSq, SEARCH_ELEPHANT_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+                moves, fromSq, SEARCH_ELEPHANT_DEST_DATA,
+                SEARCH_ELEPHANT_DEST_OFF[destBase], SEARCH_ELEPHANT_DEST_OFF[destBase + 1],
+                squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
             );
+        }
         case 3:
             return appendSearchShortMoves(
-                moves, fromSq, SEARCH_HORSE_DEST[fromSq], squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+                moves, fromSq, SEARCH_HORSE_DEST_DATA,
+                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
+                squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
             );
-        case 7:
+        case 7: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
             return appendSearchShortMoves(
-                moves, fromSq, SEARCH_SOLDIER_DEST[colorIdx][fromSq], squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
+                moves, fromSq, SEARCH_SOLDIER_DEST_DATA,
+                SEARCH_SOLDIER_DEST_OFF[destBase], SEARCH_SOLDIER_DEST_OFF[destBase + 1],
+                squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
+        }
         case 2:
             return appendOccupancyRookMoves(
                 moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
@@ -2238,16 +2290,16 @@ const appendSearchPseudoMovesForPiece = (
     }
 };
 
-const shortDestHas = (dests, toSq) => {
-    for (let i = 0; i < dests.length; i++) {
-        if (dests[i] === toSq) return true;
+const shortDestHas = (destData, destStart, destEnd, toSq) => {
+    for (let i = destStart; i < destEnd; i++) {
+        if (destData[i] === toSq) return true;
     }
     return false;
 };
 
-const blockedDestHas = (dests, toSq, squareCodes) => {
-    for (let i = 0; i < dests.length; i++) {
-        const packed = dests[i];
+const blockedDestHas = (destData, destStart, destEnd, toSq, squareCodes) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
         if ((packed & 127) === toSq) return squareCodes[packed >>> 7] === 0;
     }
     return false;
@@ -2263,16 +2315,41 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
     const pieceType = pieceCode & 7;
     const colorIdx = isRed ? 0 : 1;
     switch (pieceType) {
-        case 1:
-            return shortDestHas(SEARCH_GENERAL_DEST[colorIdx][fromSq], toSq);
-        case 5:
-            return shortDestHas(SEARCH_ADVISOR_DEST[colorIdx][fromSq], toSq);
-        case 4:
-            return blockedDestHas(SEARCH_ELEPHANT_DEST[colorIdx][fromSq], toSq, squareCodes);
+        case 1: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+            return shortDestHas(
+                SEARCH_GENERAL_DEST_DATA,
+                SEARCH_GENERAL_DEST_OFF[destBase], SEARCH_GENERAL_DEST_OFF[destBase + 1], toSq
+            );
+        }
+        case 5: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+            return shortDestHas(
+                SEARCH_ADVISOR_DEST_DATA,
+                SEARCH_ADVISOR_DEST_OFF[destBase], SEARCH_ADVISOR_DEST_OFF[destBase + 1], toSq
+            );
+        }
+        case 4: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+            return blockedDestHas(
+                SEARCH_ELEPHANT_DEST_DATA,
+                SEARCH_ELEPHANT_DEST_OFF[destBase], SEARCH_ELEPHANT_DEST_OFF[destBase + 1],
+                toSq, squareCodes
+            );
+        }
         case 3:
-            return blockedDestHas(SEARCH_HORSE_DEST[fromSq], toSq, squareCodes);
-        case 7:
-            return shortDestHas(SEARCH_SOLDIER_DEST[colorIdx][fromSq], toSq);
+            return blockedDestHas(
+                SEARCH_HORSE_DEST_DATA,
+                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
+                toSq, squareCodes
+            );
+        case 7: {
+            const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+            return shortDestHas(
+                SEARCH_SOLDIER_DEST_DATA,
+                SEARCH_SOLDIER_DEST_OFF[destBase], SEARCH_SOLDIER_DEST_OFF[destBase + 1], toSq
+            );
+        }
         case 2:
             return isOccupancyRookLegal(
                 fromSq, toSq, targetCode, pieceState.rowOccupancy, pieceState.colOccupancy
@@ -2743,11 +2820,16 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_ATTACK_TARGET;
-    const generalDest = SEARCH_GENERAL_DEST;
-    const advisorDest = SEARCH_ADVISOR_DEST;
-    const soldierDest = SEARCH_SOLDIER_DEST;
-    const elephantDest = SEARCH_ELEPHANT_DEST;
-    const horseDest = SEARCH_HORSE_DEST;
+    const generalDestOff = SEARCH_GENERAL_DEST_OFF;
+    const generalDestData = SEARCH_GENERAL_DEST_DATA;
+    const advisorDestOff = SEARCH_ADVISOR_DEST_OFF;
+    const advisorDestData = SEARCH_ADVISOR_DEST_DATA;
+    const soldierDestOff = SEARCH_SOLDIER_DEST_OFF;
+    const soldierDestData = SEARCH_SOLDIER_DEST_DATA;
+    const elephantDestOff = SEARCH_ELEPHANT_DEST_OFF;
+    const elephantDestData = SEARCH_ELEPHANT_DEST_DATA;
+    const horseDestOff = SEARCH_HORSE_DEST_OFF;
+    const horseDestData = SEARCH_HORSE_DEST_DATA;
     attackBySlot.fill(0);
     guardBySlot.fill(0);
     clearAttackBits(scratchRedAttack);
@@ -2774,9 +2856,9 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
 
         switch (pieceType) {
             case 1: {
-                const dests = generalDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = generalDestOff[destBase], n = generalDestOff[destBase + 1]; i < n; i++) {
+                    const sq = generalDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         // 将只走己方九宫，空步永远不是对方将安全点
@@ -2795,9 +2877,9 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 break;
             }
             case 5: {
-                const dests = advisorDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = advisorDestOff[destBase], n = advisorDestOff[destBase + 1]; i < n; i++) {
+                    const sq = advisorDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         // 仕只走己方九宫，空步永远不是对方将安全点
@@ -2816,9 +2898,9 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 break;
             }
             case 7: {
-                const dests = soldierDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = soldierDestOff[destBase], n = soldierDestOff[destBase + 1]; i < n; i++) {
+                    const sq = soldierDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         if (attackTarget[sq] & attackTargetBit) {
@@ -2836,9 +2918,9 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 break;
             }
             case 4: {
-                const dests = elephantDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const packed = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = elephantDestOff[destBase], n = elephantDestOff[destBase + 1]; i < n; i++) {
+                    const packed = elephantDestData[i];
                     if (squareCodes[packed >>> 7] !== 0) continue;
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
@@ -2859,9 +2941,8 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
                 break;
             }
             case 3: {
-                const dests = horseDest[fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const packed = dests[i];
+                for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
+                    const packed = horseDestData[i];
                     if (squareCodes[packed >>> 7] !== 0) continue;
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
@@ -3053,11 +3134,16 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const attackTarget = SEARCH_ATTACK_TARGET;
-    const generalDest = SEARCH_GENERAL_DEST;
-    const advisorDest = SEARCH_ADVISOR_DEST;
-    const soldierDest = SEARCH_SOLDIER_DEST;
-    const elephantDest = SEARCH_ELEPHANT_DEST;
-    const horseDest = SEARCH_HORSE_DEST;
+    const generalDestOff = SEARCH_GENERAL_DEST_OFF;
+    const generalDestData = SEARCH_GENERAL_DEST_DATA;
+    const advisorDestOff = SEARCH_ADVISOR_DEST_OFF;
+    const advisorDestData = SEARCH_ADVISOR_DEST_DATA;
+    const soldierDestOff = SEARCH_SOLDIER_DEST_OFF;
+    const soldierDestData = SEARCH_SOLDIER_DEST_DATA;
+    const elephantDestOff = SEARCH_ELEPHANT_DEST_OFF;
+    const elephantDestData = SEARCH_ELEPHANT_DEST_DATA;
+    const horseDestOff = SEARCH_HORSE_DEST_OFF;
+    const horseDestData = SEARCH_HORSE_DEST_DATA;
     const captureCounts = scratchPackedCaptureCounts;
     const captureSources = scratchPackedCaptureSources;
     const captureMoves = scratchPackedCaptureMoves;
@@ -3093,9 +3179,9 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
 
         switch (pieceType) {
             case 1: {
-                const dests = generalDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = generalDestOff[destBase], n = generalDestOff[destBase + 1]; i < n; i++) {
+                    const sq = generalDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         mobilityValue += 1;
@@ -3121,9 +3207,9 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 break;
             }
             case 5: {
-                const dests = advisorDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = advisorDestOff[destBase], n = advisorDestOff[destBase + 1]; i < n; i++) {
+                    const sq = advisorDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         mobilityValue += 1;
@@ -3149,9 +3235,9 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 break;
             }
             case 7: {
-                const dests = soldierDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const sq = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = soldierDestOff[destBase], n = soldierDestOff[destBase + 1]; i < n; i++) {
+                    const sq = soldierDestData[i];
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         if (attackTarget[sq] & attackTargetBit) {
@@ -3177,9 +3263,9 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 break;
             }
             case 4: {
-                const dests = elephantDest[colorIdx][fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const packed = dests[i];
+                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                for (let i = elephantDestOff[destBase], n = elephantDestOff[destBase + 1]; i < n; i++) {
+                    const packed = elephantDestData[i];
                     if (squareCodes[packed >>> 7] !== 0) continue;
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
@@ -3207,9 +3293,8 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
                 break;
             }
             case 3: {
-                const dests = horseDest[fromSq];
-                for (let i = 0, n = dests.length; i < n; i++) {
-                    const packed = dests[i];
+                for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
+                    const packed = horseDestData[i];
                     if (squareCodes[packed >>> 7] !== 0) continue;
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
@@ -5255,23 +5340,23 @@ const getPieceMoves = (state, fromSq, pieceCode, alliesOut = null) => {
 
   switch (pieceCode & 7) {
     case 1: {
-      const dests = SEARCH_GENERAL_DEST[colorIdx][fromSq];
-      for (let i = 0; i < dests.length; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, dests[i]);
+      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+      for (let i = SEARCH_GENERAL_DEST_OFF[destBase], n = SEARCH_GENERAL_DEST_OFF[destBase + 1]; i < n; i++) {
+        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_GENERAL_DEST_DATA[i]);
       }
       break;
     }
     case 5: {
-      const dests = SEARCH_ADVISOR_DEST[colorIdx][fromSq];
-      for (let i = 0; i < dests.length; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, dests[i]);
+      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+      for (let i = SEARCH_ADVISOR_DEST_OFF[destBase], n = SEARCH_ADVISOR_DEST_OFF[destBase + 1]; i < n; i++) {
+        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_ADVISOR_DEST_DATA[i]);
       }
       break;
     }
     case 4: {
-      const dests = SEARCH_ELEPHANT_DEST[colorIdx][fromSq];
-      for (let i = 0; i < dests.length; i++) {
-        const entry = dests[i];
+      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+      for (let i = SEARCH_ELEPHANT_DEST_OFF[destBase], n = SEARCH_ELEPHANT_DEST_OFF[destBase + 1]; i < n; i++) {
+        const entry = SEARCH_ELEPHANT_DEST_DATA[i];
         if (squareCodes[entry >> 7] === 0) {
           pushPseudoDest(squareCodes, moves, alliesOut, isRed, entry & 0x7F);
         }
@@ -5279,9 +5364,8 @@ const getPieceMoves = (state, fromSq, pieceCode, alliesOut = null) => {
       break;
     }
     case 3: {
-      const dests = SEARCH_HORSE_DEST[fromSq];
-      for (let i = 0; i < dests.length; i++) {
-        const entry = dests[i];
+      for (let i = SEARCH_HORSE_DEST_OFF[fromSq], n = SEARCH_HORSE_DEST_OFF[fromSq + 1]; i < n; i++) {
+        const entry = SEARCH_HORSE_DEST_DATA[i];
         if (squareCodes[entry >> 7] === 0) {
           pushPseudoDest(squareCodes, moves, alliesOut, isRed, entry & 0x7F);
         }
@@ -5329,9 +5413,9 @@ const getPieceMoves = (state, fromSq, pieceCode, alliesOut = null) => {
       }
       break;
     case 7: {
-      const dests = SEARCH_SOLDIER_DEST[colorIdx][fromSq];
-      for (let i = 0; i < dests.length; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, dests[i]);
+      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+      for (let i = SEARCH_SOLDIER_DEST_OFF[destBase], n = SEARCH_SOLDIER_DEST_OFF[destBase + 1]; i < n; i++) {
+        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_SOLDIER_DEST_DATA[i]);
       }
       break;
     }
@@ -5413,9 +5497,9 @@ const collectCheckersFromState = (state, color, out) => {
         }
     }
 
-    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-    for (let i = 0; i < horseCheckers.length; i++) {
-        const entry = horseCheckers[i];
+    const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+    for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+        const entry = horseCheckerData[i];
         if (squareCodes[entry >>> 7] !== 0) continue;
         const horseSq = entry & 127;
         const pieceCode = squareCodes[horseSq];
@@ -5509,9 +5593,9 @@ const isCheckFromState = (state, color) => {
         }
     }
 
-    const horseCheckers = SEARCH_HORSE_CHECKERS[generalSq];
-    for (let i = 0; i < horseCheckers.length; i++) {
-        const entry = horseCheckers[i];
+    const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+    for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+        const entry = horseCheckerData[i];
         if (squareCodes[entry >>> 7] !== 0) continue;
         const pieceCode = squareCodes[entry & 127];
         if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
@@ -5555,8 +5639,11 @@ const probeMoveGivesCheck = (state, checkedColor, fromSq, toSq) => {
         SEARCH_SQ_COLS[fromSq] !== gc &&
         SEARCH_SQ_COLS[toSq] !== gc
     ) {
-        const near = SEARCH_GIVES_CHECK_NEAR[generalSq];
-        if (near[fromSq] === 0 && near[toSq] === 0) {
+        const nearBase = generalSq * 3;
+        if (
+            (SEARCH_GIVES_CHECK_NEAR[nearBase + (fromSq >>> 5)] & (1 << (fromSq & 31))) === 0 &&
+            (SEARCH_GIVES_CHECK_NEAR[nearBase + (toSq >>> 5)] & (1 << (toSq & 31))) === 0
+        ) {
             if (collect) perfStats.checkFilterRejects++;
             return false;
         }
@@ -6349,9 +6436,8 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
     let blackSafety = 0;
     const redGeneralSq = pieceState.redGeneralSq;
     if (redGeneralSq >= 0) {
-        const destinations = SEARCH_GENERAL_DEST[0][redGeneralSq];
-        for (let i = 0, n = destinations.length; i < n; i++) {
-            const sq = destinations[i];
+        for (let i = SEARCH_GENERAL_DEST_OFF[redGeneralSq], n = SEARCH_GENERAL_DEST_OFF[redGeneralSq + 1]; i < n; i++) {
+            const sq = SEARCH_GENERAL_DEST_DATA[i];
             if (squareCodes[sq] === 0 && (blackAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
                 redSafety -= 50;
             }
@@ -6359,9 +6445,9 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
     }
     const blackGeneralSq = pieceState.blackGeneralSq;
     if (blackGeneralSq >= 0) {
-        const destinations = SEARCH_GENERAL_DEST[1][blackGeneralSq];
-        for (let i = 0, n = destinations.length; i < n; i++) {
-            const sq = destinations[i];
+        const blackDestBase = DEST_OFF_STRIDE + blackGeneralSq;
+        for (let i = SEARCH_GENERAL_DEST_OFF[blackDestBase], n = SEARCH_GENERAL_DEST_OFF[blackDestBase + 1]; i < n; i++) {
+            const sq = SEARCH_GENERAL_DEST_DATA[i];
             if (squareCodes[sq] === 0 && (redAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
                 blackSafety -= 50;
             }
