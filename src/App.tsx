@@ -3902,7 +3902,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     }
 
     return (
-        <div className="min-h-screen bg-stone-900 flex flex-col items-center justify-center p-2 sm:p-4 font-sans text-stone-200 relative overflow-x-hidden select-none">
+        <div className="min-h-dvh bg-stone-900 flex flex-col items-center justify-start lg:justify-center p-2 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:p-4 sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] font-sans text-stone-200 relative overflow-x-hidden select-none">
             <audio ref={sfxRef} src={CLICK_SOUND_URI} />
             
             {/* 新增的各种音效 */}
@@ -4304,7 +4304,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     )}
                 </div>
                 
-                <div className="order-4 lg:order-3 flex flex-col h-auto lg:h-[550px] w-full lg:w-[300px] bg-stone-800/90 backdrop-blur p-3 rounded-xl shadow-2xl border border-stone-700 transition-colors duration-300">
+                <div className="order-4 lg:order-3 flex flex-col h-auto lg:h-[550px] w-full lg:w-[300px] bg-stone-800/90 backdrop-blur p-3 pb-5 lg:pb-3 rounded-xl shadow-2xl border border-stone-700 transition-colors duration-300 overflow-y-auto">
                 {/* Settings Tab Content */}
                 {activeTab === 'settings' && (
                     <div className="flex flex-col gap-3">
@@ -4882,11 +4882,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* Analysis button removed from original location (moved to Resign slot) */}
                                 
                                 {/* 着法序列棋谱控件 - 与Replay模式完全一致 (Analysis模式下显示，或者在Game模式下搜索完成后显示) */}
-                                {isAnalysisMode && (analysisMoves.length > 0 || isThinking) && (
+                                {isAnalysisMode && analysisMoves.length > 0 && (
                                     <div className="col-span-2 mt-2">
                                         {/* 所有着法序列 - 与Replay模式完全一致 */}
-                                        {analysisMoves.length > 0 ? (
-                                            <div className="w-full bg-stone-900/90 rounded-md border border-stone-700 p-2 overflow-y-auto text-xs">
+                                        <div className="w-full bg-stone-900/90 rounded-md border border-stone-700 p-2 overflow-y-auto text-xs">
                                                 <div className="w-full space-y-1 overflow-y-auto max-h-48">
                                                     {analysisMoves.map((item, index) => {
                                                         return (
@@ -4985,21 +4984,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     })}
                                                 </div>
                                             </div>
-                                        ) : (
-                                            <div className="col-span-2 p-3 bg-opacity-50 rounded-lg border shadow-sm text-center" style={{
-                                                backgroundColor: 'rgba(28, 25, 23, 0.5)',
-                                                borderColor: '#57534e',
-                                                color: '#d6d3d1'
-                                            }}>
-                                                <span className="text-sm">Analysising...</span>
-                                            </div>
-                                        )}
                                     </div>
                                 )}
                                 
                                 {/* 对弈与分析共用 AI Bench；分析模式放在着法列表下方 */}
                                 {(isThinking || lastSearchBench) && (
-                                    <div className={`col-span-2 mt-2 rounded-lg border border-stone-700 bg-stone-900/50 p-3 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
+                                    <div className={`col-span-2 mt-2 mb-1 rounded-lg border border-stone-700 bg-stone-900/50 p-3 pb-4 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
                                         <div className="mb-1 text-stone-400">{isThinking ? 'Thinking' : 'Done'}</div>
                                         <div className="space-y-1">
                                             {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (
@@ -5015,9 +5005,11 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     ? `${Math.max(0, aiSearchDebug.completedDepth)}/${aiSearchDebug.targetDepth || (isAnalysisMode ? analysisDepth : playDepth)}`
                                                     : `${lastSearchBench?.completedDepth ?? 0}/${lastSearchBench?.targetDepth ?? (isAnalysisMode ? analysisDepth : playDepth)}`}
                                             </div>
-                                            {(isThinking ? aiSearchDebug.depthTimes : lastSearchBench?.depthTimes)?.map((t) => (
-                                                <div key={t.depth}>d{t.depth} {formatBenchTime(t.ms)}</div>
-                                            ))}
+                                            <div className="grid grid-cols-2 gap-x-3 gap-y-1 lg:grid-cols-1">
+                                                {(isThinking ? aiSearchDebug.depthTimes : lastSearchBench?.depthTimes)?.map((t) => (
+                                                    <div key={t.depth}>d{t.depth} {formatBenchTime(t.ms)}</div>
+                                                ))}
+                                            </div>
                                             {!isThinking && lastSearchBench && !lastSearchBench.depthTimes?.length ? (
                                                 <div>Time: {formatBenchTime(lastSearchBench.thinkingTime)}</div>
                                             ) : null}

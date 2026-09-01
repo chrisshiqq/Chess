@@ -955,11 +955,12 @@ const isCheckAfterSafeMoveFromCoords = (
     }
 
     if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
-        const slot = generalSq * 8 + ((fromR < gr ? 2 : 0) + (fromC < gc ? 1 : 0)) * 2;
-        for (let k = 0; k < 2; k++) {
-            const horseSq = SEARCH_HORSE_FROM_DIAG[slot + k];
-            if (horseSq === 255) break;
-            const pieceCode = squareCodes[horseSq];
+        const fromSq = fromR * 9 + fromC;
+        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+            const entry = horseCheckerData[i];
+            if (fromSq !== (entry >>> 7)) continue;
+            const pieceCode = squareCodes[entry & 127];
             if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
         }
     }
@@ -1765,9 +1766,6 @@ let SEARCH_RAY_SQUARES = null;
 const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
-// 将的斜邻马腿 → 最多两匹马。下标 kingSq*8 + diag*2，255 为空。
-// diag: (+1,+1)=0, (+1,-1)=1, (-1,+1)=2, (-1,-1)=3
-const SEARCH_HORSE_FROM_DIAG = new Uint8Array(REL_SQUARES * 8);
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
@@ -1782,7 +1780,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
 (() => {
     const searchRaySquares = [];
     const horseCheckerWords = [];
-    SEARCH_HORSE_FROM_DIAG.fill(255);
     const markGiveCheckNear = (kingSq, target) => {
         SEARCH_GIVES_CHECK_NEAR[kingSq * 3 + (target >>> 5)] |= 1 << (target & 31);
     };
@@ -1819,14 +1816,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
             horseCheckerWords.push(entry);
             markGiveCheckNear(sq, entry & 127);
             markGiveCheckNear(sq, entry >>> 7);
-            const ldr = legR - r;
-            const ldc = legC - c;
-            if ((ldr === 1 || ldr === -1) && (ldc === 1 || ldc === -1)) {
-                const slot = sq * 8 + ((ldr < 0 ? 2 : 0) + (ldc < 0 ? 1 : 0)) * 2;
-                const horseSq = horseR * 9 + horseC;
-                if (SEARCH_HORSE_FROM_DIAG[slot] === 255) SEARCH_HORSE_FROM_DIAG[slot] = horseSq;
-                else SEARCH_HORSE_FROM_DIAG[slot + 1] = horseSq;
-            }
         }
         if (r <= 2) {
             if (r + 1 < ROWS) markGiveCheckNear(sq, (r + 1) * 9 + c);
