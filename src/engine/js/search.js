@@ -888,53 +888,12 @@ const unmakeMove = (board, from, to, captured) => {
     updatePieceStateAfterUnmake(board, from.r * 9 + from.c, to.r * 9 + to.c);
 };
 
-// 仅普通节点使用：父局面安全时，走子后仍必然安全则可跳过全量检测。
-// 将线起终点都要保守处理：落点可能给敌炮当炮架而造成新将军。
-// 马腿是将的对角邻格，不在将线上，腾腿必须走增量马将检测。
-const kingSafetyIsUnchangedByMove = (state, color, move, wasInCheck) => {
-    // 热路径：被将必走逃避，不必先判 state/move（搜索 make 后两者都在；UI/回放默认 wasInCheck=true）
-    if (wasInCheck) return false;
-    const fromSq = moveFromSq(move);
-    const toSq = moveToSq(move);
-    const generalSq = color === 'red' ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0 || generalSq === toSq) return false;
-
-    const generalRow = SEARCH_SQ_ROWS[generalSq];
-    const generalCol = SEARCH_SQ_COLS[generalSq];
-    const fromR = SEARCH_SQ_ROWS[fromSq];
-    const fromC = SEARCH_SQ_COLS[fromSq];
-    const toR = SEARCH_SQ_ROWS[toSq];
-    const toC = SEARCH_SQ_COLS[toSq];
-    if (
-        fromR === generalRow ||
-        fromC === generalCol ||
-        toR === generalRow ||
-        toC === generalCol
-    ) {
-        return false;
-    }
-
-    // 在盘对角邻格相对将必是马腿（日字腿在将的斜邻），无需再扫预表。
-    if (Math.abs(fromR - generalRow) === 1 && Math.abs(fromC - generalCol) === 1) {
-        return false;
-    }
-    return true;
-};
-
 // 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
-const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
-    const ownIsRed = color === 'red';
-    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) return true;
-
+const isCheckAfterSafeMoveFromCoords = (
+    state, enemyIsRed, generalSq, gr, gc,
+    fromR, fromC, toR, toC
+) => {
     const squareCodes = state.squareCodes;
-    const enemyIsRed = !ownIsRed;
-    const gr = SEARCH_SQ_ROWS[generalSq];
-    const gc = SEARCH_SQ_COLS[generalSq];
-    const fromR = SEARCH_SQ_ROWS[fromSq];
-    const fromC = SEARCH_SQ_COLS[fromSq];
-    const toR = SEARCH_SQ_ROWS[toSq];
-    const toC = SEARCH_SQ_COLS[toSq];
     const fromOnRank = fromR === gr;
     const fromOnFile = fromC === gc;
     const toOnRank = toR === gr;
@@ -995,19 +954,68 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
         }
     }
 
-    // 马腿是对角邻格；走子后 from 已空，腾腿即可能被马将。
     if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
-        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
-        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
-            const entry = horseCheckerData[i];
-            if (fromSq !== (entry >>> 7)) continue;
-            const pieceCode = squareCodes[entry & 127];
+        const slot = generalSq * 8 + ((fromR < gr ? 2 : 0) + (fromC < gc ? 1 : 0)) * 2;
+        for (let k = 0; k < 2; k++) {
+            const horseSq = SEARCH_HORSE_FROM_DIAG[slot + k];
+            if (horseSq === 255) break;
+            const pieceCode = squareCodes[horseSq];
             if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
         }
     }
 
     return false;
 };
+
+const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
+    const ownIsRed = color === 'red';
+    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) return true;
+    return isCheckAfterSafeMoveFromCoords(
+        state, !ownIsRed, generalSq,
+        SEARCH_SQ_ROWS[generalSq], SEARCH_SQ_COLS[generalSq],
+        SEARCH_SQ_ROWS[fromSq], SEARCH_SQ_COLS[fromSq],
+        SEARCH_SQ_ROWS[toSq], SEARCH_SQ_COLS[toSq]
+    );
+};
+
+// 落点马/兵直接将。车炮将/闪将/炮架/腾腿由 isCheckAfterSafeMove 覆盖。
+const moverGivesDirectShortCheck = (state, checkedColor, toSq) => {
+    const pieceCode = state.squareCodes[toSq];
+    const pieceType = pieceCode & 7;
+    if (pieceType !== 3 && pieceType !== 7) return false;
+
+    const ownIsRed = checkedColor === 'red';
+    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    const enemyIsRed = !ownIsRed;
+    const squareCodes = state.squareCodes;
+
+    if (pieceType === 3) {
+        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+            const entry = horseCheckerData[i];
+            if ((entry & 127) !== toSq) continue;
+            if (squareCodes[entry >>> 7] === 0) return true;
+        }
+        return false;
+    }
+
+    const gr = SEARCH_SQ_ROWS[generalSq];
+    const gc = SEARCH_SQ_COLS[generalSq];
+    const enemyForward = enemyIsRed ? 1 : -1;
+    if (SEARCH_SQ_COLS[toSq] === gc && SEARCH_SQ_ROWS[toSq] === gr - enemyForward) return true;
+    const crossedRiver = enemyIsRed ? gr >= 5 : gr <= 4;
+    if (crossedRiver && SEARCH_SQ_ROWS[toSq] === gr) {
+        const toC = SEARCH_SQ_COLS[toSq];
+        if (toC === gc + 1 || toC === gc - 1) return true;
+    }
+    return false;
+};
+
+// 已 make：对方将是否被将。将线增量 + 马/兵直接将，不扫未变的射线。
+const isCheckAfterGivingMove = (state, checkedColor, fromSq, toSq) =>
+    isCheckAfterSafeMove(state, checkedColor, fromSq, toSq) ||
+    moverGivesDirectShortCheck(state, checkedColor, toSq);
 
 // 已 make 且着法合法：对方是否被将。与入口 isCheckFromState 同一套检测，结果下传。
 const moveGivesCheck = (state, moverColor) =>
@@ -1100,47 +1108,62 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 };
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
-const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, checkInfo = null) => {
+const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
     const collectMetrics = searchContext.collectMetrics;
     const profile = searchContext.profile;
     const __t0 = profile ? performance.now() : 0;
     if (collectMetrics) perfStats.legalityChecks++;
-    const pieceState = activePieceStateFor(board);
-    if (kingSafetyIsUnchangedByMove(pieceState, color, move, wasInCheck)) {
-        if (collectMetrics) perfStats.kingSafetyFastSkips++;
-        return false;
-    }
+    const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     let unsafe;
-    if (!wasInCheck && move != null) {
-        if (collectMetrics) perfStats.kingSafetyFullChecks++;
-        const toSq = moveToSq(move);
-        const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
-        // make 之后将在 toSq ⇒ 动的是将，须做完整检测（含仕/兵）。
-        if (collectMetrics) {
-            if (generalSq === toSq) perfStats.kingSafetyFullReasons.generalMove++;
-            else perfStats.kingSafetyFullReasons.lineOrHorse++;
+    if (!wasInCheck) {
+        if (generalSq === toSq) {
+            if (collectMetrics) {
+                perfStats.kingSafetyFullChecks++;
+                perfStats.kingSafetyFullReasons.generalMove++;
+            }
+            unsafe = isCheckFromState(pieceState, color);
+        } else if (generalSq < 0) {
+            if (collectMetrics) {
+                perfStats.kingSafetyFullChecks++;
+                perfStats.kingSafetyFullReasons.lineOrHorse++;
+            }
+            unsafe = true;
+        } else {
+            const gr = SEARCH_SQ_ROWS[generalSq];
+            const gc = SEARCH_SQ_COLS[generalSq];
+            const fromR = SEARCH_SQ_ROWS[fromSq];
+            const fromC = SEARCH_SQ_COLS[fromSq];
+            const toR = SEARCH_SQ_ROWS[toSq];
+            const toC = SEARCH_SQ_COLS[toSq];
+            if (
+                fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
+                (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
+            ) {
+                if (collectMetrics) perfStats.kingSafetyFastSkips++;
+                unsafe = false;
+            } else {
+                if (collectMetrics) {
+                    perfStats.kingSafetyFullChecks++;
+                    perfStats.kingSafetyFullReasons.lineOrHorse++;
+                }
+                unsafe = isCheckAfterSafeMoveFromCoords(
+                    pieceState, color !== 'red', generalSq, gr, gc,
+                    fromR, fromC, toR, toC
+                );
+            }
         }
-        unsafe = generalSq === toSq
-            ? isCheckFromState(pieceState, color)
-            : isCheckAfterSafeMove(
-                pieceState, color, moveFromSq(move), toSq
-            );
     } else if (
-        wasInCheck &&
         checkInfo &&
         checkInfo.count > 0 &&
-        checkInfo.count <= CHECK_INFO_CAP &&
-        move != null
+        checkInfo.count <= CHECK_INFO_CAP
     ) {
-        const toSq = moveToSq(move);
-        const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
         if (generalSq === toSq) {
             if (collectMetrics) {
                 perfStats.kingSafetyFullChecks++;
                 perfStats.kingSafetyFullReasons.inCheck++;
             }
             unsafe = isCheckFromState(pieceState, color);
-        } else if (!moveResolvesKnownChecks(moveFromSq(move), toSq, generalSq, checkInfo)) {
+        } else if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
             if (collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
             unsafe = true;
         } else {
@@ -1148,8 +1171,11 @@ const leavesOwnKingUnsafe = (board, color, move = null, wasInCheck = true, check
                 perfStats.kingSafetyFullChecks++;
                 perfStats.kingSafetyFullReasons.evasionDiscover++;
             }
-            unsafe = isCheckAfterSafeMove(
-                pieceState, color, moveFromSq(move), toSq
+            unsafe = generalSq < 0 || isCheckAfterSafeMoveFromCoords(
+                pieceState, color !== 'red', generalSq,
+                SEARCH_SQ_ROWS[generalSq], SEARCH_SQ_COLS[generalSq],
+                SEARCH_SQ_ROWS[fromSq], SEARCH_SQ_COLS[fromSq],
+                SEARCH_SQ_ROWS[toSq], SEARCH_SQ_COLS[toSq]
             );
         }
     } else {
@@ -1173,7 +1199,7 @@ const filterLegalMoves = (board, fromSq, color, pseudoMoves) => {
         const toSq = pseudoMoves[i];
         const encoded = (fromSq << 7) | toSq;
         makeSearchMove(board, encoded);
-        const illegal = leavesOwnKingUnsafe(board, color, encoded);
+        const illegal = leavesOwnKingUnsafe(activePieceStateFor(board), color, fromSq, toSq);
         unmakeSearchMove(board, encoded);
         if (!illegal) validMoves.push(toSq);
     }
@@ -1739,6 +1765,9 @@ let SEARCH_RAY_SQUARES = null;
 const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
+// 将的斜邻马腿 → 最多两匹马。下标 kingSq*8 + diag*2，255 为空。
+// diag: (+1,+1)=0, (+1,-1)=1, (-1,+1)=2, (-1,-1)=3
+const SEARCH_HORSE_FROM_DIAG = new Uint8Array(REL_SQUARES * 8);
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 const SEARCH_SQ_ROWS = new Uint8Array(REL_SQUARES);
 const SEARCH_SQ_COLS = new Uint8Array(REL_SQUARES);
@@ -1753,6 +1782,7 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
 (() => {
     const searchRaySquares = [];
     const horseCheckerWords = [];
+    SEARCH_HORSE_FROM_DIAG.fill(255);
     const markGiveCheckNear = (kingSq, target) => {
         SEARCH_GIVES_CHECK_NEAR[kingSq * 3 + (target >>> 5)] |= 1 << (target & 31);
     };
@@ -1789,6 +1819,14 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
             horseCheckerWords.push(entry);
             markGiveCheckNear(sq, entry & 127);
             markGiveCheckNear(sq, entry >>> 7);
+            const ldr = legR - r;
+            const ldc = legC - c;
+            if ((ldr === 1 || ldr === -1) && (ldc === 1 || ldc === -1)) {
+                const slot = sq * 8 + ((ldr < 0 ? 2 : 0) + (ldc < 0 ? 1 : 0)) * 2;
+                const horseSq = horseR * 9 + horseC;
+                if (SEARCH_HORSE_FROM_DIAG[slot] === 255) SEARCH_HORSE_FROM_DIAG[slot] = horseSq;
+                else SEARCH_HORSE_FROM_DIAG[slot + 1] = horseSq;
+            }
         }
         if (r <= 2) {
             if (r + 1 < ROWS) markGiveCheckNear(sq, (r + 1) * 9 + c);
@@ -5649,7 +5687,7 @@ const probeMoveGivesCheck = (state, checkedColor, fromSq, toSq) => {
         }
     }
     if (collect) perfStats.checkFilterFallthrough++;
-    const hit = isCheckFromState(state, checkedColor);
+    const hit = isCheckAfterGivingMove(state, checkedColor, fromSq, toSq);
     if (collect) {
         if (hit) perfStats.checkFilterFullTrue++;
         else perfStats.checkFilterFullFalse++;
@@ -6686,17 +6724,19 @@ const quiescence = (
     let legalMovesFound = 0;
     for (let i = 0; i < moves.length; i++) {
         const move = moves[i];
-        const moverCode = qsState.squareCodes[move >>> 7];
-        const capturedCode = qsState.squareCodes[move & MOVE_TO_MASK];
+        const fromSq = move >>> 7;
+        const toSq = move & MOVE_TO_MASK;
+        const moverCode = qsState.squareCodes[fromSq];
+        const capturedCode = qsState.squareCodes[toSq];
         makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
+        if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
         const childInCheck = probeMoveGivesCheck(
-            qsState, nextPlayer, move >>> 7, move & MOVE_TO_MASK
+            qsState, nextPlayer, fromSq, toSq
         );
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
@@ -6872,7 +6912,7 @@ const alphaBeta = (
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
         makeSearchMove(b, move);
-        if (leavesOwnKingUnsafe(b, currentPlayer, move, inCheck, checkInfo)) {
+        if (leavesOwnKingUnsafe(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
             if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
@@ -7071,7 +7111,7 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
     const capturedCode = state ? state.squareCodes[encoded & MOVE_TO_MASK] : 0;
     if (!moverCode || ((moverCode < 8) !== (currentTurn === 'red'))) break;
     makeSearchMove(board, encoded);
-    if (leavesOwnKingUnsafe(board, currentTurn, encoded, true)) {
+    if (leavesOwnKingUnsafe(state, currentTurn, from, encoded & MOVE_TO_MASK, true)) {
       unmakeSearchMove(board, encoded);
       break;
     }
@@ -7554,7 +7594,7 @@ const searchTestApi = {
       for (let i = 0; i < moves.length; i++) {
         const move = moves[i];
         makeSearchMove(board, move);
-        const unsafe = leavesOwnKingUnsafe(board, color, move, true, info);
+        const unsafe = leavesOwnKingUnsafe(state, color, move >>> 7, move & MOVE_TO_MASK, true, info);
         unmakeSearchMove(board, move);
         if (!unsafe) legal.push(move);
       }
