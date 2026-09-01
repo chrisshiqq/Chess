@@ -121,10 +121,7 @@ function printSummary(label, run) {
     console.log(`topPv=${topPv.join(' | ') || 'empty'}`);
   }
   console.log(`alphaBeta=${perf.alphaBetaCalls}`);
-  console.log(`legalityChecks=${perf.legalityChecks}`);
   console.log(`legalSearched=${perf.legalMovesSearched}`);
-  console.log(`zobristFullHash=${perf.fullHashCount}`);
-  console.log(`zobristIncrUpdates=${perf.incrementalHashUpdates}`);
   console.log(`numericLeafCount=${perf.fastLeafEvalCount}`);
   if (perf.profile) {
     console.log(`numericLeafMs=${Math.round(perf.fastLeafEvalMs ?? 0)}`);
@@ -200,16 +197,10 @@ function printSummary(label, run) {
     console.log(`  fullFalse=${checkFilter.fullFalse}`);
   }
 
-  if (relations) {
+  if (relations && perf.profile) {
     console.log('leafRelations:');
-    console.log(`  calls=${relations.calls}`);
-    console.log(`  captureCalls=${relations.captureCalls}`);
-    if (perf.profile) {
-      console.log(`  relationMs=${Math.round(relations.relationMs ?? 0)}`);
-      console.log(`  tacticalMs=${Math.round(relations.tacticalMs ?? 0)}`);
-    }
-    console.log(`  attackedTargets=${relations.attackedTargets}`);
-    console.log(`  averageAttackedTargets=${relations.averageAttackedTargets}`);
+    console.log(`  relationMs=${Math.round(relations.relationMs ?? 0)}`);
+    console.log(`  tacticalMs=${Math.round(relations.tacticalMs ?? 0)}`);
   }
 
   if (lmr) {
@@ -235,7 +226,6 @@ function printSummary(label, run) {
     console.log(`  attempts=${nmp.attempts}`);
     console.log(`  cutoffs=${nmp.cutoffs}`);
     console.log(`  cutoffRate=${nmp.cutoffRate}%`);
-    console.log(`  probeNodes=${nmp.probeNodes}`);
   }
 
   const gc = payload.gc;

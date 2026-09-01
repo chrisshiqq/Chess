@@ -145,8 +145,8 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         }
         const fromBook = !!result.fromBook;
         const thinkingTime = fromBook ? 0 : (result.thinkingTime ?? 0);
-
-        if (!fromBook) logPerfStats(payload.turn);
+        const collectPerf = searchContext.collectMetrics || searchContext.profile;
+        if (collectPerf && !fromBook) logPerfStats(payload.turn);
         console.log(
           `Search complete: game=${payload.gameId}, time=${thinkingTime}ms, ` +
           `best=${formatMove(result.bestMove)} score=${result.bestMoveScore}, ` +
@@ -167,7 +167,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
             secondBestMoveScore: result.secondBestMoveScore,
             allMovesWithScores: result.allMovesWithScores || [],
             completedDepth: result.completedDepth,
-            perf: snapshotPerfStats()
+            perf: collectPerf ? snapshotPerfStats() : null
           }
         });
         return;

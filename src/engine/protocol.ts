@@ -68,7 +68,7 @@ export interface SearchCompletePayload {
   secondBestMoveScore: number;
   allMovesWithScores: SearchMoveScore[];
   completedDepth?: number;
-  perf: unknown;
+  perf?: unknown;
 }
 
 export interface SearchProgressPayload {

@@ -599,15 +599,6 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
 
-const countSetBits = (mask) => {
-    let value = mask >>> 0;
-    value -= (value >>> 1) & 0x55555555;
-    value = (value & 0x33333333) + ((value >>> 2) & 0x33333333);
-    return (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
-};
-
-// forEachSetBit removed (unused)
-
 const makeSearchRootPieceInfo = () => ({
     piece: null,
     r: 0,
@@ -628,10 +619,6 @@ const scratchSearchRootList = [];
 // 点棋关系请用 evaluateBoardForUi，不要往这里加 UI 专用开关
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
-    // 统计
-    if (searchContext.collectMetrics && currentPlayer) {
-        perfStats.evaluateBoardCount[currentPlayer]++;
-    }
     const forSearchLeaf = !!(options && options.forSearchLeaf);
     const forSearchRoot = !!(options && options.forSearchRoot);
 
@@ -1110,84 +1097,42 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
 const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
-    const collectMetrics = searchContext.collectMetrics;
-    const profile = searchContext.profile;
-    const __t0 = profile ? performance.now() : 0;
-    if (collectMetrics) perfStats.legalityChecks++;
     const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
-    let unsafe;
     if (!wasInCheck) {
-        if (generalSq === toSq) {
-            if (collectMetrics) {
-                perfStats.kingSafetyFullChecks++;
-                perfStats.kingSafetyFullReasons.generalMove++;
-            }
-            unsafe = isCheckFromState(pieceState, color);
-        } else if (generalSq < 0) {
-            if (collectMetrics) {
-                perfStats.kingSafetyFullChecks++;
-                perfStats.kingSafetyFullReasons.lineOrHorse++;
-            }
-            unsafe = true;
-        } else {
-            const gr = SEARCH_SQ_ROWS[generalSq];
-            const gc = SEARCH_SQ_COLS[generalSq];
-            const fromR = SEARCH_SQ_ROWS[fromSq];
-            const fromC = SEARCH_SQ_COLS[fromSq];
-            const toR = SEARCH_SQ_ROWS[toSq];
-            const toC = SEARCH_SQ_COLS[toSq];
-            if (
-                fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
-                (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
-            ) {
-                if (collectMetrics) perfStats.kingSafetyFastSkips++;
-                unsafe = false;
-            } else {
-                if (collectMetrics) {
-                    perfStats.kingSafetyFullChecks++;
-                    perfStats.kingSafetyFullReasons.lineOrHorse++;
-                }
-                unsafe = isCheckAfterSafeMoveFromCoords(
-                    pieceState, color !== 'red', generalSq, gr, gc,
-                    fromR, fromC, toR, toC
-                );
-            }
+        if (generalSq === toSq) return isCheckFromState(pieceState, color);
+        if (generalSq < 0) return true;
+        const gr = SEARCH_SQ_ROWS[generalSq];
+        const gc = SEARCH_SQ_COLS[generalSq];
+        const fromR = SEARCH_SQ_ROWS[fromSq];
+        const fromC = SEARCH_SQ_COLS[fromSq];
+        const toR = SEARCH_SQ_ROWS[toSq];
+        const toC = SEARCH_SQ_COLS[toSq];
+        if (
+            fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
+            (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
+        ) {
+            return false;
         }
-    } else if (
+        return isCheckAfterSafeMoveFromCoords(
+            pieceState, color !== 'red', generalSq, gr, gc,
+            fromR, fromC, toR, toC
+        );
+    }
+    if (
         checkInfo &&
         checkInfo.count > 0 &&
         checkInfo.count <= CHECK_INFO_CAP
     ) {
-        if (generalSq === toSq) {
-            if (collectMetrics) {
-                perfStats.kingSafetyFullChecks++;
-                perfStats.kingSafetyFullReasons.inCheck++;
-            }
-            unsafe = isCheckFromState(pieceState, color);
-        } else if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
-            if (collectMetrics) perfStats.kingSafetyFullReasons.evasionReject++;
-            unsafe = true;
-        } else {
-            if (collectMetrics) {
-                perfStats.kingSafetyFullChecks++;
-                perfStats.kingSafetyFullReasons.evasionDiscover++;
-            }
-            unsafe = generalSq < 0 || isCheckAfterSafeMoveFromCoords(
-                pieceState, color !== 'red', generalSq,
-                SEARCH_SQ_ROWS[generalSq], SEARCH_SQ_COLS[generalSq],
-                SEARCH_SQ_ROWS[fromSq], SEARCH_SQ_COLS[fromSq],
-                SEARCH_SQ_ROWS[toSq], SEARCH_SQ_COLS[toSq]
-            );
-        }
-    } else {
-        if (collectMetrics) {
-            perfStats.kingSafetyFullChecks++;
-            perfStats.kingSafetyFullReasons.inCheck++;
-        }
-        unsafe = isCheckFromState(pieceState, color);
+        if (generalSq === toSq) return isCheckFromState(pieceState, color);
+        if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
+        return generalSq < 0 || isCheckAfterSafeMoveFromCoords(
+            pieceState, color !== 'red', generalSq,
+            SEARCH_SQ_ROWS[generalSq], SEARCH_SQ_COLS[generalSq],
+            SEARCH_SQ_ROWS[fromSq], SEARCH_SQ_COLS[fromSq],
+            SEARCH_SQ_ROWS[toSq], SEARCH_SQ_COLS[toSq]
+        );
     }
-    if (profile) perfStats.legalityCheckMs += performance.now() - __t0;
-    return unsafe;
+    return isCheckFromState(pieceState, color);
 };
 
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
@@ -2581,12 +2526,6 @@ const advanceTrueStagedMoves = (
             moves, stage, board, currentPlayer, pieceState, ttMove, killers
         );
         if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - started;
-        if (searchContext.collectMetrics) {
-            perfStats.stagedGeneration.stages[stage]++;
-            perfStats.stagedGeneration.generated[stage] += added;
-            perfStats.pseudoMovesGenerated += added;
-            perfStats.movesGenerated[depth] = (perfStats.movesGenerated[depth] || 0) + added;
-        }
         if (added > 0) break;
     }
     return nextStage;
@@ -3139,10 +3078,6 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
-    if (searchContext.collectMetrics) {
-        perfStats.leafRelationCalls++;
-        perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
-    }
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
     leafRelationScratchFresh = true;
 };
@@ -3507,11 +3442,6 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
-    if (searchContext.collectMetrics) {
-        perfStats.leafRelationCalls++;
-        perfStats.leafRelationCaptureCalls++;
-        perfStats.leafAttackedTargets += countSetBits(attackedTargetMask);
-    }
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
 
     const packedCaptures = scratchPackedCaptures;
@@ -3899,11 +3829,6 @@ const calculateStaticExchangeScoreNumeric = (
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
 const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null, forSearchLeaf = false) => {
-    // 统计
-    if (searchContext.collectMetrics && currentPlayer) {
-        perfStats.calculateThreatValuesCount[currentPlayer]++;
-    }
-
     // 初始化威胁类型统计信息
     const collectUi = !!boardInfo && !forSearchLeaf;
     if (collectUi) {
@@ -5567,7 +5492,6 @@ const collectCheckersFromState = (state, color, out) => {
 
 // 占位表将军检测：occupancy 查车/将/炮，再查马和兵。白脸将算第一子为敌将。
 const isCheckFromState = (state, color) => {
-    if (searchContext.collectMetrics) perfStats.isCheckFromStateCalls++;
     const ownIsRed = color === 'red';
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
@@ -5651,13 +5575,8 @@ const isCheckFromState = (state, color) => {
 
 // 父节点：走子后对方是否被将。第 0 级只看坐标（将线 / 马位腿 / 兵位），否证则不再全量扫。
 const probeMoveGivesCheck = (state, checkedColor, fromSq, toSq) => {
-    const collect = searchContext.collectMetrics;
-    if (collect) perfStats.checkFilterAttempts++;
     const generalSq = checkedColor === 'red' ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) {
-        if (collect) perfStats.checkFilterFallthrough++;
-        return true;
-    }
+    if (generalSq < 0) return true;
     const gr = SEARCH_SQ_ROWS[generalSq];
     const gc = SEARCH_SQ_COLS[generalSq];
     if (
@@ -5671,17 +5590,10 @@ const probeMoveGivesCheck = (state, checkedColor, fromSq, toSq) => {
             (SEARCH_GIVES_CHECK_NEAR[nearBase + (fromSq >>> 5)] & (1 << (fromSq & 31))) === 0 &&
             (SEARCH_GIVES_CHECK_NEAR[nearBase + (toSq >>> 5)] & (1 << (toSq & 31))) === 0
         ) {
-            if (collect) perfStats.checkFilterRejects++;
             return false;
         }
     }
-    if (collect) perfStats.checkFilterFallthrough++;
-    const hit = isCheckAfterGivingMove(state, checkedColor, fromSq, toSq);
-    if (collect) {
-        if (hit) perfStats.checkFilterFullTrue++;
-        else perfStats.checkFilterFullFalse++;
-    }
-    return hit;
+    return isCheckAfterGivingMove(state, checkedColor, fromSq, toSq);
 };
 
 const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
@@ -5990,41 +5902,9 @@ class TranspositionTable {
     }
 }
 
-// 性能统计
+// bench / profile 用。对弈默认不采集。
 let perfStats = {
-    evaluateBoardCount: { red: 0, black: 0 },
-    prepareSearchInfoCount: { red: 0, black: 0 },
-    calculateThreatValuesCount: { red: 0, black: 0 },
-    alphaBetaCalls: 0,  // 总调用次数
-    nodesSearched: {}, // 按深度统计搜索的节点数
-    movesGenerated: {}, // 按深度统计生成的走法数
-    cutoffs: {}, // 按深度统计剪枝次数
-    moveOrdering: {
-        topMoveSources: { tt: 0, killer: 0, capture: 0, quiet: 0 },
-        firstLegalMovesByDepth: {},
-        firstLegalCutoffsByDepth: {},
-        firstLegalMoveIndexTotalByDepth: {}
-    },
-    stagedGeneration: {
-        nodes: 0,
-        stages: [0, 0, 0, 0],
-        generated: [0, 0, 0, 0],
-        quietSkipped: 0
-    },
-    // 合法性路径：伪合法生成量、试走合法性检测、非法跳过、实际进入搜索的合法着
-    pseudoMovesGenerated: 0,
-    legalityChecks: 0,
-    kingSafetyFullChecks: 0,
-    kingSafetyFastSkips: 0,
-    kingSafetyFullReasons: { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 },
-    isCheckFromStateCalls: 0,
-    isCheckFromStateSkipped: 0,
-    checkFilterAttempts: 0,
-    checkFilterRejects: 0,
-    checkFilterFallthrough: 0,
-    checkFilterFullTrue: 0,
-    checkFilterFullFalse: 0,
-    illegalMovesSkipped: 0,
+    alphaBetaCalls: 0,
     legalMovesSearched: 0,
     lmrAttempts: 0,
     lmrReSearches: 0,
@@ -6032,22 +5912,14 @@ let perfStats = {
     pvsReSearches: 0,
     nmpAttempts: 0,
     nmpCutoffs: 0,
-    nmpProbeNodes: 0,
-    // Zobrist：全盘重算次数 / 增量更新次数
-    fullHashCount: 0,
-    incrementalHashUpdates: 0,
     fastLeafEvalCount: 0,
     fastLeafEvalMs: 0,
     leafRelationsMs: 0,
     leafTacticalMs: 0,
-    leafRelationCalls: 0,
-    leafRelationCaptureCalls: 0,
-    leafAttackedTargets: 0,
     prepareCheckMs: 0,
     prepareMoveGenMs: 0,
     sortMovesCount: 0,
     sortMovesMs: 0,
-    legalityCheckMs: 0,
     captureGenCount: 0,
     captureGenMs: 0,
     quiescenceCalls: 0,
@@ -6059,40 +5931,9 @@ let perfStats = {
     startTime: Date.now()
 };
 
-// 重置统计（每次搜索开始时调用）
 const resetPerfStats = () => {
-    perfStats.evaluateBoardCount = { red: 0, black: 0 };
-    perfStats.prepareSearchInfoCount = { red: 0, black: 0 };
-    perfStats.calculateThreatValuesCount = { red: 0, black: 0 };
+    if (!searchContext.collectMetrics && !searchContext.profile) return;
     perfStats.alphaBetaCalls = 0;
-    perfStats.nodesSearched = {};
-    perfStats.movesGenerated = {};
-    perfStats.cutoffs = {};
-    perfStats.moveOrdering = {
-        topMoveSources: { tt: 0, killer: 0, capture: 0, quiet: 0 },
-        firstLegalMovesByDepth: {},
-        firstLegalCutoffsByDepth: {},
-        firstLegalMoveIndexTotalByDepth: {}
-    };
-    perfStats.stagedGeneration = {
-        nodes: 0,
-        stages: [0, 0, 0, 0],
-        generated: [0, 0, 0, 0],
-        quietSkipped: 0
-    };
-    perfStats.pseudoMovesGenerated = 0;
-    perfStats.legalityChecks = 0;
-    perfStats.kingSafetyFullChecks = 0;
-    perfStats.kingSafetyFastSkips = 0;
-    perfStats.kingSafetyFullReasons = { inCheck: 0, generalMove: 0, lineOrHorse: 0, evasionReject: 0, evasionDiscover: 0 };
-    perfStats.isCheckFromStateCalls = 0;
-    perfStats.isCheckFromStateSkipped = 0;
-    perfStats.checkFilterAttempts = 0;
-    perfStats.checkFilterRejects = 0;
-    perfStats.checkFilterFallthrough = 0;
-    perfStats.checkFilterFullTrue = 0;
-    perfStats.checkFilterFullFalse = 0;
-    perfStats.illegalMovesSkipped = 0;
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
     perfStats.lmrReSearches = 0;
@@ -6100,21 +5941,14 @@ const resetPerfStats = () => {
     perfStats.pvsReSearches = 0;
     perfStats.nmpAttempts = 0;
     perfStats.nmpCutoffs = 0;
-    perfStats.nmpProbeNodes = 0;
-    perfStats.fullHashCount = 0;
-    perfStats.incrementalHashUpdates = 0;
     perfStats.fastLeafEvalCount = 0;
     perfStats.fastLeafEvalMs = 0;
     perfStats.leafRelationsMs = 0;
     perfStats.leafTacticalMs = 0;
-    perfStats.leafRelationCalls = 0;
-    perfStats.leafRelationCaptureCalls = 0;
-    perfStats.leafAttackedTargets = 0;
     perfStats.prepareCheckMs = 0;
     perfStats.prepareMoveGenMs = 0;
     perfStats.sortMovesCount = 0;
     perfStats.sortMovesMs = 0;
-    perfStats.legalityCheckMs = 0;
     perfStats.captureGenCount = 0;
     perfStats.captureGenMs = 0;
     perfStats.quiescenceCalls = 0;
@@ -6128,56 +5962,12 @@ const resetPerfStats = () => {
 
 const snapshotPerfStats = () => {
     const elapsed = Date.now() - perfStats.startTime;
-    const ttStats = transpositionTable.getStats();
-    const depths = Object.keys(perfStats.nodesSearched).sort((a, b) => Number(a) - Number(b));
-    const byDepth = {};
-    for (const d of depths) {
-        byDepth[d] = {
-            nodes: perfStats.nodesSearched[d] || 0,
-            moves: perfStats.movesGenerated[d] || 0,
-            cutoffs: perfStats.cutoffs[d] || 0
-        };
-    }
+    const evalHits = perfStats.staticEvalCacheHits;
+    const evalMisses = perfStats.staticEvalCacheMisses;
     return {
         elapsedMs: elapsed,
         profile: searchContext.profile,
-        evaluateBoard: { ...perfStats.evaluateBoardCount },
-        prepareSearchInfo: { ...perfStats.prepareSearchInfoCount },
-        calculateThreatValues: { ...perfStats.calculateThreatValuesCount },
         alphaBetaCalls: perfStats.alphaBetaCalls,
-        pseudoMovesGenerated: perfStats.pseudoMovesGenerated,
-        legalityChecks: perfStats.legalityChecks,
-        kingSafety: searchContext.collectMetrics ? {
-            fullChecks: perfStats.kingSafetyFullChecks,
-            fastSkips: perfStats.kingSafetyFastSkips,
-            skipRate: perfStats.legalityChecks
-                ? Number((perfStats.kingSafetyFastSkips / perfStats.legalityChecks * 100).toFixed(2))
-                : 0,
-            fullReasons: { ...perfStats.kingSafetyFullReasons },
-            isCheckFromStateCalls: perfStats.isCheckFromStateCalls,
-            isCheckFromStateSkipped: perfStats.isCheckFromStateSkipped
-        } : null,
-        checkFilter: searchContext.collectMetrics ? {
-            attempts: perfStats.checkFilterAttempts,
-            rejects: perfStats.checkFilterRejects,
-            fallthrough: perfStats.checkFilterFallthrough,
-            rejectRate: perfStats.checkFilterAttempts
-                ? Number((perfStats.checkFilterRejects / perfStats.checkFilterAttempts * 100).toFixed(2))
-                : 0,
-            fullTrue: perfStats.checkFilterFullTrue,
-            fullFalse: perfStats.checkFilterFullFalse
-        } : null,
-        leafRelations: searchContext.collectMetrics ? {
-            calls: perfStats.leafRelationCalls,
-            captureCalls: perfStats.leafRelationCaptureCalls,
-            relationMs: perfStats.leafRelationsMs,
-            tacticalMs: perfStats.leafTacticalMs,
-            attackedTargets: perfStats.leafAttackedTargets,
-            averageAttackedTargets: perfStats.leafRelationCalls
-                ? Number((perfStats.leafAttackedTargets / perfStats.leafRelationCalls).toFixed(2))
-                : 0
-        } : null,
-        illegalMovesSkipped: perfStats.illegalMovesSkipped,
         legalMovesSearched: perfStats.legalMovesSearched,
         lmr: searchContext.collectMetrics ? {
             minDepth: searchContext.lmrMinDepth,
@@ -6202,59 +5992,31 @@ const snapshotPerfStats = () => {
             cutoffs: perfStats.nmpCutoffs,
             cutoffRate: perfStats.nmpAttempts
                 ? Number((perfStats.nmpCutoffs / perfStats.nmpAttempts * 100).toFixed(2))
-                : 0,
-            probeNodes: perfStats.nmpProbeNodes
+                : 0
         } : null,
-        fullHashCount: perfStats.fullHashCount,
-        incrementalHashUpdates: perfStats.incrementalHashUpdates,
         fastLeafEvalCount: perfStats.fastLeafEvalCount,
         fastLeafEvalMs: perfStats.fastLeafEvalMs,
+        leafRelations: searchContext.profile ? {
+            relationMs: perfStats.leafRelationsMs,
+            tacticalMs: perfStats.leafTacticalMs
+        } : null,
         prepareCheckMs: perfStats.prepareCheckMs,
         prepareMoveGenMs: perfStats.prepareMoveGenMs,
         sortMovesCount: perfStats.sortMovesCount,
         sortMovesMs: perfStats.sortMovesMs,
-        legalityCheckMs: perfStats.legalityCheckMs,
         captureGenCount: perfStats.captureGenCount,
         captureGenMs: perfStats.captureGenMs,
         quiescenceCalls: perfStats.quiescenceCalls,
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
-        staticEvalCacheHits: perfStats.staticEvalCacheHits,
-        staticEvalCacheMisses: perfStats.staticEvalCacheMisses,
+        staticEvalCacheHits: evalHits,
+        staticEvalCacheMisses: evalMisses,
         evalCacheSize: EVAL_CACHE_SIZE,
         evalCacheBytes: evalCacheKeys.byteLength +
             evalCacheValues.byteLength +
             evalCacheGenerations.byteLength,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
-        moveOrdering: searchContext.collectMetrics ? {
-            topMoveSources: { ...perfStats.moveOrdering.topMoveSources },
-            byDepth: Object.fromEntries(depths.map((d) => {
-                const firstLegalMoves = perfStats.moveOrdering.firstLegalMovesByDepth[d] || 0;
-                const firstLegalCutoffs = perfStats.moveOrdering.firstLegalCutoffsByDepth[d] || 0;
-                return [d, {
-                    firstLegalMoves,
-                    firstLegalCutoffs,
-                    firstLegalCutoffRate: firstLegalMoves
-                        ? Number((firstLegalCutoffs / firstLegalMoves * 100).toFixed(2))
-                        : 0,
-                    averageFirstLegalMoveIndex: firstLegalMoves
-                        ? Number((perfStats.moveOrdering.firstLegalMoveIndexTotalByDepth[d] / firstLegalMoves).toFixed(2))
-                        : 0
-                }];
-            }))
-        } : null,
-        stagedGeneration: searchContext.collectMetrics ? {
-            nodes: perfStats.stagedGeneration.nodes,
-            stages: [...perfStats.stagedGeneration.stages],
-            generated: [...perfStats.stagedGeneration.generated],
-            quietSkipped: perfStats.stagedGeneration.quietSkipped,
-            quietSkipRate: perfStats.stagedGeneration.nodes
-                ? Number((perfStats.stagedGeneration.quietSkipped /
-                    perfStats.stagedGeneration.nodes * 100).toFixed(2))
-                : 0
-        } : null,
-        tt: ttStats,
-        byDepth
+        tt: transpositionTable.getStats()
     };
 };
 
@@ -6286,6 +6048,17 @@ const clearEvalCache = () => {
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
 const NULL_WINDOW = 1;
+// LMR 减深：复刻 (log(d)*log(m)/ln2)|0，热路径不走 Math.log
+const LMR_TABLE_DEPTH_MAX = 32;
+const LMR_TABLE_MOVE_MAX = 64;
+const LMR_TABLE_STRIDE = LMR_TABLE_MOVE_MAX + 1;
+const LMR_REDUCTION = new Int8Array((LMR_TABLE_DEPTH_MAX + 1) * LMR_TABLE_STRIDE);
+for (let depth = 1; depth <= LMR_TABLE_DEPTH_MAX; depth++) {
+    for (let moveNo = 1; moveNo <= LMR_TABLE_MOVE_MAX; moveNo++) {
+        LMR_REDUCTION[depth * LMR_TABLE_STRIDE + moveNo] =
+            (Math.log(depth) * Math.log(moveNo) / Math.LN2) | 0;
+    }
+}
 // True staged generation owns one move list per active alpha-beta stack level.
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
@@ -6343,32 +6116,6 @@ const getHistoryScore = (move) => {
     return historyTable[historyIndex(move)];
 };
 
-const recordTopMoveSource = (depth, board, move, ttMove, killers) => {
-    const sources = perfStats.moveOrdering.topMoveSources;
-    if (isSameMove(move, ttMove)) sources.tt++;
-    else if (isSameMove(move, killers[0]) || isSameMove(move, killers[1])) sources.killer++;
-    else {
-        const state = activePieceStateFor(board);
-        const isCapture = state
-            ? state.squareCodes[moveToSq(move)] !== 0
-            : !!board[moveToR(move)][moveToC(move)];
-        if (isCapture) sources.capture++;
-        else sources.quiet++;
-    }
-};
-
-const recordFirstLegalMove = (depth, moveIndex) => {
-    const ordering = perfStats.moveOrdering;
-    ordering.firstLegalMovesByDepth[depth] = (ordering.firstLegalMovesByDepth[depth] || 0) + 1;
-    ordering.firstLegalMoveIndexTotalByDepth[depth] =
-        (ordering.firstLegalMoveIndexTotalByDepth[depth] || 0) + moveIndex;
-};
-
-const recordFirstLegalCutoff = (depth) => {
-    const cutoffs = perfStats.moveOrdering.firstLegalCutoffsByDepth;
-    cutoffs[depth] = (cutoffs[depth] || 0) + 1;
-};
-
 // 仅在仍有车、马或炮时允许空步，避开最容易出现 zugzwang 的低子力残局。
 const hasNullMoveMaterial = (pieceState, color) => {
     const isRed = color === 'red';
@@ -6390,7 +6137,6 @@ const makeSearchTTKey = (board, currentPlayer, boardHash) => {
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
-    if (searchContext.collectMetrics) perfStats.incrementalHashUpdates++;
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
     let newHash = boardHash;
@@ -6418,7 +6164,6 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
 
     calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
 
-    if (searchContext.collectMetrics) perfStats.calculateThreatValuesCount[searchInitiator]++;
     const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
@@ -6574,10 +6319,9 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
-        const generated = appendSearchPseudoMovesForPiece(
+        appendSearchPseudoMovesForPiece(
             moves, pieceSquares[slot], pieceCodes[slot], pieceState, capturesOnly
         );
-        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
     }
     if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
     return moves;
@@ -6654,15 +6398,17 @@ const quiescence = (
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
     const qsState = activePieceStateFor(b);
-    const checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
+    let checkInfo = null;
     let inCheck;
     if (knownInCheck == null) {
         inCheck = isCheckFromState(qsState, currentPlayer);
     } else {
-        if (searchContext.collectMetrics) perfStats.isCheckFromStateSkipped++;
         inCheck = knownInCheck;
     }
-    if (inCheck) collectCheckersFromState(qsState, currentPlayer, checkInfo);
+    if (inCheck) {
+        checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
+        collectCheckersFromState(qsState, currentPlayer, checkInfo);
+    }
     let standPat;
     if (!inCheck) {
         standPat = staticSearchEval(
@@ -6687,11 +6433,9 @@ const quiescence = (
         moves.length = 0;
     }
     if (inCheck) {
-        const generated = generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
-        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+        generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
     } else if (leafRelationScratchFresh) {
-        const generated = emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
-        if (searchContext.collectMetrics) perfStats.pseudoMovesGenerated += generated;
+        emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
     } else if (!copyPackedRelationCaptures(
         moves, currentPlayer, boardHash, searchInitiator, gameStage, b
     )) {
@@ -6720,7 +6464,6 @@ const quiescence = (
         makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
-            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
@@ -6758,11 +6501,7 @@ const alphaBeta = (
     const originalAlpha = alpha;
     const originalBeta = beta;
 
-    if (searchContext.collectMetrics) {
-        perfStats.alphaBetaCalls++;
-        if (!perfStats.nodesSearched[d]) perfStats.nodesSearched[d] = 0;
-        perfStats.nodesSearched[d]++;
-    }
+    if (searchContext.collectMetrics) perfStats.alphaBetaCalls++;
 
     if (d === 0) {
         return quiescence(
@@ -6785,17 +6524,19 @@ const alphaBeta = (
 
     const stagedPieceState = activePieceStateFor(b);
     const plyFromRoot = searchDepth - d;
-    const checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
+    let checkInfo = null;
     // TT 截断后才问是否被将。已知结果（空步子节点未将军）才跳过扫描。
     const checkStarted = searchContext.profile ? performance.now() : 0;
     let inCheck;
     if (knownInCheck == null) {
         inCheck = isCheckFromState(stagedPieceState, currentPlayer);
     } else {
-        if (searchContext.collectMetrics) perfStats.isCheckFromStateSkipped++;
         inCheck = knownInCheck;
     }
-    if (inCheck) collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
+    if (inCheck) {
+        checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
+        collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
+    }
     if (searchContext.profile) perfStats.prepareCheckMs += performance.now() - checkStarted;
 
     const useTrueStagedGeneration = !inCheck;
@@ -6808,14 +6549,10 @@ const alphaBeta = (
     }
     if (inCheck) {
         const genStarted = searchContext.profile ? performance.now() : 0;
-        const generated = generateCheckEvasions(
+        generateCheckEvasions(
             moves, currentPlayer, stagedPieceState, checkInfo
         );
         if (searchContext.profile) perfStats.prepareMoveGenMs += performance.now() - genStarted;
-        if (searchContext.collectMetrics) {
-            perfStats.pseudoMovesGenerated += generated;
-            perfStats.prepareSearchInfoCount[currentPlayer]++;
-        }
         if (moves.length === 0) {
             const isInitiatorWinner = currentPlayer !== searchInitiator;
             return (isInitiatorWinner ? 100000 : -100000) +
@@ -6836,7 +6573,6 @@ const alphaBeta = (
     if (canNmp) {
         const reduction = Math.min(searchContext.nmpReduction, d - 1);
         const nullDepth = d - 1 - reduction;
-        const probeStartNodes = searchContext.collectMetrics ? perfStats.alphaBetaCalls : 0;
         if (searchContext.collectMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
             ? alphaBeta(
@@ -6847,24 +6583,15 @@ const alphaBeta = (
                 b, nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
                 searchDepth, searchInitiator, gameStage, boardHash, false, false
             );
-        if (searchContext.collectMetrics) {
-            perfStats.nmpProbeNodes += perfStats.alphaBetaCalls - probeStartNodes;
-        }
         if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
             if (searchContext.collectMetrics) perfStats.nmpCutoffs++;
             return nullValue;
         }
     }
 
-    if (searchContext.collectMetrics && !useTrueStagedGeneration) {
-        if (!perfStats.movesGenerated[d]) perfStats.movesGenerated[d] = 0;
-        perfStats.movesGenerated[d] += moves.length;
-    }
-
     const killersAtDepth = killerMoves[plyFromRoot] || EMPTY_KILLERS;
     let nextTrueStagedStage = 0;
     if (useTrueStagedGeneration) {
-        if (searchContext.collectMetrics) perfStats.stagedGeneration.nodes++;
         nextTrueStagedStage = advanceTrueStagedMoves(
             moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth, d
@@ -6875,15 +6602,11 @@ const alphaBeta = (
             ttMove, killersAtDepth, inCheck
         );
     }
-    if (searchContext.collectMetrics && moves.length) {
-        recordTopMoveSource(d, b, moves[0], ttMove, killersAtDepth);
-    }
 
     let bestEval = maximizing ? -Infinity : Infinity;
     let bestMove = null;
     let legalMovesFound = 0;
 
-    let cutoffFound = false;
     for (let moveIndex = 0; ; moveIndex++) {
         if (moveIndex >= moves.length) {
             if (!useTrueStagedGeneration) break;
@@ -6903,15 +6626,11 @@ const alphaBeta = (
         makeSearchMove(b, move);
         if (leavesOwnKingUnsafe(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(b, move);
-            if (searchContext.collectMetrics) perfStats.illegalMovesSkipped++;
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
         const childInCheck = probeMoveGivesCheck(stagedPieceState, nextPlayer, fromSq, toSq);
         legalMovesFound++;
-        if (searchContext.collectMetrics && legalMovesFound === 1) {
-            recordFirstLegalMove(d, moveIndex);
-        }
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
         const canLmr = !inCheck &&
@@ -6927,7 +6646,9 @@ const alphaBeta = (
 
         let reducedDepth = d - 1;
         if (canLmr) {
-            let reduction = (Math.log(d) * Math.log(legalMovesFound) / Math.LN2) | 0;
+            let reduction = (d <= LMR_TABLE_DEPTH_MAX && legalMovesFound <= LMR_TABLE_MOVE_MAX)
+                ? LMR_REDUCTION[d * LMR_TABLE_STRIDE + legalMovesFound]
+                : (Math.log(d) * Math.log(legalMovesFound) / Math.LN2) | 0;
             if (reduction < 1) reduction = 1;
             const maxReduction = Math.min(searchContext.lmrMaxReduction | 0 || 2, d - 2);
             if (reduction > maxReduction) reduction = maxReduction;
@@ -7046,25 +6767,12 @@ const alphaBeta = (
         }
 
         if (beta <= alpha) {
-            cutoffFound = true;
-            if (searchContext.collectMetrics) {
-                if (!perfStats.cutoffs[d]) perfStats.cutoffs[d] = 0;
-                perfStats.cutoffs[d]++;
-            }
-            if (searchContext.collectMetrics && legalMovesFound === 1) {
-                recordFirstLegalCutoff(d);
-            }
             if (!isCapture) {
                 storeKillerMove(plyFromRoot, move);
                 addHistoryScore(move, d);
             }
             break;
         }
-    }
-
-    if (useTrueStagedGeneration && cutoffFound && nextTrueStagedStage < 4 &&
-        searchContext.collectMetrics) {
-        perfStats.stagedGeneration.quietSkipped++;
     }
 
     if (legalMovesFound === 0) {
@@ -7370,7 +7078,6 @@ const getBestMove = (
   const nextTurn = turn === 'red' ? 'black' : 'red';
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hashFromSquareCodes(rootPieceState.squareCodes);
-  if (searchContext.collectMetrics) perfStats.fullHashCount++;
   const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, turn);
 
   let completedDepth = 0;
