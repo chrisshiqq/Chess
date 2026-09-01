@@ -1438,13 +1438,13 @@ const App: React.FC = () => {
         }
         const apply = aiSearchProgressPendingRef.current;
         aiSearchProgressPendingRef.current = null;
-        if (!apply) return;
+        if (!apply) return aiSearchDebugRef.current;
+        // 同步落到 ref：COMPLETE 紧跟最后一层 PROGRESS，不能等 setState updater
+        const next = apply(aiSearchDebugRef.current);
+        aiSearchDebugRef.current = next;
         aiSearchProgressLastFlushRef.current = Date.now();
-        setAiSearchDebug(prev => {
-            const next = apply(prev);
-            aiSearchDebugRef.current = next;
-            return next;
-        });
+        setAiSearchDebug(next);
+        return next;
     };
 
     const scheduleAiSearchProgress = (apply: (prev: typeof aiSearchDebug) => typeof aiSearchDebug) => {
@@ -1490,7 +1490,7 @@ const App: React.FC = () => {
         setAnalysisSecondBestMove(null);
         setHintMove(null);
         const postedAt = Date.now();
-        setAiSearchDebug({
+        const postedDebug = {
             active: true,
             gameId: capturedGameId,
             turn: currentTurn,
@@ -1505,8 +1505,10 @@ const App: React.FC = () => {
             lastProgressAt: postedAt,
             lastEvent: 'SEARCH posted',
             postedAt,
-            depthTimes: []
-        });
+            depthTimes: [] as DepthTime[]
+        };
+        aiSearchDebugRef.current = postedDebug;
+        setAiSearchDebug(postedDebug);
         console.info('[AI] SEARCH posted', {
             gameId: capturedGameId,
             turn: currentTurn,
@@ -1644,32 +1646,38 @@ const App: React.FC = () => {
                     completedDepth: payload?.completedDepth,
                     best: payload?.bestMove
                 });
-                // COMPLETE 前 flush 最后一次进度，避免节流丢掉最新层
-                flushAiSearchProgress();
+                // COMPLETE 前同步 flush；最后一层 PROGRESS 几乎总是还在 pending
+                const prevDbg = flushAiSearchProgress();
 
                 if (searchToken.aborted) return;
                 
                 if (payload.gameId === capturedGameId) {
                     {
-                        const prevDbg = aiSearchDebugRef.current;
                         const bestPreview = previewMove(payload.bestMove) || prevDbg.bestPreview;
                         const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
-                        setAiSearchDebug(prev => ({
-                            ...prev,
+                        const thinkingTime = payload.thinkingTime ?? 0;
+                        const depthTimes = completedDepth > 0
+                            ? appendDepthTime(prevDbg.depthTimes, completedDepth, thinkingTime)
+                            : prevDbg.depthTimes;
+                        const completedDebug = {
+                            ...prevDbg,
                             active: false,
                             phase: 'complete',
                             completedDepth,
                             bestPreview,
-                            lastEvent: `COMPLETE ${payload.thinkingTime}ms`,
-                            lastProgressAt: Date.now()
-                        }));
+                            lastEvent: `COMPLETE ${thinkingTime}ms`,
+                            lastProgressAt: Date.now(),
+                            depthTimes
+                        };
+                        aiSearchDebugRef.current = completedDebug;
+                        setAiSearchDebug(completedDebug);
                         setLastSearchBench({
-                            thinkingTime: payload.thinkingTime ?? 0,
+                            thinkingTime,
                             completedDepth,
                             targetDepth: prevDbg.targetDepth || searchDepth,
                             rootMoves: prevDbg.rootMoves,
                             bestPreview,
-                            depthTimes: prevDbg.depthTimes
+                            depthTimes
                         });
                     }
                     // 设置隐藏最优着法和次优着法
@@ -4728,7 +4736,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         setGameId(newGameId);
                                         const currentTurn = turn;
                                         const postedAt = Date.now();
-                                        setAiSearchDebug({
+                                        const postedDebug = {
                                             active: true,
                                             gameId: newGameId,
                                             turn: currentTurn,
@@ -4743,8 +4751,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             lastProgressAt: postedAt,
                                             lastEvent: 'SEARCH posted',
                                             postedAt,
-                                            depthTimes: []
-                                        });
+                                            depthTimes: [] as DepthTime[]
+                                        };
+                                        aiSearchDebugRef.current = postedDebug;
+                                        setAiSearchDebug(postedDebug);
                                         if (workerRef.current) {
                                             const handleAnalysisMessage = (e: MessageEvent) => {
                                                 const { type, payload } = e.data;
@@ -4776,26 +4786,32 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 }
                                                 if (type === 'SEARCH_COMPLETE') {
                                                     workerRef.current?.removeEventListener('message', handleAnalysisMessage);
-                                                    flushAiSearchProgress();
-                                                    const prevDbg = aiSearchDebugRef.current;
+                                                    const prevDbg = flushAiSearchProgress();
                                                     const bestPreview = previewMove(payload.bestMove) || prevDbg.bestPreview;
                                                     const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
-                                                    setAiSearchDebug(prev => ({
-                                                        ...prev,
+                                                    const thinkingTime = payload.thinkingTime ?? 0;
+                                                    const depthTimes = completedDepth > 0
+                                                        ? appendDepthTime(prevDbg.depthTimes, completedDepth, thinkingTime)
+                                                        : prevDbg.depthTimes;
+                                                    const completedDebug = {
+                                                        ...prevDbg,
                                                         active: false,
                                                         phase: 'complete',
                                                         completedDepth,
                                                         bestPreview,
-                                                        lastEvent: `COMPLETE ${payload.thinkingTime}ms`,
-                                                        lastProgressAt: Date.now()
-                                                    }));
+                                                        lastEvent: `COMPLETE ${thinkingTime}ms`,
+                                                        lastProgressAt: Date.now(),
+                                                        depthTimes
+                                                    };
+                                                    aiSearchDebugRef.current = completedDebug;
+                                                    setAiSearchDebug(completedDebug);
                                                     setLastSearchBench({
-                                                        thinkingTime: payload.thinkingTime ?? 0,
+                                                        thinkingTime,
                                                         completedDepth,
                                                         targetDepth: prevDbg.targetDepth || analysisDepth,
                                                         rootMoves: prevDbg.rootMoves,
                                                         bestPreview,
-                                                        depthTimes: prevDbg.depthTimes
+                                                        depthTimes
                                                     });
                                                     const formattedAnalysisMoves = decodeAnalysisMoves(payload.allMovesWithScores);
                                                     setAnalysisMoves(formattedAnalysisMoves);
