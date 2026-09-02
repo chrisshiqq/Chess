@@ -273,6 +273,9 @@ const shouldWriteControlMask = (relCtx, sq) => (
 
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
+const scratchPinRank = new Int8Array(32);
+const scratchPinFile = new Int8Array(32);
+const scratchPinOnlySq = new Int8Array(32);
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
@@ -1788,6 +1791,8 @@ const createOrthogonalLineLookup = (length) => {
     const firstHigh = new Uint8Array(entryCount);
     const secondLow = new Uint8Array(entryCount);
     const secondHigh = new Uint8Array(entryCount);
+    const thirdLow = new Uint8Array(entryCount);
+    const thirdHigh = new Uint8Array(entryCount);
     const mobility = new Uint8Array(entryCount);
     const rookControl = new Uint16Array(entryCount);
     const cannonControl = new Uint16Array(entryCount);
@@ -1795,19 +1800,25 @@ const createOrthogonalLineLookup = (length) => {
     firstHigh.fill(255);
     secondLow.fill(255);
     secondHigh.fill(255);
+    thirdLow.fill(255);
+    thirdHigh.fill(255);
 
     for (let from = 0; from < length; from++) {
         const base = from * occupancyCount;
         for (let occupancy = 0; occupancy < occupancyCount; occupancy++) {
             const key = base + occupancy;
             let first = -1;
+            let second = -1;
             for (let pos = from - 1; pos >= 0; pos--) {
                 if (occupancy & (1 << pos)) {
                     if (first < 0) {
                         first = pos;
                         firstLow[key] = pos;
-                    } else {
+                    } else if (second < 0) {
+                        second = pos;
                         secondLow[key] = pos;
+                    } else {
+                        thirdLow[key] = pos;
                         break;
                     }
                 } else if (first < 0) {
@@ -1819,13 +1830,17 @@ const createOrthogonalLineLookup = (length) => {
             }
 
             first = -1;
+            second = -1;
             for (let pos = from + 1; pos < length; pos++) {
                 if (occupancy & (1 << pos)) {
                     if (first < 0) {
                         first = pos;
                         firstHigh[key] = pos;
-                    } else {
+                    } else if (second < 0) {
+                        second = pos;
                         secondHigh[key] = pos;
+                    } else {
+                        thirdHigh[key] = pos;
                         break;
                     }
                 } else if (first < 0) {
@@ -1844,6 +1859,8 @@ const createOrthogonalLineLookup = (length) => {
         firstHigh,
         secondLow,
         secondHigh,
+        thirdLow,
+        thirdHigh,
         mobility,
         rookControl,
         cannonControl
@@ -1859,6 +1876,8 @@ const RANK_FIRST_HIGH = SEARCH_RANK_LOOKUP.firstHigh;
 const RANK_FIRST_LOW = SEARCH_RANK_LOOKUP.firstLow;
 const RANK_SECOND_HIGH = SEARCH_RANK_LOOKUP.secondHigh;
 const RANK_SECOND_LOW = SEARCH_RANK_LOOKUP.secondLow;
+const RANK_THIRD_HIGH = SEARCH_RANK_LOOKUP.thirdHigh;
+const RANK_THIRD_LOW = SEARCH_RANK_LOOKUP.thirdLow;
 const RANK_ROOK_CONTROL = SEARCH_RANK_LOOKUP.rookControl;
 const RANK_CANNON_CONTROL = SEARCH_RANK_LOOKUP.cannonControl;
 const FILE_MOBILITY = SEARCH_FILE_LOOKUP.mobility;
@@ -1866,8 +1885,190 @@ const FILE_FIRST_HIGH = SEARCH_FILE_LOOKUP.firstHigh;
 const FILE_FIRST_LOW = SEARCH_FILE_LOOKUP.firstLow;
 const FILE_SECOND_HIGH = SEARCH_FILE_LOOKUP.secondHigh;
 const FILE_SECOND_LOW = SEARCH_FILE_LOOKUP.secondLow;
+const FILE_THIRD_HIGH = SEARCH_FILE_LOOKUP.thirdHigh;
+const FILE_THIRD_LOW = SEARCH_FILE_LOOKUP.thirdLow;
 const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
 const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
+
+// 垫将：离开钉线会发现对方将。线外失去保护；钉线上仍可反吃。
+// 车/将面对面：整条横/竖线；炮隔两子：只能保那门炮；马腿：只能保那匹马。
+const collectPinnedGuardSlots = (pieceState) => {
+    const squareCodes = pieceState.squareCodes;
+    const squareToSlot = pieceState.squareToSlot;
+    const rowOccupancy = pieceState.rowOccupancy;
+    const colOccupancy = pieceState.colOccupancy;
+    scratchPinRank.fill(-1);
+    scratchPinFile.fill(-1);
+    scratchPinOnlySq.fill(-1);
+    let pinned = 0;
+
+    const pinOwnAt = (sq, kingIsRed, rank, file, onlySq) => {
+        const code = squareCodes[sq];
+        if (code === 0 || (code & 7) === 1) return;
+        if ((code < 8) !== kingIsRed) return;
+        const slot = squareToSlot[sq];
+        pinned |= 1 << slot;
+        if (rank >= 0) scratchPinRank[slot] = rank;
+        if (file >= 0) scratchPinFile[slot] = file;
+        if (onlySq >= 0) {
+            const prev = scratchPinOnlySq[slot];
+            if (prev >= 0 && prev !== onlySq) scratchPinOnlySq[slot] = -2;
+            else if (prev !== -2) scratchPinOnlySq[slot] = onlySq;
+        }
+    };
+
+    const scanRay = (first, second, third, toSq, kingIsRed, rank, file) => {
+        if (first === 255 || second === 255) return;
+        const secondSq = toSq(second);
+        const secondCode = squareCodes[secondSq];
+        if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) {
+            pinOwnAt(toSq(first), kingIsRed, rank, file, -1);
+        }
+        if (third !== 255) {
+            const thirdSq = toSq(third);
+            const thirdCode = squareCodes[thirdSq];
+            if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
+                pinOwnAt(toSq(first), kingIsRed, -1, -1, thirdSq);
+                pinOwnAt(secondSq, kingIsRed, -1, -1, thirdSq);
+            }
+        }
+    };
+
+    const pinFromKing = (kingSq, kingIsRed) => {
+        if (kingSq < 0) return;
+        const r = SEARCH_SQ_ROWS[kingSq];
+        const c = SEARCH_SQ_COLS[kingSq];
+        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
+        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
+        scanRay(
+            RANK_FIRST_HIGH[rankKey], RANK_SECOND_HIGH[rankKey], RANK_THIRD_HIGH[rankKey],
+            (col) => r * 9 + col, kingIsRed, r, -1
+        );
+        scanRay(
+            RANK_FIRST_LOW[rankKey], RANK_SECOND_LOW[rankKey], RANK_THIRD_LOW[rankKey],
+            (col) => r * 9 + col, kingIsRed, r, -1
+        );
+        scanRay(
+            FILE_FIRST_HIGH[fileKey], FILE_SECOND_HIGH[fileKey], FILE_THIRD_HIGH[fileKey],
+            (row) => row * 9 + c, kingIsRed, -1, c
+        );
+        scanRay(
+            FILE_FIRST_LOW[fileKey], FILE_SECOND_LOW[fileKey], FILE_THIRD_LOW[fileKey],
+            (row) => row * 9 + c, kingIsRed, -1, c
+        );
+
+        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+        for (let i = SEARCH_HORSE_CHECKER_OFF[kingSq], n = SEARCH_HORSE_CHECKER_OFF[kingSq + 1]; i < n; i++) {
+            const entry = horseCheckerData[i];
+            const horseSq = entry & 127;
+            const horseCode = squareCodes[horseSq];
+            if ((horseCode & 7) !== 3 || (horseCode < 8) === kingIsRed) continue;
+            pinOwnAt(entry >>> 7, kingIsRed, -1, -1, horseSq);
+        }
+    };
+
+    pinFromKing(pieceState.redGeneralSq, true);
+    pinFromKing(pieceState.blackGeneralSq, false);
+    return pinned >>> 0;
+};
+
+const pinnedCanGuardSquare = (slot, targetSq) => {
+    const only = scratchPinOnlySq[slot];
+    if (only === -2) return false;
+    if (only >= 0 && targetSq !== only) return false;
+    const rank = scratchPinRank[slot];
+    if (rank >= 0 && SEARCH_SQ_ROWS[targetSq] !== rank) return false;
+    const file = scratchPinFile[slot];
+    if (file >= 0 && SEARCH_SQ_COLS[targetSq] !== file) return false;
+    return true;
+};
+
+const dropPinnedOffLineGuards = (guards, pinned, targetSq) => {
+    let drop = 0;
+    let bits = (guards & pinned) >>> 0;
+    while (bits !== 0) {
+        const bit = bits & -bits;
+        const slot = 31 - Math.clz32(bit);
+        bits ^= bit;
+        if (!pinnedCanGuardSquare(slot, targetSq)) drop |= bit;
+    }
+    return drop;
+};
+
+const applyPinnedGuardFilterToLeaf = (pieceState) => {
+    const pinned = collectPinnedGuardSlots(pieceState);
+    if (pinned === 0) return;
+    const guardBySlot = scratchLeafGuardBySlot;
+    const pieceSquares = pieceState.pieceSquares;
+    for (let target = 0; target < 32; target++) {
+        const guards = guardBySlot[target] >>> 0;
+        if ((guards & pinned) === 0) continue;
+        const drop = dropPinnedOffLineGuards(guards, pinned, pieceSquares[target]);
+        if (drop) guardBySlot[target] = guards & ~drop;
+    }
+};
+
+const applyPinnedGuardFilterToRelations = (board, piecesInfo, boardInfo) => {
+    runWithPieceState(board, () => {
+        const state = activePieceStateFor(board);
+        if (!state) return;
+        const pinnedSlots = collectPinnedGuardSlots(state);
+        if (pinnedSlots === 0) return;
+        const squareToSlot = state.squareToSlot;
+        if (boardInfo && boardInfo.useRelationMasks) {
+            const guardMask = boardInfo.guardMask;
+            for (let sq = 0; sq < REL_SQUARES; sq++) {
+                let gm = guardMask[sq] >>> 0;
+                if (gm === 0) continue;
+                let keep = 0;
+                while (gm !== 0) {
+                    const bit = gm & -gm;
+                    const info = piecesInfo[31 - Math.clz32(bit)];
+                    const guardSlot = squareToSlot[info.r * 9 + info.c];
+                    if (guardSlot < 0 || (pinnedSlots & (1 << guardSlot)) === 0 ||
+                        pinnedCanGuardSquare(guardSlot, sq)) {
+                        keep |= bit;
+                    }
+                    gm ^= bit;
+                }
+                guardMask[sq] = keep;
+            }
+            return;
+        }
+        for (let i = 0; i < piecesInfo.length; i++) {
+            const info = piecesInfo[i];
+            const guardSlot = squareToSlot[info.r * 9 + info.c];
+            if (guardSlot < 0 || (pinnedSlots & (1 << guardSlot)) === 0) continue;
+            const guarded = info.guard;
+            let write = 0;
+            for (let k = 0; k < guarded.length; k++) {
+                const target = guarded[k];
+                if (pinnedCanGuardSquare(guardSlot, target.r * 9 + target.c)) {
+                    guarded[write++] = target;
+                    continue;
+                }
+                const list = target.guardedBy;
+                if (!list) continue;
+                let w = 0;
+                for (let r = 0; r < list.length; r++) {
+                    if (list[r] !== info) list[w++] = list[r];
+                }
+                list.length = w;
+            }
+            info.guard.length = write;
+            if (info.allyGuards) {
+                const allies = info.allyGuards;
+                let a = 0;
+                for (let k = 0; k < allies.length; k++) {
+                    if (pinnedCanGuardSquare(guardSlot, allies[k].r * 9 + allies[k].c)) {
+                        allies[a++] = allies[k];
+                    }
+                }
+                allies.length = a;
+            }
+        }
+    });
+};
 
 let leafWMaterial = VALUE_WEIGHTS.material;
 let leafWPosition = VALUE_WEIGHTS.position;
@@ -3078,6 +3279,7 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+    applyPinnedGuardFilterToLeaf(pieceState);
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
     leafRelationScratchFresh = true;
 };
@@ -3473,6 +3675,7 @@ const calculatePackedSearchLeafRelationsNumericWithCaptures = (
         const offset = fromSq * PACKED_CAPTURE_STRIDE;
         for (let i = 0; i < count; i++) packedCaptures.push(captureMoves[offset + i]);
     }
+    applyPinnedGuardFilterToLeaf(pieceState);
     leafRelationScratchFresh = true;
 };
 
@@ -3678,6 +3881,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
 
     boardInfo.redIsInCheck = redIsInCheck;
     boardInfo.blackIsInCheck = blackIsInCheck;
+    applyPinnedGuardFilterToRelations(board, piecesInfo, boardInfo);
 };
 
 // SEE 排序复用缓冲，降低叶评估 GC
@@ -6882,11 +7086,9 @@ const getBestMove = (
   turn,
   depth = 8,
   ply = 0,
-  enableTimeLimit = false,
   exactRootScores = false,
   excludedRootMoves = []
 ) => {
-  const timeLimit = 5000;
   const excludedRootMoveSet = new Set(
     excludedRootMoves
       .filter((move) => move?.from && move?.to)
@@ -7083,10 +7285,6 @@ const getBestMove = (
   let completedDepth = 0;
 
   for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
-    if (enableTimeLimit && completedDepth > 0 && Date.now() - startTime > timeLimit) {
-      console.log(`ID stopped before depth ${currentDepth} due to time limit (last completed=${completedDepth})`);
-      break;
-    }
     emitSearchProgress({
       phase: 'iterating',
       completedDepth,

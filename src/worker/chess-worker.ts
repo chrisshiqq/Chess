@@ -107,8 +107,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
             gameId: payload.gameId,
             turn: payload.turn,
             depth: payload.depth,
-            ply: payload.ply ?? 0,
-            enableTimeLimit: !!payload.enableTimeLimit
+            ply: payload.ply ?? 0
           }
         });
 
@@ -136,7 +135,6 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
             payload.turn,
             payload.depth,
             payload.ply ?? 0,
-            payload.enableTimeLimit ?? false,
             payload.exactRootScores ?? false,
             payload.excludedRootMoves ?? []
           );

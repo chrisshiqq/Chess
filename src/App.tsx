@@ -21,7 +21,6 @@ import {
     SaveIcon,
     LoadIcon,
     PaletteIcon,
-    ClockIcon,
     SquareIcon,
     AdjustmentsIcon,
     BoltIcon
@@ -124,10 +123,10 @@ const requestWorker = <T,>(
 
 // --- Board Initialization ---
 // --- Enhanced Difficulty Configuration ---
-const DIFFICULTIES: Record<DifficultyLevel, { depth: number; randomness: number; timeLimit: number }> = {
-    easy: { depth: 3, randomness: 0.0, timeLimit: 3000 },      // 3秒，有一定随机性
-    medium: { depth: 5, randomness: 0.0, timeLimit: 5000 },  // 5秒，较少随机性
-    hard: { depth: 8, randomness: 0.0, timeLimit: 10000 }       // 10 seconds, strongest search
+const DIFFICULTIES: Record<DifficultyLevel, { depth: number; randomness: number }> = {
+    easy: { depth: 3, randomness: 0.0 },
+    medium: { depth: 5, randomness: 0.0 },
+    hard: { depth: 8, randomness: 0.0 }
 };
 
 const createInitialBoard = (): Board => {
@@ -528,7 +527,6 @@ const App: React.FC = () => {
     useEffect(() => {
         blackIsAutoRef.current = blackIsAuto;
     }, [blackIsAuto]);
-    const [enableTimeLimit, setEnableTimeLimit] = useState<boolean>(false); // 控制AI时间限制逻辑的开关
     const [isReplaying, setIsReplaying] = useState<boolean>(false);
     const [replayIndex, setReplayIndex] = useState<number>(0);
     const [replayNotation, setReplayNotation] = useState<string[]>([]);
@@ -1462,7 +1460,7 @@ const App: React.FC = () => {
     };
 
     // 通用的搜索和执行走法函数，用于AI和玩家Auto模式（同步返回 cleanup，供 effect 使用）
-    const searchAndExecuteMove = (currentBoard: Board, currentTurn: Color, searchDepth: number, capturedGameId: number, randomness: number = 0, ply: number = 0, isAutoMode: boolean = false, delay: number = 0, enableTimeLimit: boolean = false) => {
+    const searchAndExecuteMove = (currentBoard: Board, currentTurn: Color, searchDepth: number, capturedGameId: number, randomness: number = 0, ply: number = 0, isAutoMode: boolean = false, delay: number = 0) => {
         // 新搜索开始前移除旧 listener，避免叠加
         const prevListener = aiSearchListenerRef.current;
         if (prevListener) {
@@ -1513,8 +1511,7 @@ const App: React.FC = () => {
             gameId: capturedGameId,
             turn: currentTurn,
             depth: searchDepth,
-            ply,
-            enableTimeLimit
+            ply
         });
         
         // 执行走法并处理延迟
@@ -1589,7 +1586,6 @@ const App: React.FC = () => {
                     ply,
                     gameId: capturedGameId,
                     openingBookEnabled,
-                    enableTimeLimit,
                     exactRootScores: false,
                     excludedRootMoves: [...excludedRootMoves]
                 }
@@ -1824,7 +1820,6 @@ const App: React.FC = () => {
                 isThinking: true,
                 turn,
                 playDepth,
-                enableTimeLimit,
                 hint: sinceProgress >= 8000 && dbg.phase === 'posted'
                     ? '已 post SEARCH 但未收到 SEARCH_STARTED：Worker 可能未跑/被阻塞/监听器丢失'
                     : sinceProgress >= 8000 && (dbg.phase === 'SEARCH_STARTED' || dbg.phase === 'root-eval')
@@ -1841,13 +1836,12 @@ const App: React.FC = () => {
             isThinking: true,
             turn,
             playDepth,
-            enableTimeLimit,
             now: Date.now()
         });
         return () => {
             window.clearInterval(watchId);
         };
-    }, [isThinking, turn, playDepth, enableTimeLimit]);
+    }, [isThinking, turn, playDepth]);
 
     // AI Turn Logic
     useEffect(() => {
@@ -1865,8 +1859,8 @@ const App: React.FC = () => {
             const searchDepth = playDepth;
             console.log('AI config:', { ...config, depth: searchDepth }, 'gameId:', capturedGameId);
 
-            // 调用通用的搜索和执行走法函数，为AI走棋添加0.1秒延迟，使用Setting面板中的TimeLimit开关设置
-            const cleanup = searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 100, enableTimeLimit);
+            // 调用通用的搜索和执行走法函数，为AI走棋添加0.1秒延迟
+            const cleanup = searchAndExecuteMove(board, turn, searchDepth, capturedGameId, config.randomness, moveHistory.length, true, 100);
 
             return () => {
                 cleanup();
@@ -3326,7 +3320,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         ply: moveHistory.length,
                         gameId: capturedGameId,
                         openingBookEnabled: openingBookEnabled,
-                        enableTimeLimit: enableTimeLimit,
                         exactRootScores: true,
                         exactRootLimit: analysisScale
                     }
@@ -4437,24 +4430,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             </div>
                         </div>
                         
-                        {/* Timer开关 */}
-                        <div className="bg-stone-700/50 rounded-lg border border-stone-600 flex items-center justify-between p-3">
-                            <div className="flex items-center gap-2">
-                                <ClockIcon className="w-5 h-5 text-amber-400" />
-                                <span className="text-xs font-semibold text-stone-300 uppercase tracking-wide">TIMER</span>
-                            </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input 
-                                    type="checkbox" 
-                                    checked={enableTimeLimit}
-                                    onChange={(e) => setEnableTimeLimit(e.target.checked)}
-                                    className="sr-only peer"
-                                    disabled={isThinking}
-                                />
-                                <div className={`w-14 h-7 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all ${enableTimeLimit ? 'bg-amber-500' : 'bg-stone-500'}`}></div>
-                            </label>
-                        </div>
-                        
                         <div className="flex items-center justify-between bg-stone-900/50 p-3 rounded-lg border border-stone-700">
                             <div className="flex items-center gap-2">
                                 <SpeakerWaveIcon className="w-5 h-5 text-stone-400" />
@@ -4834,7 +4809,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     ply: 0,
                                                     gameId: newGameId,
                                                     openingBookEnabled,
-                                                    enableTimeLimit: true,
                                                     exactRootScores: true,
                                                     exactRootLimit: analysisScale
                                                 }

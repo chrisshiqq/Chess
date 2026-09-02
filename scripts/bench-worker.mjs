@@ -25,7 +25,6 @@ parentPort.on('message', ({ type, payload }) => {
     payload.turn,
     payload.depth,
     payload.ply ?? 0,
-    payload.enableTimeLimit ?? false,
     payload.exactRootScores ?? false
   );
   const thinkingTime = Math.round(performance.now() - started);

@@ -9,7 +9,6 @@ export interface SearchOptions {
   gameId: number;
   openingBookEnabled?: boolean;
   ply?: number;
-  enableTimeLimit?: boolean;
   exactRootScores?: boolean;
   exactRootLimit?: number;
   excludedRootMoves?: Move[];
@@ -84,7 +83,7 @@ export interface SearchProgressPayload {
 }
 
 export type WorkerResponse =
-  | { type: 'SEARCH_STARTED'; payload: { gameId: number; turn: Color; depth: number; ply: number; enableTimeLimit: boolean } }
+  | { type: 'SEARCH_STARTED'; payload: { gameId: number; turn: Color; depth: number; ply: number } }
   | { type: 'SEARCH_PROGRESS'; payload: SearchProgressPayload }
   | { type: 'SEARCH_COMPLETE'; payload: SearchCompletePayload }
   | { type: 'validMoves'; moves: Position[]; requestId: string }

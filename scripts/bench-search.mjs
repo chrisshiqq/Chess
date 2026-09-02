@@ -70,7 +70,7 @@ function runSearch(depth, exactRootScores, profile, metrics, lmrMinMove, nmpMinD
       type: 'SEARCH',
       payload: {
         board: makeInitialBoard(), turn: 'red', depth, randomness: 0, gameId: 1,
-        openingBookEnabled: false, ply: 0, enableTimeLimit: false, exactRootScores, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction
+        openingBookEnabled: false, ply: 0, exactRootScores, profile, metrics, lmrMinMove, nmpMinDepth, nmpReduction
       }
     });
   });
