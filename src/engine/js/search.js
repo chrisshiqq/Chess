@@ -276,6 +276,7 @@ const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchPinRank = new Int8Array(32);
 const scratchPinFile = new Int8Array(32);
 const scratchPinOnlySq = new Int8Array(32);
+let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
@@ -1892,84 +1893,114 @@ const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
 
 // 垫将：离开钉线会发现对方将。线外失去保护；钉线上仍可反吃。
 // 车/将面对面：整条横/竖线；炮隔两子：只能保那门炮；马腿：只能保那匹马。
-const collectPinnedGuardSlots = (pieceState) => {
+const pinOwnGuardSlot = (squareCodes, squareToSlot, sq, kingIsRed, rank, file, onlySq) => {
+    const code = squareCodes[sq];
+    if (code === 0 || (code & 7) === 1) return;
+    if ((code < 8) !== kingIsRed) return;
+    const slot = squareToSlot[sq];
+    const bit = 1 << slot;
+    if ((scratchPinnedGuardBits & bit) === 0) {
+        scratchPinRank[slot] = -1;
+        scratchPinFile[slot] = -1;
+        scratchPinOnlySq[slot] = -1;
+        scratchPinnedGuardBits |= bit;
+    }
+    if (rank >= 0) scratchPinRank[slot] = rank;
+    if (file >= 0) scratchPinFile[slot] = file;
+    if (onlySq >= 0) {
+        const prev = scratchPinOnlySq[slot];
+        if (prev >= 0 && prev !== onlySq) scratchPinOnlySq[slot] = -2;
+        else if (prev !== -2) scratchPinOnlySq[slot] = onlySq;
+    }
+};
+
+const collectPinsOnRay = (
+    squareCodes, squareToSlot, first, second, third,
+    firstSq, secondSq, thirdSq, kingIsRed, rank, file
+) => {
+    if (first === 255 || second === 255) return;
+    const secondCode = squareCodes[secondSq];
+    if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) {
+        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, rank, file, -1);
+    }
+    if (third === 255) return;
+    const thirdCode = squareCodes[thirdSq];
+    if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
+        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, -1, -1, thirdSq);
+        pinOwnGuardSlot(squareCodes, squareToSlot, secondSq, kingIsRed, -1, -1, thirdSq);
+    }
+};
+
+const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
+    if (kingSq < 0) return;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
-    const rowOccupancy = pieceState.rowOccupancy;
-    const colOccupancy = pieceState.colOccupancy;
-    scratchPinRank.fill(-1);
-    scratchPinFile.fill(-1);
-    scratchPinOnlySq.fill(-1);
-    let pinned = 0;
+    const r = SEARCH_SQ_ROWS[kingSq];
+    const c = SEARCH_SQ_COLS[kingSq];
+    const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
+    const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
+    const rankBase = r * 9;
 
-    const pinOwnAt = (sq, kingIsRed, rank, file, onlySq) => {
-        const code = squareCodes[sq];
-        if (code === 0 || (code & 7) === 1) return;
-        if ((code < 8) !== kingIsRed) return;
-        const slot = squareToSlot[sq];
-        pinned |= 1 << slot;
-        if (rank >= 0) scratchPinRank[slot] = rank;
-        if (file >= 0) scratchPinFile[slot] = file;
-        if (onlySq >= 0) {
-            const prev = scratchPinOnlySq[slot];
-            if (prev >= 0 && prev !== onlySq) scratchPinOnlySq[slot] = -2;
-            else if (prev !== -2) scratchPinOnlySq[slot] = onlySq;
-        }
-    };
-
-    const scanRay = (first, second, third, toSq, kingIsRed, rank, file) => {
-        if (first === 255 || second === 255) return;
-        const secondSq = toSq(second);
-        const secondCode = squareCodes[secondSq];
-        if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) {
-            pinOwnAt(toSq(first), kingIsRed, rank, file, -1);
-        }
-        if (third !== 255) {
-            const thirdSq = toSq(third);
-            const thirdCode = squareCodes[thirdSq];
-            if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
-                pinOwnAt(toSq(first), kingIsRed, -1, -1, thirdSq);
-                pinOwnAt(secondSq, kingIsRed, -1, -1, thirdSq);
-            }
-        }
-    };
-
-    const pinFromKing = (kingSq, kingIsRed) => {
-        if (kingSq < 0) return;
-        const r = SEARCH_SQ_ROWS[kingSq];
-        const c = SEARCH_SQ_COLS[kingSq];
-        const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
-        const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-        scanRay(
-            RANK_FIRST_HIGH[rankKey], RANK_SECOND_HIGH[rankKey], RANK_THIRD_HIGH[rankKey],
-            (col) => r * 9 + col, kingIsRed, r, -1
+    let first = RANK_FIRST_HIGH[rankKey];
+    let second = RANK_SECOND_HIGH[rankKey];
+    if (first !== 255 && second !== 255) {
+        const third = RANK_THIRD_HIGH[rankKey];
+        collectPinsOnRay(
+            squareCodes, squareToSlot, first, second, third,
+            rankBase + first, rankBase + second, rankBase + third,
+            kingIsRed, r, -1
         );
-        scanRay(
-            RANK_FIRST_LOW[rankKey], RANK_SECOND_LOW[rankKey], RANK_THIRD_LOW[rankKey],
-            (col) => r * 9 + col, kingIsRed, r, -1
+    }
+    first = RANK_FIRST_LOW[rankKey];
+    second = RANK_SECOND_LOW[rankKey];
+    if (first !== 255 && second !== 255) {
+        const third = RANK_THIRD_LOW[rankKey];
+        collectPinsOnRay(
+            squareCodes, squareToSlot, first, second, third,
+            rankBase + first, rankBase + second, rankBase + third,
+            kingIsRed, r, -1
         );
-        scanRay(
-            FILE_FIRST_HIGH[fileKey], FILE_SECOND_HIGH[fileKey], FILE_THIRD_HIGH[fileKey],
-            (row) => row * 9 + c, kingIsRed, -1, c
+    }
+    first = FILE_FIRST_HIGH[fileKey];
+    second = FILE_SECOND_HIGH[fileKey];
+    if (first !== 255 && second !== 255) {
+        const third = FILE_THIRD_HIGH[fileKey];
+        collectPinsOnRay(
+            squareCodes, squareToSlot, first, second, third,
+            first * 9 + c, second * 9 + c, third * 9 + c,
+            kingIsRed, -1, c
         );
-        scanRay(
-            FILE_FIRST_LOW[fileKey], FILE_SECOND_LOW[fileKey], FILE_THIRD_LOW[fileKey],
-            (row) => row * 9 + c, kingIsRed, -1, c
+    }
+    first = FILE_FIRST_LOW[fileKey];
+    second = FILE_SECOND_LOW[fileKey];
+    if (first !== 255 && second !== 255) {
+        const third = FILE_THIRD_LOW[fileKey];
+        collectPinsOnRay(
+            squareCodes, squareToSlot, first, second, third,
+            first * 9 + c, second * 9 + c, third * 9 + c,
+            kingIsRed, -1, c
         );
+    }
 
-        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
-        for (let i = SEARCH_HORSE_CHECKER_OFF[kingSq], n = SEARCH_HORSE_CHECKER_OFF[kingSq + 1]; i < n; i++) {
-            const entry = horseCheckerData[i];
-            const horseSq = entry & 127;
-            const horseCode = squareCodes[horseSq];
-            if ((horseCode & 7) !== 3 || (horseCode < 8) === kingIsRed) continue;
-            pinOwnAt(entry >>> 7, kingIsRed, -1, -1, horseSq);
-        }
-    };
+    const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+    for (let i = SEARCH_HORSE_CHECKER_OFF[kingSq], n = SEARCH_HORSE_CHECKER_OFF[kingSq + 1]; i < n; i++) {
+        const entry = horseCheckerData[i];
+        const horseSq = entry & 127;
+        const horseCode = squareCodes[horseSq];
+        if ((horseCode & 7) !== 3 || (horseCode < 8) === kingIsRed) continue;
+        pinOwnGuardSlot(squareCodes, squareToSlot, entry >>> 7, kingIsRed, -1, -1, horseSq);
+    }
+};
 
-    pinFromKing(pieceState.redGeneralSq, true);
-    pinFromKing(pieceState.blackGeneralSq, false);
-    return pinned >>> 0;
+const collectPinnedGuardSlots = (pieceState, guardInterest = 0xFFFFFFFF) => {
+    scratchPinnedGuardBits = 0;
+    if ((guardInterest & pieceState.redAliveMask) !== 0) {
+        collectPinsFromKing(pieceState, pieceState.redGeneralSq, true);
+    }
+    if ((guardInterest & pieceState.blackAliveMask) !== 0) {
+        collectPinsFromKing(pieceState, pieceState.blackGeneralSq, false);
+    }
+    return scratchPinnedGuardBits >>> 0;
 };
 
 const pinnedCanGuardSquare = (slot, targetSq) => {
@@ -1996,11 +2027,25 @@ const dropPinnedOffLineGuards = (guards, pinned, targetSq) => {
 };
 
 const applyPinnedGuardFilterToLeaf = (pieceState) => {
-    const pinned = collectPinnedGuardSlots(pieceState);
-    if (pinned === 0) return;
+    let attacked = scratchLeafAttackedTargetMask >>> 0;
+    if (attacked === 0) return;
     const guardBySlot = scratchLeafGuardBySlot;
+    let relevantGuards = 0;
+    let bits = attacked;
+    while (bits !== 0) {
+        const bit = bits & -bits;
+        bits ^= bit;
+        relevantGuards |= guardBySlot[31 - Math.clz32(bit)];
+    }
+    if (relevantGuards === 0) return;
+    const pinned = collectPinnedGuardSlots(pieceState, relevantGuards);
+    if (pinned === 0) return;
     const pieceSquares = pieceState.pieceSquares;
-    for (let target = 0; target < 32; target++) {
+    bits = attacked;
+    while (bits !== 0) {
+        const bit = bits & -bits;
+        const target = 31 - Math.clz32(bit);
+        bits ^= bit;
         const guards = guardBySlot[target] >>> 0;
         if ((guards & pinned) === 0) continue;
         const drop = dropPinnedOffLineGuards(guards, pinned, pieceSquares[target]);
