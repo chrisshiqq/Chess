@@ -2014,41 +2014,108 @@ const pinnedCanGuardSquare = (slot, targetSq) => {
     return true;
 };
 
-const dropPinnedOffLineGuards = (guards, pinned, targetSq) => {
-    let drop = 0;
-    let bits = (guards & pinned) >>> 0;
-    while (bits !== 0) {
-        const bit = bits & -bits;
-        const slot = 31 - Math.clz32(bit);
-        bits ^= bit;
-        if (!pinnedCanGuardSquare(slot, targetSq)) drop |= bit;
+// 只问「这个保护子能不能保 target」。比扫双方将便宜：平均约 2 个保护子，各查 1 条射线。
+const guardPinnedOffTarget = (state, slot, targetSq) => {
+    const sq = state.pieceSquares[slot];
+    const code = state.pieceCodes[slot];
+    if ((code & 7) === 1) return false;
+    const kingIsRed = code < 8;
+    const kingSq = kingIsRed ? state.redGeneralSq : state.blackGeneralSq;
+    if (kingSq < 0 || sq === kingSq) return false;
+    const squareCodes = state.squareCodes;
+    const r = SEARCH_SQ_ROWS[sq];
+    const c = SEARCH_SQ_COLS[sq];
+    const gr = SEARCH_SQ_ROWS[kingSq];
+    const gc = SEARCH_SQ_COLS[kingSq];
+    let rankPin = false;
+    let filePin = false;
+    let onlySq = -1;
+
+    if (r === gr) {
+        const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[r];
+        const high = c > gc;
+        const first = high ? RANK_FIRST_HIGH[rankKey] : RANK_FIRST_LOW[rankKey];
+        const second = high ? RANK_SECOND_HIGH[rankKey] : RANK_SECOND_LOW[rankKey];
+        if (second !== 255 && (first === c || second === c)) {
+            if (first === c) {
+                const secondCode = squareCodes[r * 9 + second];
+                if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) rankPin = true;
+            }
+            const third = high ? RANK_THIRD_HIGH[rankKey] : RANK_THIRD_LOW[rankKey];
+            if (third !== 255) {
+                const thirdCode = squareCodes[r * 9 + third];
+                if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
+                    const pinSq = r * 9 + third;
+                    if (onlySq >= 0 && onlySq !== pinSq) onlySq = -2;
+                    else if (onlySq !== -2) onlySq = pinSq;
+                }
+            }
+        }
     }
-    return drop;
+    if (c === gc) {
+        const fileKey = gr * FILE_OCC_COUNT + state.colOccupancy[c];
+        const high = r > gr;
+        const first = high ? FILE_FIRST_HIGH[fileKey] : FILE_FIRST_LOW[fileKey];
+        const second = high ? FILE_SECOND_HIGH[fileKey] : FILE_SECOND_LOW[fileKey];
+        if (second !== 255 && (first === r || second === r)) {
+            if (first === r) {
+                const secondCode = squareCodes[second * 9 + c];
+                if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) filePin = true;
+            }
+            const third = high ? FILE_THIRD_HIGH[fileKey] : FILE_THIRD_LOW[fileKey];
+            if (third !== 255) {
+                const thirdCode = squareCodes[third * 9 + c];
+                if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
+                    const pinSq = third * 9 + c;
+                    if (onlySq >= 0 && onlySq !== pinSq) onlySq = -2;
+                    else if (onlySq !== -2) onlySq = pinSq;
+                }
+            }
+        }
+    }
+
+    // 将的马腿只在斜邻；开局兵/车等保护子多数不在这里。
+    if ((r === gr + 1 || r === gr - 1) && (c === gc + 1 || c === gc - 1)) {
+        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+        for (let i = SEARCH_HORSE_CHECKER_OFF[kingSq], n = SEARCH_HORSE_CHECKER_OFF[kingSq + 1]; i < n; i++) {
+            const entry = horseCheckerData[i];
+            if ((entry >>> 7) !== sq) continue;
+            const horseSq = entry & 127;
+            const horseCode = squareCodes[horseSq];
+            if ((horseCode & 7) === 3 && (horseCode < 8) !== kingIsRed) {
+                if (onlySq >= 0 && onlySq !== horseSq) onlySq = -2;
+                else if (onlySq !== -2) onlySq = horseSq;
+            }
+        }
+    }
+
+    if (onlySq === -2) return true;
+    if (onlySq >= 0 && targetSq !== onlySq) return true;
+    if (rankPin && SEARCH_SQ_ROWS[targetSq] !== r) return true;
+    if (filePin && SEARCH_SQ_COLS[targetSq] !== c) return true;
+    return false;
 };
 
 const applyPinnedGuardFilterToLeaf = (pieceState) => {
     let attacked = scratchLeafAttackedTargetMask >>> 0;
     if (attacked === 0) return;
     const guardBySlot = scratchLeafGuardBySlot;
-    let relevantGuards = 0;
-    let bits = attacked;
-    while (bits !== 0) {
-        const bit = bits & -bits;
-        bits ^= bit;
-        relevantGuards |= guardBySlot[31 - Math.clz32(bit)];
-    }
-    if (relevantGuards === 0) return;
-    const pinned = collectPinnedGuardSlots(pieceState, relevantGuards);
-    if (pinned === 0) return;
     const pieceSquares = pieceState.pieceSquares;
-    bits = attacked;
-    while (bits !== 0) {
-        const bit = bits & -bits;
+    while (attacked !== 0) {
+        const bit = attacked & -attacked;
         const target = 31 - Math.clz32(bit);
-        bits ^= bit;
-        const guards = guardBySlot[target] >>> 0;
-        if ((guards & pinned) === 0) continue;
-        const drop = dropPinnedOffLineGuards(guards, pinned, pieceSquares[target]);
+        attacked ^= bit;
+        let guards = guardBySlot[target] >>> 0;
+        if (guards === 0) continue;
+        let drop = 0;
+        let guardBits = guards;
+        while (guardBits !== 0) {
+            const guardBit = guardBits & -guardBits;
+            guardBits ^= guardBit;
+            if (guardPinnedOffTarget(pieceState, 31 - Math.clz32(guardBit), pieceSquares[target])) {
+                drop |= guardBit;
+            }
+        }
         if (drop) guardBySlot[target] = guards & ~drop;
     }
 };
