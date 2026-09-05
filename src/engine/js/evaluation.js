@@ -11,7 +11,7 @@ export const evaluatePieceInfo = (pieceInfo) => ({
 export {
   VALUE_WEIGHTS,
   evaluateBoard,
-  evaluateBoardForUi,
+  evaluatePiece,
   getGamePhase,
   hydrateRelationsFromMasks,
   setValueWeights

@@ -4,7 +4,7 @@ import { decodeSquares, formatMove } from '../engine/codec.ts';
 import type { EncodedMove, WireBoard, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
-  evaluateBoardForUi,
+  evaluatePiece,
   evaluatePieceInfo,
   getGamePhase,
   hydrateRelationsFromMasks,
@@ -46,13 +46,13 @@ const emptyRelations = () => ({
 const buildSquareInspection = (
   board: WireBoard,
   pos: { r: number; c: number },
-  turn: Parameters<typeof evaluateBoardForUi>[1],
+  turn: Parameters<typeof evaluatePiece>[1],
   needMoves: boolean
 ) => {
   const moves = needMoves ? decodeSquares(getValidMoves(board, pos)) : [];
   const piece = board[pos.r][pos.c];
   // 点棋专用函数，不走通用 evaluateBoard
-  const boardEvaluation = evaluateBoardForUi(board, turn, gameStage());
+  const boardEvaluation = evaluatePiece(board, turn, gameStage());
   const piecesInfo = boardEvaluation.piecesInfo;
   const boardInfo = boardEvaluation.boardInfo as any;
   if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);

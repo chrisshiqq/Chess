@@ -179,17 +179,6 @@ const makeEmptyControllerGrid = () =>
     Array(10).fill(null).map(() => Array(9).fill(null).map(() => []));
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
-const PACKED_CAPTURE_STRIDE = 8;
-const scratchPackedCaptureCounts = new Uint8Array(REL_SQUARES);
-const scratchPackedCaptureMoves = new Uint16Array(REL_SQUARES * PACKED_CAPTURE_STRIDE);
-const scratchPackedCaptureSources = new Uint8Array(16);
-const scratchPackedCaptures = [];
-let scratchPackedCaptureSourceCount = 0;
-let packedCaptureCacheKey = 0;
-let packedCaptureVerificationKey = 0;
-let packedCaptureCombinedKey = 0;
-let packedCaptureGeneration = 0;
-let packedCapturePlayer = null;
 let leafRelationScratchFresh = false;
 const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
 const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
@@ -535,7 +524,7 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
 
-// 主评估函数：局面评估面板。点棋关系请用 evaluateBoardForUi。
+// 主评估函数：局面评估面板。点棋关系请用 evaluatePiece。
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
     runWithPieceState(board, () => {
     const __t0 = searchContext.profile ? performance.now() : 0;
@@ -687,8 +676,8 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
     return __evalResult;
     });
 
-// 点棋专用评估：关系 + 单子分。不跑终局“扫全体合法着”，也不改 evaluateBoard
-const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') =>
+// 点棋：关系 + 单子分。不跑终局扫着，也不改 evaluateBoard。
+const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     runWithPieceState(board, () => {
     const piecesInfo = [];
     const pieceState = activePieceStateFor(board);
@@ -1013,14 +1002,17 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
 // 搜索热路径使用延迟合法性（试走时检测），避免对剪枝未触及的着法做全量过滤
 const scratchLegalDests = [];
-const filterLegalMoves = (board, fromSq, color, pseudoMoves) => {
+const scratchLegalCheckInfo = createCheckInfo();
+const filterLegalMoves = (board, fromSq, color, pseudoMoves, wasInCheck, checkInfo) => {
     const validMoves = scratchLegalDests;
     validMoves.length = 0;
     for (let i = 0; i < pseudoMoves.length; i++) {
         const toSq = pseudoMoves[i];
         const encoded = (fromSq << 7) | toSq;
         makeSearchMove(board, encoded);
-        const illegal = leavesOwnKingUnsafe(activePieceStateFor(board), color, fromSq, toSq);
+        const illegal = leavesOwnKingUnsafe(
+            activePieceStateFor(board), color, fromSq, toSq, wasInCheck, checkInfo
+        );
         unmakeSearchMove(board, encoded);
         if (!illegal) validMoves.push(toSq);
     }
@@ -1032,20 +1024,17 @@ const makeSearchMove = (board, move) => {
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
     if (!state || state.board !== board) {
-        const capturedCode = state ? state.squareCodes[to] : 0;
         updatePieceStateAfterMake(board, from, to);
-        return capturedCode;
+        return;
     }
     const capturedSlot = state.squareToSlot[to];
     const moverSlot = state.squareToSlot[from];
     const moverCode = state.pieceCodes[moverSlot];
     if (capturedSlot < 0) {
         updatePieceStateAfterMakeQuiet(state, from, to, moverSlot, moverCode);
-        return 0;
+        return;
     }
-    const capturedCode = state.squareCodes[to];
     updatePieceStateAfterMakeCapture(state, from, to, moverSlot, moverCode, capturedSlot);
-    return capturedCode;
 };
 
 const unmakeSearchMove = (board, move) => {
@@ -1083,7 +1072,7 @@ const clearSortSquareMarks = () => {
     squareMarkTouched.length = 0;
 };
 
-const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid', boardInfo = null, ttMove = null, killers = null, knownInCheck = null, parallelArrays = null) => {
+const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = null, killers = null, knownInCheck = null, parallelArrays = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.sortMovesCount++;
     const currentIsInCheck = knownInCheck != null
@@ -1123,6 +1112,7 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
         if (searchContext.profile) perfStats.sortMovesMs += performance.now() - __t0;
         return moves;
     }
+    const materialValues = pieceState.materialValues;
     const useSimpleSearchSort = !currentIsInCheck && !hasThreatened && !hasCanCapture;
     const isMarkedThreatened = (sq) => {
         if (!hasThreatened) return false;
@@ -1135,7 +1125,6 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
     if (useSimpleSearchSort) {
         const squareToSlot = pieceState.squareToSlot;
         const pieceCodes = pieceState.pieceCodes;
-        const materialValues = searchMaterialTable(gameStage);
         for (let index = 0; index < moves.length; index++) {
             const move = moves[index];
             const fromSq = move >>> 7;
@@ -1173,7 +1162,6 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
         const toSq = move & MOVE_TO_MASK;
         const moverCode = pieceState.squareCodes[fromSq];
         const targetCode = pieceState.squareCodes[toSq];
-        const materialValues = searchMaterialTable(gameStage);
         const pieceValue = materialValues[moverCode & 7];
         const hasTarget = targetCode !== 0;
         const targetPieceValue = hasTarget ? materialValues[targetCode & 7] : 0;
@@ -1266,9 +1254,9 @@ const sortMovesFast = (moves, board, currentPlayer, piecesInfo, gameStage = 'mid
 };
 
 // 普通节点着法排序。未将军走 packed 简单分支；将军局面走通用排序。
-const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, ttMove, killers, inCheck) => {
+const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
     if (inCheck) {
-        return sortMovesFast(moves, board, currentPlayer, piecesInfo, gameStage, boardInfo, ttMove, killers, true);
+        return sortRootMoves(moves, board, currentPlayer, null, ttMove, killers, true);
     }
     const pieceState = activePieceStateFor(board);
 
@@ -1334,7 +1322,7 @@ const sortMoves = (moves, board, currentPlayer, piecesInfo, gameStage, boardInfo
     return moves;
 };
 
-const sortStagedMoveRange = (moves, start, end, board, currentPlayer, killers) => {
+const sortStagedMoveRange = (moves, start, end, board, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
@@ -1394,12 +1382,19 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
     
     // 4. 计算游戏状态并保存到boardInfo
     if (currentPlayer) {
-        // 检查当前玩家是否有合法走法
+        const inCheck = currentPlayer === 'red' ? !!boardInfo.redIsInCheck : !!boardInfo.blackIsInCheck;
+        let checkInfo = null;
+        if (inCheck) {
+            const state = activePieceStateFor(board);
+            if (state) {
+                collectCheckersFromState(state, currentPlayer, scratchLegalCheckInfo);
+                checkInfo = scratchLegalCheckInfo;
+            }
+        }
         let hasMoves = false;
         for (const info of piecesInfo) {
             if ((info.pieceCode < 8) === (currentPlayer === 'red')) {
-                // 获取当前棋子的有效走法
-                const moves = getValidMoves(board, { r: info.r, c: info.c });
+                const moves = getValidMoves(board, { r: info.r, c: info.c }, inCheck, checkInfo);
                 if (moves.length > 0) {
                     hasMoves = true;
                     break;
@@ -2042,31 +2037,9 @@ const applyOccupiedSliderHit = (
     return 0;
 };
 
-const applyOccupiedSliderHitWithCapture = (
-    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-    recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-) => {
-    const targetCode = squareCodes[sq];
-    const targetSlot = squareToSlot[sq];
-    if ((targetCode < 8) !== isRed) {
-        attackBySlot[targetSlot] |= bit;
-        if (recordCaptures) {
-            if (captureCounts[fromSq] === 0) {
-                captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-            }
-            captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                (fromSq << 7) | sq;
-        }
-        return 1 << targetSlot;
-    }
-    if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
-    return 0;
-};
-
 const appendSearchShortMoves = (
     moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
 ) => {
-    let generated = 0;
     for (let i = destStart; i < destEnd; i++) {
         let toSq = destData[i];
         if (blocked) {
@@ -2077,44 +2050,35 @@ const appendSearchShortMoves = (
         const targetCode = squareCodes[toSq];
         if (targetCode === 0) {
             if (capturesOnly) continue;
-            generated++;
             moves.push((fromSq << 7) | toSq);
         } else if (!quietsOnly && (targetCode < 8) !== isRed) {
-            generated++;
             moves.push((fromSq << 7) | toSq);
         }
     }
-    return generated;
 };
 
 const appendLineEmpties = (moves, fromSq, firstSq, lastSq, stride, targetMask) => {
-    let generated = 0;
     if (stride > 0) {
         for (let sq = firstSq; sq <= lastSq; sq += stride) {
             if (!targetMask || targetMask[sq]) {
-                generated++;
                 moves.push((fromSq << 7) | sq);
             }
         }
     } else {
         for (let sq = firstSq; sq >= lastSq; sq += stride) {
             if (!targetMask || targetMask[sq]) {
-                generated++;
                 moves.push((fromSq << 7) | sq);
             }
         }
     }
-    return generated;
 };
 
 const appendSliderCapture = (moves, fromSq, sq, squareCodes, isRed, quietsOnly, targetMask) => {
-    if (quietsOnly) return 0;
+    if (quietsOnly) return;
     const targetCode = squareCodes[sq];
     if ((targetCode < 8) !== isRed && (!targetMask || targetMask[sq])) {
         moves.push((fromSq << 7) | sq);
-        return 1;
     }
-    return 0;
 };
 
 // 方向与 ORTH_DIRS / 射线表一致：行高列、行低列、列高行、列低行。空步从本子往外走。
@@ -2126,57 +2090,54 @@ const appendOccupancyRookMoves = (
     const c = SEARCH_SQ_COLS[fromSq];
     const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
     const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
-    let generated = 0;
 
     const t0 = RANK_FIRST_HIGH[rankKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
         );
     }
     if (t0 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, r * 9 + t0, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t1 = RANK_FIRST_LOW[rankKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
         );
     }
     if (t1 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, r * 9 + t1, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t2 = FILE_FIRST_HIGH[fileKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
         );
     }
     if (t2 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, t2 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t3 = FILE_FIRST_LOW[fileKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
         );
     }
     if (t3 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, t3 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
         );
     }
-
-    return generated;
 };
 
 const appendOccupancyCannonMoves = (
@@ -2187,61 +2148,58 @@ const appendOccupancyCannonMoves = (
     const c = SEARCH_SQ_COLS[fromSq];
     const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
     const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
-    let generated = 0;
 
     const t0 = RANK_FIRST_HIGH[rankKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq + 1, r * 9 + (t0 === 255 ? 8 : t0 - 1), 1, targetMask
         );
     }
     const s0 = RANK_SECOND_HIGH[rankKey];
     if (s0 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, r * 9 + s0, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t1 = RANK_FIRST_LOW[rankKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq - 1, r * 9 + (t1 === 255 ? 0 : t1 + 1), -1, targetMask
         );
     }
     const s1 = RANK_SECOND_LOW[rankKey];
     if (s1 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, r * 9 + s1, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t2 = FILE_FIRST_HIGH[fileKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq + 9, (t2 === 255 ? 9 : t2 - 1) * 9 + c, 9, targetMask
         );
     }
     const s2 = FILE_SECOND_HIGH[fileKey];
     if (s2 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, s2 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
         );
     }
 
     const t3 = FILE_FIRST_LOW[fileKey];
     if (!capturesOnly) {
-        generated += appendLineEmpties(
+        appendLineEmpties(
             moves, fromSq, fromSq - 9, (t3 === 255 ? 0 : t3 + 1) * 9 + c, -9, targetMask
         );
     }
     const s3 = FILE_SECOND_LOW[fileKey];
     if (s3 !== 255) {
-        generated += appendSliderCapture(
+        appendSliderCapture(
             moves, fromSq, s3 * 9 + c, squareCodes, isRed, quietsOnly, targetMask
         );
     }
-
-    return generated;
 };
 
 const isOccupancyRookLegal = (fromSq, toSq, targetCode, rowOccupancy, colOccupancy) => {
@@ -2329,52 +2287,59 @@ const appendSearchPseudoMovesForPiece = (
     switch (pieceType) {
         case 1: {
             const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            return appendSearchShortMoves(
+            appendSearchShortMoves(
                 moves, fromSq, SEARCH_GENERAL_DEST_DATA,
                 SEARCH_GENERAL_DEST_OFF[destBase], SEARCH_GENERAL_DEST_OFF[destBase + 1],
                 squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
+            break;
         }
         case 5: {
             const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            return appendSearchShortMoves(
+            appendSearchShortMoves(
                 moves, fromSq, SEARCH_ADVISOR_DEST_DATA,
                 SEARCH_ADVISOR_DEST_OFF[destBase], SEARCH_ADVISOR_DEST_OFF[destBase + 1],
                 squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
+            break;
         }
         case 4: {
             const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            return appendSearchShortMoves(
+            appendSearchShortMoves(
                 moves, fromSq, SEARCH_ELEPHANT_DEST_DATA,
                 SEARCH_ELEPHANT_DEST_OFF[destBase], SEARCH_ELEPHANT_DEST_OFF[destBase + 1],
                 squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
             );
+            break;
         }
         case 3:
-            return appendSearchShortMoves(
+            appendSearchShortMoves(
                 moves, fromSq, SEARCH_HORSE_DEST_DATA,
                 SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
                 squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
             );
+            break;
         case 7: {
             const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            return appendSearchShortMoves(
+            appendSearchShortMoves(
                 moves, fromSq, SEARCH_SOLDIER_DEST_DATA,
                 SEARCH_SOLDIER_DEST_OFF[destBase], SEARCH_SOLDIER_DEST_OFF[destBase + 1],
                 squareCodes, isRed, capturesOnly, false, targetMask, quietsOnly
             );
+            break;
         }
         case 2:
-            return appendOccupancyRookMoves(
+            appendOccupancyRookMoves(
                 moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
             );
+            break;
         case 6:
-            return appendOccupancyCannonMoves(
+            appendOccupancyCannonMoves(
                 moves, fromSq, pieceState, isRed, capturesOnly, quietsOnly, targetMask
             );
+            break;
         default:
-            return 0;
+            break;
     }
 };
 
@@ -2527,7 +2492,6 @@ const isCannonScreenSquare = (sq, checkInfo) => {
 
 // 与全盘子扫描同一顺序生成应将，保证合法着相对顺序不变。
 const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
-    const start = moves.length;
     const isRed = currentPlayer === 'red';
     const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     const pieceCodes = pieceState.pieceCodes;
@@ -2549,7 +2513,6 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
             );
         }
     }
-    return moves.length - start;
 };
 
 const containsEncodedMoveBefore = (moves, end, move) => {
@@ -2628,12 +2591,12 @@ const appendTrueStagedMoves = (
         }
     }
 
-    sortStagedMoveRange(moves, start, moves.length, board, currentPlayer, killers);
+    sortStagedMoveRange(moves, start, moves.length, board, killers);
     return moves.length - start;
 };
 
 const advanceTrueStagedMoves = (
-    moves, nextStage, board, currentPlayer, pieceState, ttMove, killers, depth
+    moves, nextStage, board, currentPlayer, pieceState, ttMove, killers
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
@@ -2885,8 +2848,8 @@ const fillCannonRelations = (squareCodes, info, pieceAtSq, relCtx = null) => {
 };
 
 // SoA 关系构建。占位目标关系按目标索引，攻击关系用稳定的 piece-state 槽（最多 32）。
-// 跳过空槽以保持初始槽的攻击方顺序。快路径省略 QS 吃子打包（多数叶评估）。
-const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) => {
+// 跳过空槽以保持初始槽的攻击方顺序。
+const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     const profileRelations = searchContext.profile;
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
@@ -3193,411 +3156,6 @@ const calculatePackedSearchLeafRelationsNumericFast = (pieceState, aliveMask) =>
     applyPinnedGuardFilterToLeaf(pieceState);
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
     leafRelationScratchFresh = true;
-};
-
-const calculatePackedSearchLeafRelationsNumericWithCaptures = (
-    pieceState, aliveMask, capturePlayer
-) => {
-    const profileRelations = searchContext.profile;
-    const relationStart = profileRelations ? performance.now() : 0;
-    const squareCodes = pieceState.squareCodes;
-    const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
-    const rowOccupancy = pieceState.rowOccupancy;
-    const colOccupancy = pieceState.colOccupancy;
-    const attackBySlot = scratchLeafAttackBySlot;
-    const guardBySlot = scratchLeafGuardBySlot;
-    const attackTarget = SEARCH_ATTACK_TARGET;
-    const generalDestOff = SEARCH_GENERAL_DEST_OFF;
-    const generalDestData = SEARCH_GENERAL_DEST_DATA;
-    const advisorDestOff = SEARCH_ADVISOR_DEST_OFF;
-    const advisorDestData = SEARCH_ADVISOR_DEST_DATA;
-    const soldierDestOff = SEARCH_SOLDIER_DEST_OFF;
-    const soldierDestData = SEARCH_SOLDIER_DEST_DATA;
-    const elephantDestOff = SEARCH_ELEPHANT_DEST_OFF;
-    const elephantDestData = SEARCH_ELEPHANT_DEST_DATA;
-    const horseDestOff = SEARCH_HORSE_DEST_OFF;
-    const horseDestData = SEARCH_HORSE_DEST_DATA;
-    const captureCounts = scratchPackedCaptureCounts;
-    const captureSources = scratchPackedCaptureSources;
-    const captureMoves = scratchPackedCaptureMoves;
-    attackBySlot.fill(0);
-    guardBySlot.fill(0);
-    clearAttackBits(scratchRedAttack);
-    clearAttackBits(scratchBlackAttack);
-    const captureIsRed = capturePlayer === 'red';
-    for (let i = 0; i < scratchPackedCaptureSourceCount; i++) {
-        captureCounts[captureSources[i]] = 0;
-    }
-    scratchPackedCaptureSourceCount = 0;
-
-    const redAttack = scratchRedAttack;
-    const blackAttack = scratchBlackAttack;
-    let redMobility = 0;
-    let blackMobility = 0;
-    let attackedTargetMask = 0;
-
-    const slotCount = pieceState.slotCount;
-    for (let slot = 0; slot < slotCount; slot++) {
-        const bit = 1 << slot;
-        if ((aliveMask & bit) === 0) continue;
-        const fromSq = pieceSquares[slot];
-        const pieceCode = pieceCodes[slot];
-        const pieceType = pieceCode & 7;
-        const isRed = pieceCode < 8;
-        const colorIdx = isRed ? 0 : 1;
-        const attackTargetBit = isRed ? 1 : 2;
-        const attackBits = isRed ? redAttack : blackAttack;
-        const recordCaptures = isRed === captureIsRed;
-        let mobilityValue = 0;
-
-        switch (pieceType) {
-            case 1: {
-                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = generalDestOff[destBase], n = generalDestOff[destBase + 1]; i < n; i++) {
-                    const sq = generalDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                            if (recordCaptures) {
-                                if (captureCounts[fromSq] === 0) {
-                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                                }
-                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                    (fromSq << 7) | sq;
-                            }
-                        } else if ((targetCode & 7) !== 1) {
-                            guardBySlot[targetSlot] |= bit;
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            case 5: {
-                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = advisorDestOff[destBase], n = advisorDestOff[destBase + 1]; i < n; i++) {
-                    const sq = advisorDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                            if (recordCaptures) {
-                                if (captureCounts[fromSq] === 0) {
-                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                                }
-                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                    (fromSq << 7) | sq;
-                            }
-                        } else if ((targetCode & 7) !== 1) {
-                            guardBySlot[targetSlot] |= bit;
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            case 7: {
-                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = soldierDestOff[destBase], n = soldierDestOff[destBase + 1]; i < n; i++) {
-                    const sq = soldierDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                            if (recordCaptures) {
-                                if (captureCounts[fromSq] === 0) {
-                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                                }
-                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                    (fromSq << 7) | sq;
-                            }
-                        } else if ((targetCode & 7) !== 1) {
-                            guardBySlot[targetSlot] |= bit;
-                        }
-                    }
-                }
-                break;
-            }
-            case 4: {
-                const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = elephantDestOff[destBase], n = elephantDestOff[destBase + 1]; i < n; i++) {
-                    const packed = elephantDestData[i];
-                    if (squareCodes[packed >>> 7] !== 0) continue;
-                    const sq = packed & 127;
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                            if (recordCaptures) {
-                                if (captureCounts[fromSq] === 0) {
-                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                                }
-                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                    (fromSq << 7) | sq;
-                            }
-                        } else if ((targetCode & 7) !== 1) {
-                            guardBySlot[targetSlot] |= bit;
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            case 3: {
-                for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
-                    const packed = horseDestData[i];
-                    if (squareCodes[packed >>> 7] !== 0) continue;
-                    const sq = packed & 127;
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                            if (recordCaptures) {
-                                if (captureCounts[fromSq] === 0) {
-                                    captureSources[scratchPackedCaptureSourceCount++] = fromSq;
-                                }
-                                captureMoves[fromSq * PACKED_CAPTURE_STRIDE + captureCounts[fromSq]++] =
-                                    (fromSq << 7) | sq;
-                            }
-                        } else if ((targetCode & 7) !== 1) {
-                            guardBySlot[targetSlot] |= bit;
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            case 2: {
-                const r = SEARCH_SQ_ROWS[fromSq];
-                const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
-                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_FIRST_HIGH[rankKey];
-                if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t1 = RANK_FIRST_LOW[rankKey];
-                if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t2 = FILE_FIRST_HIGH[fileKey];
-                if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t3 = FILE_FIRST_LOW[fileKey];
-                if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_ROOK_CONTROL[rankKey];
-                    if (rankControl & 0x38) {
-                        if (rankControl & 8) {
-                            const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 16) {
-                            const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 32) {
-                            const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                    }
-                }
-                if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_ROOK_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
-                        let sq = firstRow * 9 + c;
-                        if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            case 6: {
-                const r = SEARCH_SQ_ROWS[fromSq];
-                const c = SEARCH_SQ_COLS[fromSq];
-                const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
-                const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
-                mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
-                const t0 = RANK_SECOND_HIGH[rankKey];
-                if (t0 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t1 = RANK_SECOND_LOW[rankKey];
-                if (t1 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t2 = FILE_SECOND_HIGH[fileKey];
-                if (t2 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                const t3 = FILE_SECOND_LOW[fileKey];
-                if (t3 !== 255) {
-                    attackedTargetMask |= applyOccupiedSliderHitWithCapture(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot,
-                        recordCaptures, fromSq, captureCounts, captureSources, captureMoves
-                    );
-                }
-                if (isRed ? r >= 7 : r <= 2) {
-                    const rankControl = RANK_CANNON_CONTROL[rankKey];
-                    if (rankControl & 0x38) {
-                        if (rankControl & 8) {
-                            const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 16) {
-                            const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        if (rankControl & 32) {
-                            const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                    }
-                }
-                if (c >= 3 && c <= 5) {
-                    const fileControl = FILE_CANNON_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
-                        let sq = firstRow * 9 + c;
-                        if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                        sq += 9;
-                        if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
-                        }
-                    }
-                }
-                if (isRed) redMobility += mobilityValue;
-                else blackMobility += mobilityValue;
-                break;
-            }
-            default:
-                break;
-        }
-        // 兵仍扫空步做威胁/安全，不进机动分；机动已在 1–6 兵种分支内累加
-    }
-    scratchLeafTotals[2] = redMobility;
-    scratchLeafTotals[5] = blackMobility;
-    scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
-    if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
-
-    const packedCaptures = scratchPackedCaptures;
-    packedCaptures.length = 0;
-    const sourceCount = scratchPackedCaptureSourceCount;
-    // Match generateQuiescenceMoves: black scans from its own back rank toward red.
-    // QS behavior must not depend on whether static eval supplied the capture list.
-    const relativeBlackScan = !captureIsRed;
-    for (let i = 1; i < sourceCount; i++) {
-        const sq = captureSources[i];
-        const sqOrder = relativeBlackScan
-            ? (ROWS - 1 - SEARCH_SQ_ROWS[sq]) * COLS + SEARCH_SQ_COLS[sq]
-            : sq;
-        let j = i - 1;
-        while (j >= 0) {
-            const candidate = captureSources[j];
-            const candidateOrder = relativeBlackScan
-                ? (ROWS - 1 - SEARCH_SQ_ROWS[candidate]) * COLS + SEARCH_SQ_COLS[candidate]
-                : candidate;
-            if (candidateOrder <= sqOrder) break;
-            captureSources[j + 1] = captureSources[j];
-            j--;
-        }
-        captureSources[j + 1] = sq;
-    }
-    for (let sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++) {
-        const fromSq = captureSources[sourceIndex];
-        const count = captureCounts[fromSq];
-        const offset = fromSq * PACKED_CAPTURE_STRIDE;
-        for (let i = 0; i < count; i++) packedCaptures.push(captureMoves[offset + i]);
-    }
-    applyPinnedGuardFilterToLeaf(pieceState);
-    leafRelationScratchFresh = true;
-};
-
-const calculatePackedSearchLeafRelationsNumeric = (
-    pieceState, aliveMask, capturePlayer = null
-) => {
-    if (capturePlayer != null) {
-        calculatePackedSearchLeafRelationsNumericWithCaptures(pieceState, aliveMask, capturePlayer);
-    } else {
-        calculatePackedSearchLeafRelationsNumericFast(pieceState, aliveMask);
-    }
 };
 
 const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
@@ -4136,11 +3694,6 @@ class ZobristHasher {
             red: Math.floor(seededRandom() * MAX_SAFE),
             black: Math.floor(seededRandom() * MAX_SAFE)
         };
-        this.evalStageKeys = {
-            early: Math.floor(seededRandom() * MAX_SAFE),
-            mid: Math.floor(seededRandom() * MAX_SAFE),
-            late: Math.floor(seededRandom() * MAX_SAFE)
-        };
     }
 
     pieceIndex(code) {
@@ -4149,9 +3702,8 @@ class ZobristHasher {
         return idx >= 0 ? idx : undefined;
     }
 
-    evalCacheKeyFromHash(boardHash, searchInitiator, gameStage) {
-        const stageKey = this.evalStageKeys[gameStage] || this.evalStageKeys.mid;
-        return boardHash ^ this.evalInitiatorKeys[searchInitiator] ^ stageKey;
+    evalCacheKeyFromHash(boardHash, searchInitiator) {
+        return boardHash ^ this.evalInitiatorKeys[searchInitiator];
     }
 
     /**
@@ -5568,18 +5120,31 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
 };
 
 // 合法着法：伪合法 + 不送将/不飞将。返回落点格号（r * 9 + c），UI 再解码。
-const getValidMovesFromSq = (board, fromSq) => {
+const getValidMovesFromSq = (board, fromSq, wasInCheck = null, checkInfo = null) => {
   const state = activePieceStateFor(board);
   if (!state) return [];
   const pieceCode = state.squareCodes[fromSq];
   if (!pieceCode) return [];
   const color = pieceCode < 8 ? 'red' : 'black';
-  return filterLegalMoves(board, fromSq, color, getPieceMoves(state, fromSq, pieceCode));
+  let inCheck = wasInCheck;
+  let info = checkInfo;
+  if (inCheck == null) {
+    inCheck = isCheckFromState(state, color);
+    info = null;
+  }
+  if (inCheck && !info) {
+    collectCheckersFromState(state, color, scratchLegalCheckInfo);
+    info = scratchLegalCheckInfo;
+  }
+  return filterLegalMoves(
+    board, fromSq, color, getPieceMoves(state, fromSq, pieceCode), inCheck, info
+  );
 };
 
-const getValidMoves = (board, pos) => runWithPieceState(board, () =>
-  getValidMovesFromSq(board, pos.r * 9 + pos.c)
-);
+const getValidMoves = (board, pos, wasInCheck = null, checkInfo = null) =>
+  runWithPieceState(board, () =>
+    getValidMovesFromSq(board, pos.r * 9 + pos.c, wasInCheck, checkInfo)
+  );
 
 const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     // 优先使用预计算的gameState
@@ -5589,14 +5154,21 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     
     // 没有预计算结果时，执行原始计算
     let hasMoves = false;
+    let inCheck = false;
     runWithPieceState(board, () => {
         const state = activePieceStateFor(board);
+        inCheck = isCheckFromState(state, turn);
+        let checkInfo = null;
+        if (inCheck) {
+            collectCheckersFromState(state, turn, scratchLegalCheckInfo);
+            checkInfo = scratchLegalCheckInfo;
+        }
         const wantRed = turn === 'red';
         for (let r = 0; r < ROWS; r++) {
             for (let c = 0; c < COLS; c++) {
                 const code = state.squareCodes[r * 9 + c];
                 if (!code || (code < 8) !== wantRed) continue;
-                if (getValidMovesFromSq(board, r * 9 + c).length > 0) {
+                if (getValidMovesFromSq(board, r * 9 + c, inCheck, checkInfo).length > 0) {
                     hasMoves = true;
                     return;
                 }
@@ -5605,8 +5177,6 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     });
 
     if (hasMoves) return { status: 'playing' };
-
-    const inCheck = isCheck(board, turn, piecesInfo, boardInfo);
     const opponent = turn === 'red' ? 'black' : 'red';
     
     if (inCheck) {
@@ -6110,7 +5680,7 @@ const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
 };
 
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = null) => {
+const evaluateLeaf = (board, searchInitiator) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     const pieceState = activePieceStateFor(board);
     const stateCodes = pieceState.pieceCodes;
@@ -6118,7 +5688,7 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
     const squareCodes = pieceState.squareCodes;
     const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
 
-    calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, capturePlayer);
+    calculatePackedSearchLeafRelations(pieceState, aliveMask);
 
     const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
@@ -6219,8 +5789,8 @@ const evaluateLeafNumeric = (board, searchInitiator, gameStage, capturePlayer = 
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capturePlayer = null) => {
-    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
+const staticSearchEval = (board, searchInitiator, boardHash = 0) => {
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator);
     const pieceState = activePieceStateFor(board);
     const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
     const combinedKey = cacheKey ^ verificationKey;
@@ -6232,13 +5802,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
         return evalCacheValues[cacheSlot];
     }
     if (searchContext.collectMetrics) perfStats.staticEvalCacheMisses++;
-    const net = evaluateLeafNumeric(board, searchInitiator, gameStage, capturePlayer);
-    if (capturePlayer != null) {
-        packedCaptureCacheKey = cacheKey;
-        packedCaptureCombinedKey = combinedKey;
-        packedCaptureGeneration = evalCacheGeneration;
-        packedCapturePlayer = capturePlayer;
-    }
+    const net = evaluateLeaf(board, searchInitiator);
     evalCacheGenerations[cacheSlot] = evalCacheGeneration;
     evalCacheKeys[cacheSlot] = combinedKey;
     evalCacheValues[cacheSlot] = net;
@@ -6249,21 +5813,7 @@ const staticSearchEval = (board, searchInitiator, gameStage, boardHash = 0, capt
 // move is in check and must search all evasions.
 const quiescenceMoveBuffers = [];
 
-const copyPackedRelationCaptures = (
-    moves, currentPlayer, boardHash, searchInitiator, gameStage, board
-) => {
-    const pieceState = activePieceStateFor(board);
-    if (packedCaptureGeneration !== evalCacheGeneration) return false;
-    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator, gameStage);
-    const verificationKey = pieceState.evalVerificationHash;
-    if (packedCaptureCombinedKey !== (cacheKey ^ verificationKey)) return false;
-    if (packedCapturePlayer !== currentPlayer) return false;
-    const captures = scratchPackedCaptures;
-    for (let i = 0; i < captures.length; i++) moves.push(captures[i]);
-    return true;
-};
-
-const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination = null) => {
+const generateQuiescenceMoves = (board, currentPlayer, destination = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.captureGenCount++;
     const moves = destination || [];
@@ -6276,7 +5826,7 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         appendSearchPseudoMovesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState, capturesOnly
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
         );
     }
     if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
@@ -6286,13 +5836,12 @@ const generateQuiescenceMoves = (board, currentPlayer, capturesOnly, destination
 // Fast 叶关系已写入 attackBySlot。有吃才走原几何，落点顺序与 generateQuiescenceMoves 一致。
 const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const attacked = scratchLeafAttackedTargetMask >>> 0;
-    if (attacked === 0) return 0;
+    if (attacked === 0) return;
     const isRed = currentPlayer === 'red';
     const pieceSquares = pieceState.pieceSquares;
     const pieceCodes = pieceState.pieceCodes;
     const attackBySlot = scratchLeafAttackBySlot;
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
-    const start = moves.length;
     let attackerUnion = 0;
     let targets = attacked;
     while (targets !== 0) {
@@ -6300,7 +5849,7 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         attackerUnion |= attackBySlot[31 - Math.clz32(targetBit)];
         targets ^= targetBit;
     }
-    if (attackerUnion === 0) return 0;
+    if (attackerUnion === 0) return;
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         if ((attackerUnion & (1 << slot)) === 0) continue;
@@ -6308,7 +5857,6 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
             moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
         );
     }
-    return moves.length - start;
 };
 
 // generateCapturesForSearch removed (unused alias)
@@ -6317,7 +5865,7 @@ const quiescenceMateValue = (currentPlayer, searchInitiator) =>
     currentPlayer === searchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
-const sortCaptures = (captures, board, gameStage) => {
+const sortCaptures = (captures, board) => {
     const pieceState = activePieceStateFor(board);
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -6345,12 +5893,11 @@ const sortCaptures = (captures, board, gameStage) => {
         captures[j + 1] = move;
         captureSortScoreScratch[j + 1] = score;
     }
-    return captures;
 };
 
 const quiescence = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, gameStage, qsDepth, boardHash = 0, qsPly = 0, knownInCheck = null
+    searchInitiator, qsDepth, boardHash = 0, qsPly = 0, knownInCheck = null
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
     const qsState = activePieceStateFor(b);
@@ -6368,8 +5915,7 @@ const quiescence = (
     let standPat;
     if (!inCheck) {
         standPat = staticSearchEval(
-            b, searchInitiator, gameStage, boardHash,
-            null
+            b, searchInitiator, boardHash
         );
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
@@ -6392,10 +5938,8 @@ const quiescence = (
         generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
     } else if (leafRelationScratchFresh) {
         emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
-    } else if (!copyPackedRelationCaptures(
-        moves, currentPlayer, boardHash, searchInitiator, gameStage, b
-    )) {
-        generateQuiescenceMoves(b, currentPlayer, true, moves);
+    } else {
+        generateQuiescenceMoves(b, currentPlayer, moves);
     }
     if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
     if (moves.length === 0) return inCheck
@@ -6403,9 +5947,9 @@ const quiescence = (
         : standPat;
 
     if (inCheck) {
-        sortMoves(moves, b, currentPlayer, null, gameStage, null, null, null, false);
+        sortMoves(moves, b, currentPlayer, null, null, false);
     } else {
-        sortCaptures(moves, b, gameStage);
+        sortCaptures(moves, b);
     }
 
     const nextPlayer = currentPlayer === 'red' ? 'black' : 'red';
@@ -6430,7 +5974,7 @@ const quiescence = (
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
         const value = quiescence(
             b, alpha, beta, !maximizing, nextPlayer,
-            searchInitiator, gameStage, qsDepth - 1, nextHash, qsPly + 1, childInCheck
+            searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
         );
         unmakeSearchMove(b, move);
 
@@ -6451,7 +5995,7 @@ const quiescence = (
 
 const alphaBeta = (
     b, d, alpha, beta, maximizing, currentPlayer,
-    searchDepth = 0, searchInitiator = currentPlayer, gameStage = 'mid', boardHash = 0,
+    searchDepth = 0, searchInitiator = currentPlayer, boardHash = 0,
     allowNull = true, knownInCheck = null
 ) => {
     const originalAlpha = alpha;
@@ -6462,7 +6006,7 @@ const alphaBeta = (
     if (d === 0) {
         return quiescence(
             b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, gameStage, SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
+            searchInitiator, SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
         );
     }
 
@@ -6533,11 +6077,11 @@ const alphaBeta = (
         const nullValue = maximizing
             ? alphaBeta(
                 b, nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, boardHash, false, false
+                searchDepth, searchInitiator, boardHash, false, false
             )
             : alphaBeta(
                 b, nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, boardHash, false, false
+                searchDepth, searchInitiator, boardHash, false, false
             );
         if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
             if (searchContext.collectMetrics) perfStats.nmpCutoffs++;
@@ -6550,11 +6094,11 @@ const alphaBeta = (
     if (useTrueStagedGeneration) {
         nextTrueStagedStage = advanceTrueStagedMoves(
             moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
-            ttMove, killersAtDepth, d
+            ttMove, killersAtDepth
         );
     } else {
         moves = sortMoves(
-            moves, b, currentPlayer, null, gameStage, null,
+            moves, b, currentPlayer,
             ttMove, killersAtDepth, inCheck
         );
     }
@@ -6569,7 +6113,7 @@ const alphaBeta = (
             const before = moves.length;
             nextTrueStagedStage = advanceTrueStagedMoves(
                 moves, nextTrueStagedStage, b, currentPlayer, stagedPieceState,
-                ttMove, killersAtDepth, d
+                ttMove, killersAtDepth
             );
             if (moves.length === before) break;
         }
@@ -6617,7 +6161,7 @@ const alphaBeta = (
             if (canLmr) {
                 value = alphaBeta(
                     b, reducedDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                    searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.lmrReSearches++;
@@ -6625,19 +6169,19 @@ const alphaBeta = (
                         if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                         value = alphaBeta(
                             b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                            searchDepth, searchInitiator, nextHash, true, childInCheck
                         );
                         if (value > alpha) {
                             if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                             value = alphaBeta(
                                 b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                                searchDepth, searchInitiator, nextHash, true, childInCheck
                             );
                         }
                     } else {
                         value = alphaBeta(
                             b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                            searchDepth, searchInitiator, nextHash, true, childInCheck
                         );
                     }
                 }
@@ -6645,25 +6189,25 @@ const alphaBeta = (
                 if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
                     b, d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                    searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
                 if (value > alpha) {
                     if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                     value = alphaBeta(
                         b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                        searchDepth, searchInitiator, nextHash, true, childInCheck
                     );
                 }
             } else {
                 value = alphaBeta(
                     b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                    searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
             }
         } else if (canLmr) {
             value = alphaBeta(
                 b, reducedDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                searchDepth, searchInitiator, nextHash, true, childInCheck
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.lmrReSearches++;
@@ -6671,19 +6215,19 @@ const alphaBeta = (
                     if (searchContext.collectMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
                         b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                        searchDepth, searchInitiator, nextHash, true, childInCheck
                     );
                     if (value < beta) {
                         if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
                             b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                            searchDepth, searchInitiator, nextHash, true, childInCheck
                         );
                     }
                 } else {
                     value = alphaBeta(
                         b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                        searchDepth, searchInitiator, nextHash, true, childInCheck
                     );
                 }
             }
@@ -6691,19 +6235,19 @@ const alphaBeta = (
             if (searchContext.collectMetrics) perfStats.pvsAttempts++;
             value = alphaBeta(
                 b, d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                searchDepth, searchInitiator, nextHash, true, childInCheck
             );
             if (value < beta) {
                 if (searchContext.collectMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
                     b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                    searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
             }
         } else {
             value = alphaBeta(
                 b, d - 1, alpha, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, gameStage, nextHash, true, childInCheck
+                searchDepth, searchInitiator, nextHash, true, childInCheck
             );
         }
         unmakeSearchMove(b, move);
@@ -6808,7 +6352,7 @@ const fillRootSortHints = (pieceState, turn) => {
         return scratchRootSortInfo;
     }
     const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
-    calculatePackedSearchLeafRelationsNumeric(pieceState, aliveMask, null);
+    calculatePackedSearchLeafRelations(pieceState, aliveMask);
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -6922,6 +6466,8 @@ const getBestMove = (
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
   const rootBoardInfo = fillRootSortHints(rootPieceState, turn);
+  const rootInCheck = turn === 'red' ? rootBoardInfo.redIsInCheck : rootBoardInfo.blackIsInCheck;
+  const rootCheckInfo = rootInCheck ? scratchRootCheckInfo : null;
 
   // 收集根节点走法（只做一次）：编码整数 + 平行分数/PV
   const rootMoves = [];
@@ -6937,7 +6483,9 @@ const getBestMove = (
       const fromSq = r * 9 + c;
       const code = rootPieceState.squareCodes[fromSq];
       if (!code || (code < 8) !== wantRed) continue;
-      const validDestinations = getValidMovesFromSq(searchBoard, fromSq);
+      const validDestinations = getValidMovesFromSq(
+        searchBoard, fromSq, rootInCheck, rootCheckInfo
+      );
       for (let di = 0; di < validDestinations.length; di++) {
         const encoded = (fromSq << 7) | validDestinations[di];
         if (excludedRootMoveSet.has(encoded)) continue;
@@ -7046,7 +6594,7 @@ const getBestMove = (
     const ttEntry = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttEntry && ttEntry.bestMove ? ttEntry.bestMove : null;
     const prevBest = rootMoves[0];
-    sortMovesFast(rootMoves, searchBoard, turn, null, gameStage, rootBoardInfo, ttMove, null, null, [rootScores, rootSeqs]);
+    sortRootMoves(rootMoves, searchBoard, turn, rootBoardInfo, ttMove, null, null, [rootScores, rootSeqs]);
     // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
     promoteRootMove(ttMove);
     promoteRootMove(prevBest);
@@ -7083,7 +6631,7 @@ const getBestMove = (
       if (i === 0 || rootAlpha === -Infinity) {
         score = alphaBeta(
           searchBoard, remaining, -Infinity, Infinity,
-          false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
+          false, nextTurn, currentDepth, turn, childHash, true, childInCheck
         );
       } else {
         const cachedExact = exactThisMove ? exactFromTt() : null;
@@ -7093,12 +6641,12 @@ const getBestMove = (
           const probe = alphaBeta(
             searchBoard, remaining,
             rootAlpha, rootAlpha + NULL_WINDOW,
-            false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
+            false, nextTurn, currentDepth, turn, childHash, true, childInCheck
           );
           if (probe > rootAlpha) {
             score = alphaBeta(
               searchBoard, remaining, rootAlpha, Infinity,
-              false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
+              false, nextTurn, currentDepth, turn, childHash, true, childInCheck
             );
           } else if (exactThisMove) {
             const afterProbe = exactFromTt();
@@ -7108,7 +6656,7 @@ const getBestMove = (
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
                 searchBoard, remaining, -Infinity, rootAlpha + NULL_WINDOW,
-                false, nextTurn, currentDepth, turn, gameStage, childHash, true, childInCheck
+                false, nextTurn, currentDepth, turn, childHash, true, childInCheck
               );
               if (score > rootAlpha) {
                 // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
@@ -7197,7 +6745,7 @@ const getBestMove = (
 const searchTestApi = {
   collectPackedCaptures(board, capturePlayer) {
     return runWithPieceState(board, () =>
-      generateQuiescenceMoves(board, capturePlayer, true, []).slice()
+      generateQuiescenceMoves(board, capturePlayer, []).slice()
     );
   },
   collectCheckers(board, color) {
@@ -7251,10 +6799,16 @@ const searchTestApi = {
       const legal = [];
       const state = activePieceStateFor(board);
       const wantRed = color === 'red';
+      const inCheck = isCheckFromState(state, color);
+      let checkInfo = null;
+      if (inCheck) {
+        collectCheckersFromState(state, color, scratchLegalCheckInfo);
+        checkInfo = scratchLegalCheckInfo;
+      }
       for (let fromSq = 0; fromSq < REL_SQUARES; fromSq++) {
         const code = state.squareCodes[fromSq];
         if (!code || (code < 8) !== wantRed) continue;
-        const dests = getValidMovesFromSq(board, fromSq);
+        const dests = getValidMovesFromSq(board, fromSq, inCheck, checkInfo);
         for (let i = 0; i < dests.length; i++) {
           legal.push((fromSq << 7) | dests[i]);
         }
@@ -7312,7 +6866,7 @@ const searchTestApi = {
 export {
   checkGameState,
   evaluateBoard,
-  evaluateBoardForUi,
+  evaluatePiece,
   getBestMove,
   getGamePhase,
   getValidMoves,

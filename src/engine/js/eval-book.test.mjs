@@ -9,7 +9,7 @@ import {
 import {
   checkGameState,
   evaluateBoard,
-  evaluateBoardForUi,
+  evaluatePiece,
   getValidMoves,
   hydrateRelationsFromMasks,
   isCheck,
@@ -63,8 +63,8 @@ test('evaluateBoard 对象盘与搜索码盘总分一致', () => {
 });
 
 test('点棋评估：对象盘与搜索码盘关系 mask 一致', () => {
-  const objectUi = evaluateBoardForUi(objectInitial(), 'red', 'early');
-  const codeUi = evaluateBoardForUi(createInitialSearchBoard(), 'red', 'early');
+  const objectUi = evaluatePiece(objectInitial(), 'red', 'early');
+  const codeUi = evaluatePiece(createInitialSearchBoard(), 'red', 'early');
   hydrateRelationsFromMasks(objectUi.piecesInfo, objectUi.boardInfo);
   hydrateRelationsFromMasks(codeUi.piecesInfo, codeUi.boardInfo);
   assert.deepEqual(
