@@ -1,27 +1,13 @@
-import type { Board, CompactBoard, Move, Piece, PieceType } from '../domain/types';
+import type { Board, CompactBoard, Move, Piece } from '../domain/types';
 import type { EncodedMove, WireBoard } from './protocol';
+import {
+    cellToSearchCode,
+    encodeBoardToSearchCodes,
+    isCompactBoard,
+    searchCodeToPiece
+} from './js/piece-code.js';
 
-const PIECE_TYPES: PieceType[] = [
-  'general',
-  'advisor',
-  'elephant',
-  'horse',
-  'chariot',
-  'cannon',
-  'soldier'
-];
-
-const isCompactBoard = (board: WireBoard): board is CompactBoard => {
-  for (const row of board) {
-    for (const square of row) {
-      if (typeof square === 'number') return true;
-      if (square !== null) return false;
-    }
-  }
-  return false;
-};
-
-// encodeBoard removed (unused); keep decoder and helpers
+export const encodeBoard = (board: WireBoard): CompactBoard => encodeBoardToSearchCodes(board);
 
 export const decodeBoard = (board: WireBoard): Board => {
   if (!Array.isArray(board) || board.length !== 10 || board.some((row) => !Array.isArray(row) || row.length !== 9)) {
@@ -30,14 +16,8 @@ export const decodeBoard = (board: WireBoard): Board => {
   if (!isCompactBoard(board)) return board;
 
   return board.map((row) => row.map((code) => {
-    if (code === -1) return null;
-    if (!Number.isInteger(code) || code < 0 || code >= PIECE_TYPES.length * 2) {
-      throw new TypeError(`Invalid compact piece code: ${code}`);
-    }
-    return {
-      type: PIECE_TYPES[code % PIECE_TYPES.length],
-      color: code < PIECE_TYPES.length ? 'red' : 'black'
-    } as Piece;
+    if (typeof code !== 'number') return code as Piece | null;
+    return searchCodeToPiece(cellToSearchCode(code)) as Piece | null;
   }));
 };
 

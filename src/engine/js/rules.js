@@ -30,7 +30,6 @@ export const isValidPlacement = (type, color, r, c) => {
 
 export {
   checkGameState,
-  isCheck,
-  syncGeneralPosCache
+  isCheck
 } from './search.js';
 

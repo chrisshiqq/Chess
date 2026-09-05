@@ -1,5 +1,6 @@
 import type { Board, Color, CompactBoard, Move, PieceType, Position } from '../domain/types';
 
+/** Worker 线上盘面：App 发搜索码 Compact。引擎入口仍可用 cellToSearchCode 读对象盘。 */
 export type WireBoard = Board | CompactBoard;
 
 export interface SearchOptions {
@@ -42,7 +43,7 @@ export type WorkerRequest =
   | { type: 'isCheck'; payload: { board: WireBoard; color: Color; requestId: string } }
   | { type: 'isValidPlacement'; payload: { type: PieceType; color: Color; r: number; c: number; requestId: string } }
   | { type: 'addOpeningLineFromString'; payload: { moves: string; weights?: number[] } }
-  | { type: 'movesToNotation'; payload: { boardHistory: Board[]; moveHistory: Move[]; requestId: string } }
+  | { type: 'movesToNotation'; payload: { boardHistory: WireBoard[]; moveHistory: Move[]; requestId: string } }
   | { type: 'notationToMoves'; payload: { notation: string | string[]; initialBoard?: WireBoard; requestId: string } }
   | { type: 'setValueWeights'; payload: Partial<Record<'material' | 'position' | 'threat' | 'safety' | 'mobility', number>> };
 

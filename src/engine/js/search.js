@@ -1,16 +1,20 @@
 /* eslint-disable no-restricted-globals */
 
-import { COLS, PIECE_TYPES, REL_SQUARES, ROWS, SQ_COL, SQ_ROW } from './board.js';
+import { COLS, REL_SQUARES, ROWS, SQ_COL, SQ_ROW } from './board.js';
+import {
+    SEARCH_CODE_TO_ZOBRIST,
+    SEARCH_TYPE_NAME,
+    cellToSearchCode,
+    createInitialSearchBoard,
+    encodeBoardToSearchCodes,
+    pieceToSearchCode,
+    searchCodeToKey
+} from './piece-code.js';
 import {
     MOVE_TO_MASK,
     encodeMove,
-    encodeMoveFromCoords,
     isEncodedMove,
-    moveFromC,
-    moveFromR,
     moveFromSq,
-    moveToC,
-    moveToR,
     moveToSq
 } from './movegen.js';
 import { searchContext } from './search-context.js';
@@ -28,29 +32,6 @@ export const VALUE_WEIGHTS = {
 
 export const setValueWeights = (weights) => {
     Object.assign(VALUE_WEIGHTS, weights);
-};
-
-// 材料值权重配置
-const MATERIAL_VALUES = {
-    general: 10000,  // 将/帅
-    chariot: 900,     // 车
-    cannon: {
-        early: 450,    // 开局阶段
-        mid: 400,      // 中局阶段
-        late: 400      // 残局阶段
-    },                // 炮
-    horse: {
-        early: 400,    // 开局阶段
-        mid: 450,      // 中局阶段
-        late: 450      // 残局阶段
-    },                // 马
-    elephant: 200,    // 象/相
-    advisor: 200,     // 士/仕
-    soldier: {
-        early: 100,    // 开局阶段
-        mid: 200,      // 中局阶段
-        late: 450      // 残局阶段
-    }                  // 兵/卒
 };
 
 // 评估算法参数配置 - 集中定义所有权重系数和加成数字
@@ -147,28 +128,6 @@ const POSITION_TABLES = {
         [0, 0, 0, 0, 10, 0, 0, 0, 0],
         [0, 0, 0, 10, 0, 10, 0, 0, 0]
     ]
-};
-
-// 获取棋子的材料值
-const getMaterialValue = (piece, gameStage = 'mid') => {
-    let value = MATERIAL_VALUES[piece.type];
-    
-    // 针对有分阶段材料值的兵种（兵、炮、马）调整材料值
-    if (typeof value === 'object') {
-        value = value[gameStage] || value.mid;
-    }
-    
-    return value;
-};
-
-// 获取棋子的位置值
-const getPositionValue = (piece, r, c) => {
-    const table = POSITION_TABLES[piece.type];
-    if (!table) return 0;
-    
-    // 黑方需要翻转位置表
-    const rowIdx = piece.color === 'red' ? (9- r) : r;
-    return table[rowIdx][c] || 0;
 };
 
 // Search leaves use numeric piece codes. Flatten position values once so the
@@ -284,32 +243,6 @@ const scratchOwnScanOrder = new Uint16Array(32);
 
 let activeSearchPieceState = null;
 
-const searchPieceTypeCode = (type) => {
-    switch (type) {
-        case PIECE_TYPES.GENERAL: return 1;
-        case PIECE_TYPES.CHARIOT: return 2;
-        case PIECE_TYPES.HORSE: return 3;
-        case PIECE_TYPES.ELEPHANT: return 4;
-        case PIECE_TYPES.ADVISOR: return 5;
-        case PIECE_TYPES.CANNON: return 6;
-        case PIECE_TYPES.SOLDIER: return 7;
-        default: return 0;
-    }
-};
-
-const searchPieceCode = (piece) => searchPieceTypeCode(piece.type) + (piece.color === 'red' ? 0 : 8);
-
-// 搜索编码 → Zobrist 下标。将/士/象/马/车/炮/兵 与 pieceIndex 的 0–6 不一致。
-const SEARCH_CODE_TO_ZOBRIST = new Int8Array([
-    -1, 0, 4, 3, 2, 1, 5, 6,
-    -1, 7, 11, 10, 9, 8, 12, 13
-]);
-
-const toSearchPieceCode = (pieceOrCode) => {
-    if (pieceOrCode == null || pieceOrCode === 0) return 0;
-    return typeof pieceOrCode === 'number' ? pieceOrCode : searchPieceCode(pieceOrCode);
-};
-
 const SEARCH_MATERIAL_VALUES = {
     early: new Int16Array([0, 10000, 900, 400, 200, 200, 450, 100]),
     mid: new Int16Array([0, 10000, 900, 450, 200, 200, 400, 200]),
@@ -357,11 +290,10 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
     squareToSlot.fill(-1);
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece) continue;
+            const code = cellToSearchCode(board[r][c]);
+            if (!code) continue;
             if (slotCount >= 32) return null;
             const slot = slotCount++;
-            const code = searchPieceCode(piece);
             if ((code & 7) === 1) {
                 if (code < 8) redGeneralSq = r * 9 + c;
                 else blackGeneralSq = r * 9 + c;
@@ -603,51 +535,30 @@ const updatePieceStateAfterUnmake = (board, fromSq, toSq) => {
 
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
 
-const makeSearchRootPieceInfo = () => ({
-    piece: null,
-    r: 0,
-    c: 0,
-    pieceIndex: 0,
-    materialValue: 0,
-    positionValue: 0,
-    threatValue: 0,
-    safetyValue: 0,
-    mobilityValue: 0
-});
-const scratchSearchRootPieces = Array.from({ length: 32 }, makeSearchRootPieceInfo);
-const scratchSearchRootList = [];
-
-// 主评估函数 - 详细评估棋盘局势（局面评估面板 / 搜索叶 / 根节点）
-// options.forSearchLeaf: 仅跳过终局 getValidMoves（无着已在父节点处理）；可用攻击位图代替控制者表
-// options.forSearchRoot: 搜索根排序用，复用棋子槽，不建空关系列表 / 终局扫着 / 分项对象
-// 点棋关系请用 evaluateBoardForUi，不要往这里加 UI 专用开关
-const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options = null) => {
+// 主评估函数：局面评估面板。点棋关系请用 evaluateBoardForUi。
+const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
+    runWithPieceState(board, () => {
     const __t0 = searchContext.profile ? performance.now() : 0;
-    const forSearchLeaf = !!(options && options.forSearchLeaf);
-    const forSearchRoot = !!(options && options.forSearchRoot);
 
     const outputPhase = gameStage;
+    const pieceState = activePieceStateFor(board);
+    const materialValues = searchMaterialTable(gameStage);
 
     // 遍历棋盘：只收集子力/PST；着法+关系统一在 calculatePieceRelations 一次几何生成（对齐炮）
-    let piecesInfo;
-    if (forSearchRoot) {
-        scratchSearchRootList.length = 0;
-        piecesInfo = scratchSearchRootList;
-    } else {
-        piecesInfo = [];
-    }
+    const piecesInfo = [];
     let redMaterial = 0, redPosition = 0;
     let blackMaterial = 0, blackPosition = 0;
-    
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece) continue;
+    const slotCount = pieceState ? pieceState.slotCount : 0;
+    for (let slot = 0; slot < slotCount; slot++) {
+            const code = pieceState.pieceCodes[slot];
+            if (!code) continue;
+            const sq = pieceState.pieceSquares[slot];
+            const r = SQ_ROW[sq];
+            const c = SQ_COL[sq];
+            const materialValue = materialValues[code & 7];
+            const positionValue = SEARCH_POSITION_VALUES[code][sq];
             
-            const materialValue = getMaterialValue(piece, gameStage);
-            const positionValue = getPositionValue(piece, r, c);
-            
-            if (piece.color === 'red') {
+            if (code < 8) {
                 redMaterial += materialValue;
                 redPosition += positionValue;
             } else {
@@ -655,27 +566,11 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
                 blackPosition += positionValue;
             }
 
-            if (forSearchRoot) {
-                const slot = piecesInfo.length < scratchSearchRootPieces.length
-                    ? scratchSearchRootPieces[piecesInfo.length]
-                    : makeSearchRootPieceInfo();
-                slot.piece = piece;
-                slot.r = r;
-                slot.c = c;
-                slot.pieceIndex = piecesInfo.length;
-                slot.materialValue = materialValue;
-                slot.positionValue = positionValue;
-                slot.threatValue = 0;
-                slot.safetyValue = 0;
-                slot.mobilityValue = 0;
-                piecesInfo.push(slot);
-                continue;
-            }
-            
             piecesInfo.push({
-                piece,
+                pieceCode: code,
                 r,
                 c,
+                sq,
                 pieceIndex: piecesInfo.length,
                 moves: [],
                 allyGuards: [],
@@ -692,20 +587,18 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
                 protect: []
             });
         }
-    }
 
-    // 关系 mask（≤32 子）优先；否则回退旧列表 / 叶攻击位图
     const useRelationMasks = piecesInfo.length <= 32;
     let boardInfo;
     if (useRelationMasks) {
-        clearRelationMasks(!forSearchLeaf);
+        clearRelationMasks(true);
         clearAttackBits(scratchRedAttack);
         clearAttackBits(scratchBlackAttack);
         boardInfo = {
             useRelationMasks: true,
             useAttackBits: true,
-            skipControlMask: !!forSearchLeaf,
-            palaceControlOnly: !!(options && options.palaceControlOnly),
+            skipControlMask: false,
+            palaceControlOnly: false,
             attackMask: scratchAttackMask,
             guardMask: scratchGuardMask,
             controlMask: scratchControlMask,
@@ -715,29 +608,23 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
     } else {
         boardInfo = makeEmptyControllerGrid();
     }
-    calculateDerivedValues(board, piecesInfo, currentPlayer, boardInfo, forSearchLeaf, forSearchRoot);
-    if (forSearchRoot) {
-        if (searchContext.profile) {
-            perfStats.evaluateBoardMs += performance.now() - __t0;
-        }
-        return { piecesInfo, boardInfo, gameStage };
-    }
+    calculateDerivedValues(board, piecesInfo, currentPlayer, boardInfo);
     
     // 第三步：计算总分（只计算剩余分数，基础分数已在棋盘遍历时计算）
     let redThreat = 0, redSafety = 0, redMobility = 0;
     let blackThreat = 0, blackSafety = 0, blackMobility = 0;
     
     for (const info of piecesInfo) {
-        const { piece, threatValue, safetyValue, mobilityValue } = info;
+        const { pieceCode, threatValue, safetyValue, mobilityValue } = info;
         
-        if (piece.color === 'red') {
+        if (pieceCode < 8) {
             redThreat += threatValue;
             redSafety += safetyValue;
-            if (piece.type !== 'soldier') redMobility += mobilityValue;
+            if ((pieceCode & 7) !== 7) redMobility += mobilityValue;
         } else {
             blackThreat += threatValue;
             blackSafety += safetyValue;
-            if (piece.type !== 'soldier') blackMobility += mobilityValue;
+            if ((pieceCode & 7) !== 7) blackMobility += mobilityValue;
         }
     }
     
@@ -798,24 +685,29 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid', options =
         perfStats.evaluateBoardMs += performance.now() - __t0;
     }
     return __evalResult;
-};
+    });
 
 // 点棋专用评估：关系 + 单子分。不跑终局“扫全体合法着”，也不改 evaluateBoard
-const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
+const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') =>
+    runWithPieceState(board, () => {
     const piecesInfo = [];
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (!piece) continue;
+    const pieceState = activePieceStateFor(board);
+    const materialValues = searchMaterialTable(gameStage);
+    const slotCount = pieceState ? pieceState.slotCount : 0;
+    for (let slot = 0; slot < slotCount; slot++) {
+            const code = pieceState.pieceCodes[slot];
+            if (!code) continue;
+            const sq = pieceState.pieceSquares[slot];
             piecesInfo.push({
-                piece,
-                r,
-                c,
+                pieceCode: code,
+                r: SQ_ROW[sq],
+                c: SQ_COL[sq],
+                sq,
                 pieceIndex: piecesInfo.length,
                 moves: [],
                 allyGuards: [],
-                materialValue: getMaterialValue(piece, gameStage),
-                positionValue: getPositionValue(piece, r, c),
+                materialValue: materialValues[code & 7],
+                positionValue: SEARCH_POSITION_VALUES[code][sq],
                 threatValue: 0,
                 safetyValue: 0,
                 mobilityValue: 0,
@@ -827,7 +719,6 @@ const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
                 protect: []
             });
         }
-    }
 
     let boardInfo;
     if (piecesInfo.length <= 32) {
@@ -850,34 +741,14 @@ const evaluateBoardForUi = (board, currentPlayer = null, gameStage = 'mid') => {
     }
 
     calculatePieceRelations(board, piecesInfo, boardInfo);
-    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board, false);
+    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board);
 
     return {
         piecesInfo,
         gameStage,
         boardInfo
     };
-};
-
-// Worker/点棋仍会调用；将位已在 pieceState.redGeneralSq / blackGeneralSq。
-const syncGeneralPosCache = () => {};
-
-// 合法着过滤/根节点：仍同步对象棋盘，给 getValidMoves 用
-const makeMove = (board, from, to) => {
-    const piece = board[from.r][from.c];
-    const captured = board[to.r][to.c];
-    board[to.r][to.c] = piece;
-    board[from.r][from.c] = null;
-    updatePieceStateAfterMake(board, from.r * 9 + from.c, to.r * 9 + to.c);
-    return captured;
-};
-
-const unmakeMove = (board, from, to, captured) => {
-    const piece = board[to.r][to.c];
-    board[from.r][from.c] = piece;
-    board[to.r][to.c] = captured;
-    updatePieceStateAfterUnmake(board, from.r * 9 + from.c, to.r * 9 + to.c);
-};
+    });
 
 // 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
 const isCheckAfterSafeMoveFromCoords = (
@@ -1099,7 +970,7 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
     return true;
 };
 
-// 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeMove。
+// 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeSearchMove。
 const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
     const generalSq = color === 'red' ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
@@ -1504,7 +1375,7 @@ const sortStagedMoveRange = (moves, start, end, board, currentPlayer, killers) =
 };
 
 // 计算衍生值：威胁值、安全值、战术值、机动值
-const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardInfo = null, forSearchLeaf = false, skipTerminalScan = false) => {
+const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardInfo = null) => {
     // 重置所有衍生值，除了机动值（已在收集棋子信息时计算）
     for (const info of piecesInfo) {
         info.threatValue = 0;
@@ -1519,15 +1390,14 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
     calculatePieceRelations(board, piecesInfo, boardInfo);
     
     // 2. 计算威胁值（按被威胁子聚合，SEE 每目标一次）
-    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board, forSearchLeaf);
+    calculateTacticalValues(piecesInfo, currentPlayer, boardInfo, board);
     
     // 4. 计算游戏状态并保存到boardInfo
-    // 搜索叶节点跳过：无着/将死已在父节点处理，此处只需静态分
-    if (currentPlayer && !forSearchLeaf && !skipTerminalScan) {
+    if (currentPlayer) {
         // 检查当前玩家是否有合法走法
         let hasMoves = false;
         for (const info of piecesInfo) {
-            if (info.piece.color === currentPlayer) {
+            if ((info.pieceCode < 8) === (currentPlayer === 'red')) {
                 // 获取当前棋子的有效走法
                 const moves = getValidMoves(board, { r: info.r, c: info.c });
                 if (moves.length > 0) {
@@ -2779,10 +2649,10 @@ const advanceTrueStagedMoves = (
 
 // 模块级落点处理（非每子新建闭包）；返回机动增量
 // pieceAtSq: 90 格 → piecesInfo；relCtx.useMasks 时写 mask
-const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relCtx, isRed, pieceColor) => {
+const applyRelationSquare = (squareCodes, info, pieceAtSq, tr, tc, useMasks, bit, relCtx, isRed) => {
     if (tr < 0 || tr >= ROWS || tc < 0 || tc >= COLS) return 0;
-    const target = board[tr][tc];
-    if (!target) {
+    const targetCode = squareCodes[tr * 9 + tc];
+    if (!targetCode) {
         if (useMasks) {
             const sq = tr * 9 + tc;
             if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
@@ -2794,7 +2664,7 @@ const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relC
         }
         return EVALUATION_PARAMETERS.mobility.baseMoveValue;
     }
-    if (target.color !== pieceColor) {
+    if ((targetCode < 8) !== isRed) {
         if (useMasks) {
             if (pieceAtSq[tr * 9 + tc]) {
                 relCtx.attackMask[tr * 9 + tc] |= bit;
@@ -2809,7 +2679,7 @@ const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relC
         }
         return 0;
     }
-    if (target.type !== 'general') {
+    if ((targetCode & 7) !== 1) {
         const targetInfo = pieceAtSq[tr * 9 + tc];
         if (targetInfo && targetInfo !== info) {
             if (useMasks) {
@@ -2825,11 +2695,9 @@ const applyRelationSquare = (board, info, pieceAtSq, tr, tc, useMasks, bit, relC
 };
 
 // 非炮：一次几何扫描；短步子走预表，车仍射线；语义与 getPieceMoves 一致
-const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
-    const piece = info.piece;
-    const { r, c } = info;
-    const isRed = piece.color === 'red';
-    const pieceColor = piece.color;
+const fillNonCannonRelations = (squareCodes, info, pieceAtSq, relCtx = null) => {
+    const { r, c, pieceCode } = info;
+    const isRed = pieceCode < 8;
     const useMasks = !!(relCtx && relCtx.useMasks);
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     const colorIdx = isRed ? 0 : 1;
@@ -2841,58 +2709,58 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
     }
     let mobilityValue = 0;
 
-    switch (piece.type) {
-        case 'general': {
+    switch (pieceCode & 7) {
+        case 1: {
             const dests = GENERAL_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
                 mobilityValue += applyRelationSquare(
-                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                    squareCodes, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed
                 );
             }
             break;
         }
-        case 'advisor': {
+        case 5: {
             const dests = ADVISOR_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
                 mobilityValue += applyRelationSquare(
-                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                    squareCodes, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed
                 );
             }
             break;
         }
-        case 'elephant': {
+        case 4: {
             const dests = ELEPHANT_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
-                if (board[d.br][d.bc] === null) {
+                if (!squareCodes[d.br * 9 + d.bc]) {
                     mobilityValue += applyRelationSquare(
-                        board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                        squareCodes, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed
                     );
                 }
             }
             break;
         }
-        case 'horse': {
+        case 3: {
             const dests = HORSE_DEST[fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
-                if (board[d.br][d.bc] === null) {
+                if (!squareCodes[d.br * 9 + d.bc]) {
                     mobilityValue += applyRelationSquare(
-                        board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                        squareCodes, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed
                     );
                 }
             }
             break;
         }
-        case 'chariot':
+        case 2:
             for (let i = 0; i < ORTH_DIRS.length; i++) {
                 const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
                 let nr = r + dr, nc = c + dc;
                 while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                    const target = board[nr][nc];
-                    if (target === null) {
+                    const targetCode = squareCodes[nr * 9 + nc];
+                    if (!targetCode) {
                         if (useMasks) {
                             const sq = nr * 9 + nc;
                             if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
@@ -2904,7 +2772,7 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                         }
                         mobilityValue += EVALUATION_PARAMETERS.mobility.baseMoveValue;
                     } else {
-                        if (target.color !== pieceColor) {
+                        if ((targetCode < 8) !== isRed) {
                             if (useMasks) {
                                 if (pieceAtSq[nr * 9 + nc]) {
                                     relCtx.attackMask[nr * 9 + nc] |= bit;
@@ -2917,7 +2785,7 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                                     targetInfo.threatenedBy.push(info);
                                 }
                             }
-                        } else if (target.type !== 'general') {
+                        } else if ((targetCode & 7) !== 1) {
                             const targetInfo = pieceAtSq[nr * 9 + nc];
                             if (targetInfo && targetInfo !== info) {
                                 if (useMasks) {
@@ -2936,12 +2804,12 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                 }
             }
             break;
-        case 'soldier': {
+        case 7: {
             const dests = SOLDIER_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
                 applyRelationSquare(
-                    board, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed, pieceColor
+                    squareCodes, info, pieceAtSq, d.r, d.c, useMasks, bit, relCtx, isRed
                 );
             }
             break;
@@ -2953,11 +2821,9 @@ const fillNonCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
 };
 
 // 炮：一次四向射线；mask 模式写 attack/guard/control，列表模式保持旧语义
-const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
-    const piece = info.piece;
-    const { r, c } = info;
-    const isRed = piece.color === 'red';
-    const pieceColor = piece.color;
+const fillCannonRelations = (squareCodes, info, pieceAtSq, relCtx = null) => {
+    const { r, c, pieceCode } = info;
+    const isRed = pieceCode < 8;
     const useMasks = !!(relCtx && relCtx.useMasks);
     const bit = useMasks ? (1 << relCtx.pieceIndex) : 0;
     if (!useMasks) {
@@ -2971,13 +2837,13 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
         let nr = r + dr, nc = c + dc;
         let screenFoundCount = 0;
         while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && screenFoundCount < 2) {
-            const p = board[nr][nc];
-            if (p !== null) {
+            const pCode = squareCodes[nr * 9 + nc];
+            if (pCode) {
                 screenFoundCount++;
                 if (screenFoundCount === 2) {
                     const targetInfo = pieceAtSq[nr * 9 + nc];
                     if (targetInfo && targetInfo !== info) {
-                        if (p.color !== pieceColor) {
+                        if ((pCode < 8) !== isRed) {
                             if (useMasks) {
                                 relCtx.attackMask[nr * 9 + nc] |= bit;
                             } else {
@@ -2985,7 +2851,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                                 targetInfo.threatenedBy.push(info);
                                 info.moves.push({ r: nr, c: nc });
                             }
-                        } else if (p.type !== 'general') {
+                        } else if ((pCode & 7) !== 1) {
                             if (useMasks) {
                                 relCtx.guardMask[nr * 9 + nc] |= bit;
                             } else {
@@ -2993,7 +2859,7 @@ const fillCannonRelations = (board, info, pieceAtSq, relCtx = null) => {
                                 targetInfo.guardedBy.push(info);
                             }
                         }
-                    } else if (p.color !== pieceColor) {
+                    } else if ((pCode < 8) !== isRed) {
                         if (!useMasks) info.moves.push({ r: nr, c: nc });
                     }
                     break;
@@ -3768,7 +3634,7 @@ const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
             const bit = am & -am;
             const i = 31 - Math.clz32(bit);
             const attacker = piecesInfo[i];
-            if (target && target !== attacker && target.piece.color !== attacker.piece.color) {
+            if (target && target !== attacker && (target.pieceCode < 8) !== (attacker.pieceCode < 8)) {
                 attacker.threat.push(target);
                 target.threatenedBy.push(attacker);
             }
@@ -3780,7 +3646,7 @@ const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
             const bit = gm & -gm;
             const i = 31 - Math.clz32(bit);
             const guarder = piecesInfo[i];
-            if (target && target !== guarder && target.piece.color === guarder.piece.color) {
+            if (target && target !== guarder && (target.pieceCode < 8) === (guarder.pieceCode < 8)) {
                 guarder.guard.push(target);
                 target.guardedBy.push(guarder);
             }
@@ -3807,6 +3673,11 @@ const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
 
 // 计算棋子关系：mask 路径写 Uint32 格位表；列表路径保持旧 push
 const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
+    const pieceState = activePieceStateFor(board);
+    if (!pieceState) {
+        return runWithPieceState(board, () => calculatePieceRelations(board, piecesInfo, boardInfo));
+    }
+    const squareCodes = pieceState.squareCodes;
     const useMasks = !!(boardInfo && boardInfo.useRelationMasks);
     const useAttackBits = !!(boardInfo && boardInfo.useAttackBits) && !useMasks;
 
@@ -3848,16 +3719,16 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         const info = piecesInfo[i];
         if (relCtx) relCtx.pieceIndex = info.pieceIndex;
 
-        if (info.piece.type === 'cannon') {
-            fillCannonRelations(board, info, scratchPieceAtSq, relCtx);
+        if ((info.pieceCode & 7) === 6) {
+            fillCannonRelations(squareCodes, info, scratchPieceAtSq, relCtx);
         } else {
-            fillNonCannonRelations(board, info, scratchPieceAtSq, relCtx);
+            fillNonCannonRelations(squareCodes, info, scratchPieceAtSq, relCtx);
         }
 
         if (!useMasks) {
             const control = info.control;
             if (useAttackBits) {
-                const bits = info.piece.color === 'red' ? boardInfo.redAttack : boardInfo.blackAttack;
+                const bits = info.pieceCode < 8 ? boardInfo.redAttack : boardInfo.blackAttack;
                 for (let k = 0; k < control.length; k++) {
                     const pos = control[k];
                     setAttackBit(bits, pos.r * 9 + pos.c);
@@ -3876,8 +3747,8 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     let redGeneralInfo = null;
     let blackGeneralInfo = null;
     for (const info of piecesInfo) {
-        if (info.piece.type === 'general') {
-            if (info.piece.color === 'red') redGeneralInfo = info;
+        if ((info.pieceCode & 7) === 1) {
+            if (info.pieceCode < 8) redGeneralInfo = info;
             else blackGeneralInfo = info;
         }
     }
@@ -3892,7 +3763,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     } else {
         if (redGeneralInfo) {
             for (const threatener of redGeneralInfo.threatenedBy) {
-                if (threatener.piece.color === 'black') {
+                if (threatener.pieceCode >= 8) {
                     redIsInCheck = true;
                     break;
                 }
@@ -3900,7 +3771,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         }
         if (blackGeneralInfo) {
             for (const threatener of blackGeneralInfo.threatenedBy) {
-                if (threatener.piece.color === 'red') {
+                if (threatener.pieceCode < 8) {
                     blackIsInCheck = true;
                     break;
                 }
@@ -3913,7 +3784,7 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
         const startR = Math.min(redGeneralInfo.r, blackGeneralInfo.r) + 1;
         const endR = Math.max(redGeneralInfo.r, blackGeneralInfo.r) - 1;
         for (let r = startR; r <= endR; r++) {
-            if (board[r][redGeneralInfo.c]) {
+            if (squareCodes[r * 9 + redGeneralInfo.c]) {
                 hasPieceBetween = true;
                 break;
             }
@@ -4077,9 +3948,10 @@ const calculateStaticExchangeScoreNumeric = (
 // 计算威胁值（基于完整的威胁关系）
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给 threatenedBy[0]
 // （关系构建按 piecesInfo 顺序 push，故与旧“攻击方外层遍历首次计分”归属一致）
-const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null, forSearchLeaf = false) => {
+const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null) => {
+    const squareCodes = board && activePieceStateFor(board) ? activePieceStateFor(board).squareCodes : null;
     // 初始化威胁类型统计信息
-    const collectUi = !!boardInfo && !forSearchLeaf;
+    const collectUi = !!boardInfo;
     if (collectUi) {
         boardInfo.checks = [];      // 将军信息
         boardInfo.threatenedPieces = [];  // 被捉的棋子
@@ -4114,7 +3986,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
         }
 
         // 将军：只给小额先手分，绝不按将/帅材料值做 SEE
-        if (threatenedPiece.piece.type === PIECE_TYPES.GENERAL) {
+        if ((threatenedPiece.pieceCode & 7) === 1) {
             if (collectUi) {
                 if (useMasks) {
                     let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
@@ -4146,7 +4018,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
         if (!hasGuard) {
             firstAttacker.threatValue += threatenedPiece.materialValue;
             if (collectUi) {
-                if (firstAttacker.piece.color === currentPlayer) {
+                if ((firstAttacker.pieceCode < 8) === (currentPlayer === 'red')) {
                     if (useMasks) {
                         let m = attackMask[threatenedPiece.r * 9 + threatenedPiece.c] >>> 0;
                         while (m !== 0) {
@@ -4182,38 +4054,16 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
     }
 
     // 安全值：将空控邻格是否被敌控（无 visit 回调）
-    if (forSearchLeaf && boardInfo && boardInfo.useAttackBits && board) {
-        for (let gi = 0; gi < piecesInfo.length; gi++) {
-            const general = piecesInfo[gi];
-            if (general.piece.type !== PIECE_TYPES.GENERAL) continue;
-
-            const generalColor = general.piece.color;
-            const enemyBits = generalColor === 'red' ? boardInfo.blackAttack : boardInfo.redAttack;
-            const isRed = generalColor === 'red';
-            const { r, c } = general;
-            for (let i = 0; i < ORTH_DIRS.length; i++) {
-                const nr = r + ORTH_DIRS[i][0];
-                const nc = c + ORTH_DIRS[i][1];
-                if (nc < 3 || nc > 5) continue;
-                if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
-                if (board[nr][nc] === null && hasAttackBit(enemyBits, nr * 9 + nc)) {
-                    general.safetyValue -= 50;
-                }
-            }
-        }
-        return;
-    }
-
     const generalInfo = [];
     for (let i = 0; i < piecesInfo.length; i++) {
-        if (piecesInfo[i].piece.type === PIECE_TYPES.GENERAL) generalInfo.push(piecesInfo[i]);
+        if ((piecesInfo[i].pieceCode & 7) === 1) generalInfo.push(piecesInfo[i]);
     }
 
     const safetyUseAttackBits = !!(boardInfo && boardInfo.useAttackBits);
     const safetyUseMasks = !!(boardInfo && boardInfo.useRelationMasks);
     for (let gi = 0; gi < generalInfo.length; gi++) {
         const general = generalInfo[gi];
-        const generalColor = general.piece.color;
+        const generalColor = general.pieceCode < 8 ? 'red' : 'black';
         const enemyColor = generalColor === 'red' ? 'black' : 'red';
         const enemyBits = safetyUseAttackBits
             ? (enemyColor === 'red' ? boardInfo.redAttack : boardInfo.blackAttack)
@@ -4230,7 +4080,9 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
                 hasEnemyControl = false;
                 for (let ci = 0; ci < positionControllers.length; ci++) {
                     const controller = positionControllers[ci];
-                    const color = controller.piece ? controller.piece.color : controller.color;
+                    const color = controller.pieceCode != null
+                        ? (controller.pieceCode < 8 ? 'red' : 'black')
+                        : controller.color;
                     if (color === enemyColor) {
                         hasEnemyControl = true;
                         break;
@@ -4246,7 +4098,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
                 const nc = c + ORTH_DIRS[i][1];
                 if (nc < 3 || nc > 5) continue;
                 if (isRed ? (nr < 0 || nr > 2) : (nr < 7 || nr > 9)) continue;
-                if (board[nr][nc] === null) penalizeIfEnemy(nr, nc);
+                if (squareCodes && !squareCodes[nr * 9 + nc]) penalizeIfEnemy(nr, nc);
             }
         } else if (general.control && general.control.length) {
             for (let i = 0; i < general.control.length; i++) {
@@ -4256,37 +4108,13 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
     }
 };
 
-// Search leaves never construct UI relation lists. This path consumes only
-// pieceCode/sq and the masks emitted by the numeric relation builder.
-// --- Types (Inlined to avoid import issues in Worker) ---
-// // type Color - TypeScript type removed for JavaScript compatibility 'red' | 'black';
-// // type PieceType - TypeScript type removed for JavaScript compatibility 'general' | 'advisor' | 'elephant' | 'horse' | 'chariot' | 'cannon' | 'soldier';
-// // interface Piece - TypeScript interface removed for JavaScript compatibility
-// // interface Position - TypeScript interface removed for JavaScript compatibility
-// // interface Move - TypeScript interface removed for JavaScript compatibility
-// // type Board - TypeScript type removed for JavaScript compatibility (Piece | null)[][];
-
-// --- Opening Book Types ---
-// Opening Book Entry - represents possible moves for a position
-// interface BookEntry - TypeScript interface removed for JavaScript compatibility
-
-// Individual move in opening book with metadata
-// interface BookMove - TypeScript interface removed for JavaScript compatibility
-
 // --- Zobrist Hashing for Opening Book ---
 // Each piece type/color/position gets a unique random 53-bit integer
 // Uses seeded RNG for deterministic hashing
 class ZobristHasher {
     hashTableFlat;
-    pieceToIndex;
 
     constructor() {
-        this.pieceToIndex = new Map([
-            ['red-general', 0], ['red-advisor', 1], ['red-elephant', 2], ['red-horse', 3],
-            ['red-chariot', 4], ['red-cannon', 5], ['red-soldier', 6],
-            ['black-general', 7], ['black-advisor', 8], ['black-elephant', 9], ['black-horse', 10],
-            ['black-chariot', 11], ['black-cannon', 12], ['black-soldier', 13]
-        ]);
         // Initialize random hash values using seeded RNG (53-bit integers to avoid precision issues)
         this.hashTableFlat = new Float64Array(90 * 14);
         const MAX_SAFE = 0x1FFFFFFFFFFFFF; // 2^53 - 1
@@ -4315,37 +4143,10 @@ class ZobristHasher {
         };
     }
 
-    pieceIndex(pieceOrKey) {
-        if (pieceOrKey == null) return undefined;
-        let color;
-        let type;
-        if (typeof pieceOrKey === 'string') {
-            const separator = pieceOrKey.indexOf('-');
-            if (separator < 0) return undefined;
-            color = pieceOrKey.slice(0, separator);
-            type = pieceOrKey.slice(separator + 1);
-        } else {
-            color = pieceOrKey.color;
-            type = pieceOrKey.type;
-        }
-        let typeIndex;
-        switch (type) {
-            case PIECE_TYPES.GENERAL: typeIndex = 0; break;
-            case PIECE_TYPES.ADVISOR: typeIndex = 1; break;
-            case PIECE_TYPES.ELEPHANT: typeIndex = 2; break;
-            case PIECE_TYPES.HORSE: typeIndex = 3; break;
-            case PIECE_TYPES.CHARIOT: typeIndex = 4; break;
-            case PIECE_TYPES.CANNON: typeIndex = 5; break;
-            case PIECE_TYPES.SOLDIER: typeIndex = 6; break;
-            default: return undefined;
-        }
-        if (color === 'red') return typeIndex;
-        return color === 'black' ? typeIndex + 7 : undefined;
-    }
-
-    evalCacheKey(board, searchInitiator, gameStage) {
-        const stageKey = this.evalStageKeys[gameStage] || this.evalStageKeys.mid;
-        return this.hash(board) ^ this.evalInitiatorKeys[searchInitiator] ^ stageKey;
+    pieceIndex(code) {
+        if (typeof code !== 'number') return undefined;
+        const idx = SEARCH_CODE_TO_ZOBRIST[code];
+        return idx >= 0 ? idx : undefined;
     }
 
     evalCacheKeyFromHash(boardHash, searchInitiator, gameStage) {
@@ -4368,15 +4169,13 @@ class ZobristHasher {
      */
     hash(board) {
         let h = 0;
+        const table = this.hashTableFlat;
         for (let r = 0; r < 10; r++) {
             for (let c = 0; c < 9; c++) {
-                const piece = board[r][c];
-                if (piece) {
-                    const pieceIdx = this.pieceIndex(piece);
-                    if (pieceIdx !== undefined) {
-                        h ^= this.hashTableFlat[(r * 9 + c) * 14 + pieceIdx];
-                    }
-                }
+                const code = cellToSearchCode(board[r][c]);
+                if (!code) continue;
+                const pieceIdx = SEARCH_CODE_TO_ZOBRIST[code];
+                if (pieceIdx >= 0) h ^= table[(r * 9 + c) * 14 + pieceIdx];
             }
         }
         return h;
@@ -4433,8 +4232,7 @@ class ZobristHasher {
 
     /**
      * Incrementally update hash after a move (XOR 自逆：再调用一次可还原).
-     * movingPiece / capturedPiece 可为棋子对象或 'color-type' 字符串。
-     * 须在 makeMove 之前取得 movingPiece，captured 用 makeMove 返回值。
+     * movingPiece / capturedPiece 为搜索码。
      */
     updateHash(currentHash, move, movingPiece, capturedPiece) {
         let newHash = currentHash;
@@ -4467,41 +4265,6 @@ class OpeningBook {
         this.hasher = new ZobristHasher();
         this.enabled = true;
         this.maxPly = maxPly;
-        this.initializeBook();
-    }
-
-    /**
-     * Initialize with common Chinese Chess openings
-     */
-    initializeBook() {
-        // Add classic Chinese Chess openings manually
-        
-        /*
-        // 1. 中炮过河车对屏风马平炮对车 (Central Cannon vs Screen Horses)
-        this.addOpeningLine([
-            { from: { r: 7, c: 7 }, to: { r: 7, c: 4 } },  // 1. 炮二平五
-            { from: { r: 0, c: 7 }, to: { r: 2, c: 6 } },  // 1... 马8进7
-            { from: { r: 9, c: 7 }, to: { r: 7, c: 6 } },  // 2. 马二进三
-            { from: { r: 0, c: 8 }, to: { r: 0, c: 7 } },  // 2... 车9平8           
-            { from: { r: 9, c: 8 }, to: { r: 9, c: 7 } },  // 3. 车一平二
-            { from: { r: 3, c: 6 }, to: { r: 4, c: 6 } },  // 3... 卒7进1
-            { from: { r: 9, c: 7 }, to: { r: 3, c: 7 } },  // 4. 车二进六
-            { from: { r: 0, c: 1 }, to: { r: 2, c: 2 } },  // 4... 马2进3
-            { from: { r: 6, c: 2 }, to: { r: 5, c: 2 } },  // 5. 兵七进一
-            { from: { r: 2, c: 7 }, to: { r: 2, c: 8 } },  // 5... 炮8平9
-            { from: { r: 3, c: 7 }, to: { r: 3, c: 6 } },  // 6. 车二平三
-            { from: { r: 2, c: 8 }, to: { r: 1, c: 8 } },  // 6... 炮9退1          
-        ], [85, 85, 95, 90, 90, 85, 85, 80, 85, 85, 85, 85]);
-
-        this.addOpeningLineFromNotation([
-            '炮二平五', '马8进7', '马二进三', '车9平8', '车一平二', '卒7进1',
-            '车二进六', '马2进3', '兵七进一', '炮8平9', '车二平三', '炮9退1',
-            ], [85, 85, 95, 90, 90, 85, 85, 80, 85, 85, 85, 85]);
-
-                this.addOpeningLineFromString([
-            '炮二平五 马8进7 马二进三 车9平8 车一平二 卒7进1 车二进六 马2进3 兵七进一 炮8平9 车二平三 炮9退1'
-        ], [85, 85, 95, 90, 90, 85, 85, 80, 85, 85, 85, 85]);
-        */
     }
 
     /**
@@ -4542,21 +4305,13 @@ class OpeningBook {
                 existingMove.weight = Math.max(existingMove.weight, weight);
             }
 
-            // Make the move on the board
-            const piece = board[move.from.r][move.from.c];
+            const mover = board[move.from.r][move.from.c];
             const captured = board[move.to.r][move.to.c];
-            
-            if (!piece) break; // Invalid line
+            if (!mover) break;
 
-            const pieceKey = `${piece.color}-${piece.type}`;
-            const capturedKey = captured ? `${captured.color}-${captured.type}` : undefined;
-
-            // Update hash incrementally
-            currentHash = this.hasher.updateHash(currentHash, move, pieceKey, capturedKey);
-
-            // Apply move
-            board[move.to.r][move.to.c] = piece;
-            board[move.from.r][move.from.c] = null;
+            currentHash = this.hasher.updateHash(currentHash, move, mover, captured || undefined);
+            board[move.to.r][move.to.c] = mover;
+            board[move.from.r][move.from.c] = 0;
         }
     }
 
@@ -4708,45 +4463,7 @@ class OpeningBook {
      * Helper to create initial board (needed for book initialization)
      */
     createInitialBoard() {
-        const board = Array(10).fill(null).map(() => Array(9).fill(null));
-        
-        // Red pieces (bottom - r=0-2)
-        board[0][0] = { type: 'chariot', color: 'red' };
-        board[0][1] = { type: 'horse', color: 'red' };
-        board[0][2] = { type: 'elephant', color: 'red' };
-        board[0][3] = { type: 'advisor', color: 'red' };
-        board[0][4] = { type: 'general', color: 'red' };
-        board[0][5] = { type: 'advisor', color: 'red' };
-        board[0][6] = { type: 'elephant', color: 'red' };
-        board[0][7] = { type: 'horse', color: 'red' };
-        board[0][8] = { type: 'chariot', color: 'red' };
-        board[2][1] = { type: 'cannon', color: 'red' };
-        board[2][7] = { type: 'cannon', color: 'red' };
-        board[3][0] = { type: 'soldier', color: 'red' };
-        board[3][2] = { type: 'soldier', color: 'red' };
-        board[3][4] = { type: 'soldier', color: 'red' };
-        board[3][6] = { type: 'soldier', color: 'red' };
-        board[3][8] = { type: 'soldier', color: 'red' };
-
-        // Black pieces (top - r=7-9)
-        board[9][0] = { type: 'chariot', color: 'black' };
-        board[9][1] = { type: 'horse', color: 'black' };
-        board[9][2] = { type: 'elephant', color: 'black' };
-        board[9][3] = { type: 'advisor', color: 'black' };
-        board[9][4] = { type: 'general', color: 'black' };
-        board[9][5] = { type: 'advisor', color: 'black' };
-        board[9][6] = { type: 'elephant', color: 'black' };
-        board[9][7] = { type: 'horse', color: 'black' };
-        board[9][8] = { type: 'chariot', color: 'black' };
-        board[7][1] = { type: 'cannon', color: 'black' };
-        board[7][7] = { type: 'cannon', color: 'black' };
-        board[6][0] = { type: 'soldier', color: 'black' };
-        board[6][2] = { type: 'soldier', color: 'black' };
-        board[6][4] = { type: 'soldier', color: 'black' };
-        board[6][6] = { type: 'soldier', color: 'black' };
-        board[6][8] = { type: 'soldier', color: 'black' };
-
-        return board;
+        return createInitialSearchBoard();
     }
 
     /**
@@ -4838,25 +4555,20 @@ class OpeningBook {
 
         // Helper function to check if there are multiple same-type pieces in the same column
         const hasSameTypeInColumn = (board, pieceType, color, col, excludeRow) => {
-            let count = 0;
+            const wantCode = pieceToSearchCode({ type: pieceType, color });
             for (let r = 0; r < 10; r++) {
-                const piece = board[r][col];
                 if (r === excludeRow) continue;
-                if (piece && piece.type === pieceType && piece.color === color) {
-                    count++;
-                }
+                if (cellToSearchCode(board[r][col]) === wantCode) return true;
             }
-            return count > 0;
+            return false;
         };
 
         // Helper function to determine front/back marker
         const getFrontBackMarker = (board, pieceType, color, col, currentRow) => {
+            const wantCode = pieceToSearchCode({ type: pieceType, color });
             const sameTypePieces = [];
             for (let r = 0; r < 10; r++) {
-                const piece = board[r][col];
-                if (piece && piece.type === pieceType && piece.color === color) {
-                    sameTypePieces.push(r);
-                }
+                if (cellToSearchCode(board[r][col]) === wantCode) sameTypePieces.push(r);
             }
             if (sameTypePieces.length <= 1) return '';
             if (color === 'red') {
@@ -4874,21 +4586,20 @@ class OpeningBook {
         for (let i = 0; i < moveHistory.length; i++) {
             const move = moveHistory[i];
             const boardBefore = boardHistory[i];
-            const piece = boardBefore[move.from.r][move.from.c];
-            
-            if (!piece) {
+            const moverCode = cellToSearchCode(boardBefore[move.from.r][move.from.c]);
+            if (!moverCode) {
                 console.error('No piece found at from position:', move.from);
                 continue;
             }
 
-            const pieceType = piece.type;
-            const pieceChar = typeToPiece[pieceType][piece.color];
-            const isRed = piece.color === 'red';
+            const pieceType = SEARCH_TYPE_NAME[moverCode & 7];
+            const isRed = moverCode < 8;
+            const pieceChar = typeToPiece[pieceType][isRed ? 'red' : 'black'];
             
             // Check if there are multiple same-type pieces in the same column
-            const hasDuplicate = hasSameTypeInColumn(boardBefore, pieceType, piece.color, move.from.c, move.from.r);
-            // Get front/back marker if needed
-            const positionMarker = hasDuplicate ? getFrontBackMarker(boardBefore, pieceType, piece.color, move.from.c, move.from.r) : '';
+            const moverColor = isRed ? 'red' : 'black';
+            const hasDuplicate = hasSameTypeInColumn(boardBefore, pieceType, moverColor, move.from.c, move.from.r);
+            const positionMarker = hasDuplicate ? getFrontBackMarker(boardBefore, pieceType, moverColor, move.from.c, move.from.r) : '';
             
             // Determine notation based on piece type and move direction
             let notationStr;
@@ -5050,17 +4761,15 @@ class OpeningBook {
                 'black-soldier': []
             };
             
-            // Populate piece positions from initial board
             for (let r = 0; r < 10; r++) {
                 for (let c = 0; c < 9; c++) {
-                    const piece = initialBoard[r][c];
-                    if (piece) {
-                        const key = `${piece.color}-${piece.type}`;
-                        if (piece.type === 'general') {
-                            piecePositions[key] = { r, c };
-                        } else {
-                            piecePositions[key].push({ r, c });
-                        }
+                    const code = cellToSearchCode(initialBoard[r][c]);
+                    if (!code) continue;
+                    const key = searchCodeToKey(code);
+                    if ((code & 7) === 1) {
+                        piecePositions[key] = { r, c };
+                    } else {
+                        piecePositions[key].push({ r, c });
                     }
                 }
             }
@@ -5258,19 +4967,17 @@ class OpeningBook {
             return moves;
         };
 
-        // Create a temporary board to track moves
-        let tempBoard = this.createInitialBoard();
+        let tempBoard = initialBoard
+            ? encodeBoardToSearchCodes(initialBoard)
+            : this.createInitialBoard();
         
-        // Ensure tempBoard is properly initialized
         if (!tempBoard || tempBoard.length !== 10) {
             console.error('Invalid board initialization');
             return [];
         }
-        
-        // Verify all rows have 9 columns
         for (let i = 0; i < 10; i++) {
             if (!tempBoard[i] || tempBoard[i].length !== 9) {
-                tempBoard[i] = Array(9).fill(null);
+                tempBoard[i] = Array(9).fill(0);
             }
         }
 
@@ -5439,16 +5146,16 @@ class OpeningBook {
             moves.push({ from: { r: fromPos.r, c: fromPos.c }, to: { r: toPos.r, c: toPos.c } });
 
             // Check if there's a captured piece
-            const capturedPiece = tempBoard[toPos.r][toPos.c];
+            const capturedCode = tempBoard[toPos.r][toPos.c];
             
             // If there's a captured piece, remove it from piecePositions
-            if (capturedPiece) {
-                const capturedKey = `${capturedPiece.color}-${capturedPiece.type}`;
+            if (capturedCode) {
+                const capturedKey = searchCodeToKey(capturedCode);
                 const capturedPositions = piecePositions[capturedKey];
                 
                 if (capturedPositions) {
                     // 将/帅不会被吃掉，所以只处理其他棋子
-                    if (capturedPiece.type !== 'general') {
+                    if ((capturedCode & 7) !== 1) {
                         // Remove the captured position from the array
                         if (Array.isArray(capturedPositions)) {
                             const updatedPositions = capturedPositions.filter(pos => 
@@ -5475,15 +5182,15 @@ class OpeningBook {
             }
             
             // Verify the captured piece has been removed
-            if (capturedPiece) {
-                const capturedKey = `${capturedPiece.color}-${capturedPiece.type}`;
+            if (capturedCode) {
+                const capturedKey = searchCodeToKey(capturedCode);
                 const finalPositions = piecePositions[capturedKey];
                 if (Array.isArray(finalPositions)) {
                     const stillExists = finalPositions.some(pos => 
                         pos && pos.r === toPos.r && pos.c === toPos.c
                     );
                     if (stillExists) {
-                        console.error('ERROR: Captured piece still exists in piecePositions:', capturedPiece, 'at', toPos);
+                        console.error('ERROR: Captured piece still exists in piecePositions:', capturedCode, 'at', toPos);
                     } else {
                         console.log('SUCCESS: Captured piece removed from piecePositions');
                     }
@@ -5493,9 +5200,9 @@ class OpeningBook {
             // Make the move on the temporary board first before updating piece positions
             if (isValidPos(fromPos.r, fromPos.c) && isValidPos(toPos.r, toPos.c) && 
                 tempBoard[fromPos.r] && tempBoard[toPos.r]) {
-                const piece = tempBoard[fromPos.r][fromPos.c];
-                tempBoard[toPos.r][toPos.c] = piece;
-                tempBoard[fromPos.r][fromPos.c] = null;
+                const mover = tempBoard[fromPos.r][fromPos.c];
+                tempBoard[toPos.r][toPos.c] = mover;
+                tempBoard[fromPos.r][fromPos.c] = 0;
             } else {
                 console.error('❌ ERROR: Invalid positions for move:', moveNotation, fromPos, toPos);
             }
@@ -7214,7 +6921,6 @@ const getBestMove = (
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
-  syncGeneralPosCache(board);
   const rootBoardInfo = fillRootSortHints(rootPieceState, turn);
 
   // 收集根节点走法（只做一次）：编码整数 + 平行分数/PV
@@ -7556,6 +7262,12 @@ const searchTestApi = {
       return legal;
     });
   },
+  readSquareCodes(board) {
+    return runWithPieceState(board, () => {
+      const state = activePieceStateFor(board);
+      return state ? Array.from(state.squareCodes) : [];
+    });
+  },
   hashConsistency(board) {
     return runWithPieceState(board, () => {
       const state = activePieceStateFor(board);
@@ -7610,8 +7322,7 @@ export {
   logPerfStats,
   openingBook,
   searchTestApi,
-  snapshotPerfStats,
-  syncGeneralPosCache
+  snapshotPerfStats
 };
 
 

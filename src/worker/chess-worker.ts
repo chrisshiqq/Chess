@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
-import { decodeBoard, decodeSquares, formatMove } from '../engine/codec.ts';
-import type { EncodedMove, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
+import { decodeSquares, formatMove } from '../engine/codec.ts';
+import type { EncodedMove, WireBoard, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
 import {
   evaluateBoard,
   evaluateBoardForUi,
@@ -14,8 +14,7 @@ import { getValidMoves } from '../engine/js/movegen.js';
 import {
   checkGameState,
   isCheck,
-  isValidPlacement,
-  syncGeneralPosCache
+  isValidPlacement
 } from '../engine/js/rules.js';
 import { configureSearch, searchContext } from '../engine/js/search-context.js';
 import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
@@ -45,7 +44,7 @@ const emptyRelations = () => ({
 });
 
 const buildSquareInspection = (
-  board: ReturnType<typeof decodeBoard>,
+  board: WireBoard,
   pos: { r: number; c: number },
   turn: Parameters<typeof evaluateBoardForUi>[1],
   needMoves: boolean
@@ -97,7 +96,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
 
     switch (type) {
       case 'SEARCH': {
-        const board = decodeBoard(payload.board);
+        const board = payload.board;
         configureSearch(payload);
         openingBook.setEnabled(payload.openingBookEnabled ?? true);
 
@@ -172,8 +171,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'getValidMoves': {
-        const board = decodeBoard(payload.board);
-        syncGeneralPosCache(board);
+        const board = payload.board;
         emit({
           type: 'validMoves',
           moves: decodeSquares(getValidMoves(board, payload.pos)),
@@ -183,8 +181,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'inspectSquare': {
-        const board = decodeBoard(payload.board);
-        syncGeneralPosCache(board);
+        const board = payload.board;
         const inspected = buildSquareInspection(
           board,
           payload.pos,
@@ -202,14 +199,14 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'getPieceRelations': {
-        const board = decodeBoard(payload.board);
+        const board = payload.board;
         const inspected = buildSquareInspection(board, payload.pos, null, false);
         emit({ type: 'pieceRelations', relations: inspected.relations, requestId: payload.requestId });
         return;
       }
 
       case 'checkGameState': {
-        const board = decodeBoard(payload.board);
+        const board = payload.board;
         emit({
           type: 'gameState',
           state: checkGameState(board, payload.turn),
@@ -219,7 +216,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'evaluateBoard': {
-        const board = decodeBoard(payload.board);
+        const board = payload.board;
         emit({
           type: 'detailedEvaluation',
           evaluation: evaluateBoard(board, payload.turn, gameStage()),
@@ -229,7 +226,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'evaluatePiece': {
-        const board = decodeBoard(payload.board);
+        const board = payload.board;
         const piece = board[payload.pos.r][payload.pos.c];
         if (!piece) {
           emit({
@@ -252,8 +249,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       }
 
       case 'isCheck': {
-        const board = decodeBoard(payload.board);
-        syncGeneralPosCache(board);
+        const board = payload.board;
         emit({ type: 'check', isCheck: isCheck(board, payload.color), requestId: payload.requestId });
         return;
       }
@@ -282,7 +278,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
       case 'notationToMoves':
         emit({
           type: 'moves',
-          moves: openingBook.notationToMoves(payload.notation, decodeBoard(payload.initialBoard)),
+          moves: openingBook.notationToMoves(payload.notation, payload.initialBoard),
           requestId: payload.requestId
         });
         return;

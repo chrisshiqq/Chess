@@ -46,7 +46,7 @@ import {
 } from './src/utils/chessEngine';
 */
 import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, CompactBoard } from './domain/types';
-import { decodeAnalysisMoves, decodeMove, decodeMoves, previewMove } from './engine/codec';
+import { decodeAnalysisMoves, decodeBoard, decodeMove, decodeMoves, encodeBoard, previewMove } from './engine/codec';
 import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
 
 const ROWS = 10;
@@ -157,66 +157,10 @@ export const createEmptyBoard = (): Board => {
     return Array(ROWS).fill(null).map(() => Array(COLS).fill(null));
 };
 
-// 将棋盘转换为紧凑格式：10行9列的二维数组，每个元素是-1（空）或0-13（棋子）
-// 红方棋子：0-6，黑方棋子：7-13
-// 类型映射：general:0/7, advisor:1/8, elephant:2/9, horse:3/10, chariot:4/11, cannon:5/12, soldier:6/13
-export const boardToCompactFormat = (board: Board): CompactBoard => {
-    const compactBoard: CompactBoard = Array(ROWS).fill(null).map(() => Array(COLS).fill(-1));
-    
-    // 棋子类型到数字的映射
-    const pieceTypeToNumber = {
-        'general': 0,
-        'advisor': 1,
-        'elephant': 2,
-        'horse': 3,
-        'chariot': 4,
-        'cannon': 5,
-        'soldier': 6
-    };
-    
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const piece = board[r][c];
-            if (piece) {
-                const baseNumber = pieceTypeToNumber[piece.type];
-                const colorOffset = piece.color === 'red' ? 0 : 7;
-                compactBoard[r][c] = baseNumber + colorOffset;
-            }
-        }
-    }
-    
-    return compactBoard;
-};
+// 棋谱/存档局面：与搜索码相同，0 空，红 1–7，黑 9–15
+export const boardToCompactFormat = (board: Board): CompactBoard => encodeBoard(board);
 
-// 将紧凑格式转换回标准棋盘格式
-const compactFormatToBoard = (compactBoard: CompactBoard): Board => {
-    const board: Board = Array(ROWS).fill(null).map(() => Array(COLS).fill(null));
-    
-    // 数字到棋子类型的映射
-    const numberToPieceType: Record<number, PieceType> = {
-        0: 'general', 7: 'general',
-        1: 'advisor', 8: 'advisor',
-        2: 'elephant', 9: 'elephant',
-        3: 'horse', 10: 'horse',
-        4: 'chariot', 11: 'chariot',
-        5: 'cannon', 12: 'cannon',
-        6: 'soldier', 13: 'soldier'
-    };
-    
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const compactValue = compactBoard[r][c];
-            
-            if (compactValue !== -1) {
-                const pieceType = numberToPieceType[compactValue];
-                const color = compactValue < 7 ? 'red' : 'black';
-                board[r][c] = { type: pieceType, color };
-            }
-        }
-    }
-    
-    return board;
-};
+const compactFormatToBoard = (compactBoard: CompactBoard): Board => decodeBoard(compactBoard);
 
 // 音效数据 - 使用 Web Audio API 生成
 const generateTone = (frequency: number, duration: number, type: OscillatorType = 'sine'): string => {
@@ -783,7 +727,7 @@ const App: React.FC = () => {
     const workerGetValidMoves = useRef((board: Board, pos: Position, requestId?: string): Promise<Position[]> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'getValidMoves', { board, pos }, 'validMoves', data => data.moves, 1000, requestId)
+        return requestWorker(worker, 'getValidMoves', { board: encodeBoard(board), pos }, 'validMoves', data => data.moves, 1000, requestId)
             .catch(error => {
                 if (error instanceof Error && error.message === 'getValidMoves timeout') {
                     console.warn('⚠️ workerGetValidMoves timeout, returning empty moves');
@@ -800,7 +744,7 @@ const App: React.FC = () => {
         return requestWorker(
             worker,
             'evaluateBoard',
-            { board, turn, isReplay, depth: playDepth },
+            { board: encodeBoard(board), turn, isReplay, depth: playDepth },
             'detailedEvaluation',
             data => data.evaluation
         );
@@ -819,7 +763,7 @@ const App: React.FC = () => {
         return requestWorker(
             worker,
             'inspectSquare',
-            { board, pos, turn, needMoves },
+            { board: encodeBoard(board), pos, turn, needMoves },
             'squareInspected',
             data => ({
                 moves: data.moves || [],
@@ -834,7 +778,7 @@ const App: React.FC = () => {
     const workerCheckGameState = useRef((board: Board, turn: Color): Promise<GameStatusResult> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'checkGameState', { board, turn }, 'gameState', data => data.state)
+        return requestWorker(worker, 'checkGameState', { board: encodeBoard(board), turn }, 'gameState', data => data.state)
             .catch(error => {
                 if (error instanceof Error && error.message === 'checkGameState timeout') {
                     console.warn('⚠️ workerCheckGameState timeout, worker busy');
@@ -847,7 +791,7 @@ const App: React.FC = () => {
     const workerIsCheck = useRef((board: Board, color: Color): Promise<boolean> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
-        return requestWorker(worker, 'isCheck', { board, color }, 'check', data => data.isCheck)
+        return requestWorker(worker, 'isCheck', { board: encodeBoard(board), color }, 'check', data => data.isCheck)
             .catch(error => {
                 if (error instanceof Error && error.message === 'isCheck timeout') {
                     console.warn('⚠️ workerIsCheck timeout, worker busy');
@@ -1579,7 +1523,7 @@ const App: React.FC = () => {
             worker.postMessage({
                 type: 'SEARCH',
                 payload: {
-                    board: currentBoard,
+                    board: encodeBoard(currentBoard),
                     turn: currentTurn,
                     depth: searchDepth,
                     randomness,
@@ -3313,15 +3257,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 workerRef.current.postMessage({
                     type: 'SEARCH',
                     payload: {
-                        board: currentBoard,
-                        turn: currentTurn,
-                        depth: searchDepth,
-                        randomness: config.randomness,
-                        ply: moveHistory.length,
-                        gameId: capturedGameId,
-                        openingBookEnabled: openingBookEnabled,
-                        exactRootScores: true,
-                        exactRootLimit: analysisScale
+                    board: encodeBoard(currentBoard),
+                    turn: currentTurn,
+                    depth: searchDepth,
+                    randomness: config.randomness,
+                    ply: moveHistory.length,
+                    gameId: capturedGameId,
+                    openingBookEnabled: openingBookEnabled,
+                    exactRootScores: true,
+                    exactRootLimit: analysisScale
                     }
                 });
             });
@@ -3577,7 +3521,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         return requestWorker(
             worker,
             'movesToNotation',
-            { boardHistory, moveHistory },
+            { boardHistory: boardHistory.map(encodeBoard), moveHistory },
             'notation',
             data => data.notation,
             5000
@@ -3677,7 +3621,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         return requestWorker(
             worker,
             'notationToMoves',
-            { notation: notationArray, initialBoard },
+            { notation: notationArray, initialBoard: initialBoard ? encodeBoard(initialBoard) : undefined },
             'moves',
             data => data.moves,
             5000
@@ -4802,7 +4746,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             workerRef.current.postMessage({
                                                 type: 'SEARCH',
                                                 payload: {
-                                                    board,
+                                                    board: encodeBoard(board),
                                                     turn: currentTurn,
                                                     depth: analysisDepth,
                                                     randomness: DIFFICULTIES[difficulty].randomness,

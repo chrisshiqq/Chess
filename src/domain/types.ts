@@ -41,6 +41,6 @@ export interface GameState {
   history: Board[];
 }
 
-// UI/worker wire format: -1 is empty; red pieces are 0-6 and black are 7-13.
+// 与搜索 squareCodes / 棋谱局面相同：0 空，红 1–7，黑 9–15（1将 2车 3马 4象 5仕 6炮 7兵）。
 export type CompactBoard = number[][];
 export type CompactBoardRow = number[];
