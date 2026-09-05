@@ -55,11 +55,9 @@ const buildSquareInspection = (
   const boardEvaluation = evaluatePiece(board, turn, gameStage());
   const piecesInfo = boardEvaluation.piecesInfo;
   const boardInfo = boardEvaluation.boardInfo as any;
-  if (boardInfo.useRelationMasks) hydrateRelationsFromMasks(piecesInfo, boardInfo);
+  hydrateRelationsFromMasks(piecesInfo, boardInfo);
 
-  const rawControllers = boardInfo.controllerGrid
-    ? (boardInfo.controllerGrid[pos.r][pos.c] || [])
-    : (boardInfo[pos.r]?.[pos.c] || []);
+  const rawControllers = boardInfo.controllerGrid?.[pos.r]?.[pos.c] || [];
   const controllers = rawControllers.map((controller: { r: number; c: number }) => ({
     r: controller.r,
     c: controller.c
