@@ -1002,13 +1002,14 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
 // 搜索热路径使用延迟合法性（试走时检测），避免对剪枝未触及的着法做全量过滤
 const scratchLegalDests = [];
+const scratchLegalEncoded = [];
 const scratchLegalCheckInfo = createCheckInfo();
-const filterLegalMoves = (board, fromSq, color, pseudoMoves, wasInCheck, checkInfo) => {
+const filterLegalMoves = (board, fromSq, color, encodedMoves, wasInCheck, checkInfo) => {
     const validMoves = scratchLegalDests;
     validMoves.length = 0;
-    for (let i = 0; i < pseudoMoves.length; i++) {
-        const toSq = pseudoMoves[i];
-        const encoded = (fromSq << 7) | toSq;
+    for (let i = 0; i < encodedMoves.length; i++) {
+        const encoded = encodedMoves[i];
+        const toSq = encoded & MOVE_TO_MASK;
         makeSearchMove(board, encoded);
         const illegal = leavesOwnKingUnsafe(
             activePieceStateFor(board), color, fromSq, toSq, wasInCheck, checkInfo
@@ -2515,6 +2516,21 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     }
 };
 
+const appendLegalEvasions = (out, board, color, pieceState, checkInfo) => {
+    const encoded = scratchLegalEncoded;
+    encoded.length = 0;
+    generateCheckEvasions(encoded, color, pieceState, checkInfo);
+    for (let i = 0; i < encoded.length; i++) {
+        const move = encoded[i];
+        makeSearchMove(board, move);
+        const unsafe = leavesOwnKingUnsafe(
+            pieceState, color, move >>> 7, move & MOVE_TO_MASK, true, checkInfo
+        );
+        unmakeSearchMove(board, move);
+        if (!unsafe) out.push(move);
+    }
+};
+
 const containsEncodedMoveBefore = (moves, end, move) => {
     for (let i = 0; i < end; i++) {
         if (moves[i] === move) return true;
@@ -2657,7 +2673,7 @@ const applyRelationSquare = (squareCodes, info, pieceAtSq, tr, tc, useMasks, bit
     return 0;
 };
 
-// 非炮：一次几何扫描；短步子走预表，车仍射线；语义与 getPieceMoves 一致
+// 非炮：一次几何扫描；短步子走预表，车仍射线
 const fillNonCannonRelations = (squareCodes, info, pieceAtSq, relCtx = null) => {
     const { r, c, pieceCode } = info;
     const isRed = pieceCode < 8;
@@ -4777,112 +4793,6 @@ const openingBook = new OpeningBook(12);
 
 const isValidPos = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
 
-// 模块级伪合法落点：只读 squareCodes，不碰对象棋盘
-const pushPseudoDest = (squareCodes, moves, alliesOut, isRed, toSq) => {
-  const targetCode = squareCodes[toSq];
-  if (!targetCode || ((targetCode < 8) !== isRed)) {
-    moves.push(toSq);
-  } else if (alliesOut && (targetCode & 7) !== 1) {
-    alliesOut.push(toSq);
-  }
-};
-
-// alliesOut: 可选，收集可保护的己方落点（不含将帅）
-const scratchPseudoDests = [];
-const getPieceMoves = (state, fromSq, pieceCode, alliesOut = null) => {
-  const moves = scratchPseudoDests;
-  moves.length = 0;
-  const squareCodes = state.squareCodes;
-  const isRed = pieceCode < 8;
-  const colorIdx = isRed ? 0 : 1;
-  const r = SEARCH_SQ_ROWS[fromSq];
-  const c = SEARCH_SQ_COLS[fromSq];
-
-  switch (pieceCode & 7) {
-    case 1: {
-      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-      for (let i = SEARCH_GENERAL_DEST_OFF[destBase], n = SEARCH_GENERAL_DEST_OFF[destBase + 1]; i < n; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_GENERAL_DEST_DATA[i]);
-      }
-      break;
-    }
-    case 5: {
-      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-      for (let i = SEARCH_ADVISOR_DEST_OFF[destBase], n = SEARCH_ADVISOR_DEST_OFF[destBase + 1]; i < n; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_ADVISOR_DEST_DATA[i]);
-      }
-      break;
-    }
-    case 4: {
-      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-      for (let i = SEARCH_ELEPHANT_DEST_OFF[destBase], n = SEARCH_ELEPHANT_DEST_OFF[destBase + 1]; i < n; i++) {
-        const entry = SEARCH_ELEPHANT_DEST_DATA[i];
-        if (squareCodes[entry >> 7] === 0) {
-          pushPseudoDest(squareCodes, moves, alliesOut, isRed, entry & 0x7F);
-        }
-      }
-      break;
-    }
-    case 3: {
-      for (let i = SEARCH_HORSE_DEST_OFF[fromSq], n = SEARCH_HORSE_DEST_OFF[fromSq + 1]; i < n; i++) {
-        const entry = SEARCH_HORSE_DEST_DATA[i];
-        if (squareCodes[entry >> 7] === 0) {
-          pushPseudoDest(squareCodes, moves, alliesOut, isRed, entry & 0x7F);
-        }
-      }
-      break;
-    }
-    case 2:
-      for (let i = 0; i < ORTH_DIRS.length; i++) {
-        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
-        let nr = r + dr, nc = c + dc;
-        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-          const toSq = nr * 9 + nc;
-          const targetCode = squareCodes[toSq];
-          if (targetCode === 0) {
-            moves.push(toSq);
-          } else {
-            if ((targetCode < 8) !== isRed) moves.push(toSq);
-            else if (alliesOut && (targetCode & 7) !== 1) alliesOut.push(toSq);
-            break;
-          }
-          nr += dr; nc += dc;
-        }
-      }
-      break;
-    case 6:
-      for (let i = 0; i < ORTH_DIRS.length; i++) {
-        const dr = ORTH_DIRS[i][0], dc = ORTH_DIRS[i][1];
-        let nr = r + dr, nc = c + dc;
-        let screenFound = false;
-        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-          const toSq = nr * 9 + nc;
-          const targetCode = squareCodes[toSq];
-          if (!screenFound) {
-            if (targetCode === 0) {
-              moves.push(toSq);
-            } else {
-              screenFound = true;
-            }
-          } else if (targetCode !== 0) {
-            if ((targetCode < 8) !== isRed) moves.push(toSq);
-            break;
-          }
-          nr += dr; nc += dc;
-        }
-      }
-      break;
-    case 7: {
-      const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-      for (let i = SEARCH_SOLDIER_DEST_OFF[destBase], n = SEARCH_SOLDIER_DEST_OFF[destBase + 1]; i < n; i++) {
-        pushPseudoDest(squareCodes, moves, alliesOut, isRed, SEARCH_SOLDIER_DEST_DATA[i]);
-      }
-      break;
-    }
-  }
-  return moves;
-};
-
 // 收集全部将军者（最多 4 个）。车/将走第一子，炮走第二子，马走无腿，兵走邻格。
 const collectCheckersFromState = (state, color, out) => {
     out.count = 0;
@@ -5136,9 +5046,10 @@ const getValidMovesFromSq = (board, fromSq, wasInCheck = null, checkInfo = null)
     collectCheckersFromState(state, color, scratchLegalCheckInfo);
     info = scratchLegalCheckInfo;
   }
-  return filterLegalMoves(
-    board, fromSq, color, getPieceMoves(state, fromSq, pieceCode), inCheck, info
-  );
+  const encoded = scratchLegalEncoded;
+  encoded.length = 0;
+  appendSearchPseudoMovesForPiece(encoded, fromSq, pieceCode, state, false);
+  return filterLegalMoves(board, fromSq, color, encoded, inCheck, info);
 };
 
 const getValidMoves = (board, pos, wasInCheck = null, checkInfo = null) =>
@@ -6475,23 +6386,35 @@ const getBestMove = (
   const rootSeqs = [];
 
   const wantRed = turn === 'red';
-  for (let scanRow = 0; scanRow < ROWS; scanRow++) {
-    const r = turn === 'black'
-      ? ROWS - 1 - scanRow
-      : scanRow;
-    for (let c = 0; c < COLS; c++) {
-      const fromSq = r * 9 + c;
-      const code = rootPieceState.squareCodes[fromSq];
-      if (!code || (code < 8) !== wantRed) continue;
-      const validDestinations = getValidMovesFromSq(
-        searchBoard, fromSq, rootInCheck, rootCheckInfo
-      );
-      for (let di = 0; di < validDestinations.length; di++) {
-        const encoded = (fromSq << 7) | validDestinations[di];
-        if (excludedRootMoveSet.has(encoded)) continue;
-        rootMoves.push(encoded);
-        rootScores.push(0);
-        rootSeqs.push(null);
+  if (rootInCheck) {
+    const evasionMoves = [];
+    appendLegalEvasions(evasionMoves, searchBoard, turn, rootPieceState, rootCheckInfo);
+    for (let i = 0; i < evasionMoves.length; i++) {
+      const encoded = evasionMoves[i];
+      if (excludedRootMoveSet.has(encoded)) continue;
+      rootMoves.push(encoded);
+      rootScores.push(0);
+      rootSeqs.push(null);
+    }
+  } else {
+    for (let scanRow = 0; scanRow < ROWS; scanRow++) {
+      const r = turn === 'black'
+        ? ROWS - 1 - scanRow
+        : scanRow;
+      for (let c = 0; c < COLS; c++) {
+        const fromSq = r * 9 + c;
+        const code = rootPieceState.squareCodes[fromSq];
+        if (!code || (code < 8) !== wantRed) continue;
+        const validDestinations = getValidMovesFromSq(
+          searchBoard, fromSq, false, null
+        );
+        for (let di = 0; di < validDestinations.length; di++) {
+          const encoded = (fromSq << 7) | validDestinations[di];
+          if (excludedRootMoveSet.has(encoded)) continue;
+          rootMoves.push(encoded);
+          rootScores.push(0);
+          rootSeqs.push(null);
+        }
       }
     }
   }
@@ -6781,16 +6704,8 @@ const searchTestApi = {
       const info = createCheckInfo();
       collectCheckersFromState(state, color, info);
       if (info.count <= 0) return [];
-      const moves = [];
-      generateCheckEvasions(moves, color, state, info);
       const legal = [];
-      for (let i = 0; i < moves.length; i++) {
-        const move = moves[i];
-        makeSearchMove(board, move);
-        const unsafe = leavesOwnKingUnsafe(state, color, move >>> 7, move & MOVE_TO_MASK, true, info);
-        unmakeSearchMove(board, move);
-        if (!unsafe) legal.push(move);
-      }
+      appendLegalEvasions(legal, board, color, state, info);
       return legal;
     });
   },

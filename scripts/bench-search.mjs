@@ -77,6 +77,12 @@ function runSearch(depth, exactRootScores, profile, metrics, lmrMinMove, nmpMinD
 }
 
 function formatMove(move) {
+  if (move == null) return 'null';
+  if (typeof move === 'number') {
+    const fromSq = move >>> 7;
+    const toSq = move & 127;
+    return `${JSON.stringify({ r: (fromSq / 9) | 0, c: fromSq % 9 })}->${JSON.stringify({ r: (toSq / 9) | 0, c: toSq % 9 })}`;
+  }
   return move?.from && move?.to ? `${JSON.stringify(move.from)}->${JSON.stringify(move.to)}` : 'null';
 }
 
