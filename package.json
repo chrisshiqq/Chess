@@ -7,8 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:standalone": "vite build --config vite.config.standalone.ts",
-    "preview": "vite preview",
-    "test:search": "node --test scripts/test-search-captures.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
     "peerjs": "^1.5.5",
