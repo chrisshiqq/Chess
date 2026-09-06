@@ -1166,15 +1166,8 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
 };
 
 // 普通节点着法排序。未将军走 packed 简单分支；将军局面走通用排序。
-const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck, checkInfo = null) => {
+const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
     if (inCheck) {
-        if (checkInfo) {
-            const n = Math.min(checkInfo.count, CHECK_INFO_CAP);
-            for (let i = 0; i < n; i++) {
-                const sq = checkInfo.sq[i];
-                if (sq >= 0) markSortSquare(sq);
-            }
-        }
         return sortRootMoves(moves, board, currentPlayer, null, ttMove, killers, true);
     }
     const pieceState = activePieceStateFor(board);
@@ -5309,7 +5302,7 @@ const quiescence = (
         : standPat;
 
     if (inCheck) {
-        sortMoves(moves, b, currentPlayer, null, null, true, checkInfo);
+        sortMoves(moves, b, currentPlayer, null, null, false);
     } else {
         sortCaptures(moves, b);
     }
@@ -5456,7 +5449,7 @@ const alphaBeta = (
     } else {
         moves = sortMoves(
             moves, b, currentPlayer,
-            ttMove, killersAtDepth, inCheck, checkInfo
+            ttMove, killersAtDepth, inCheck
         );
     }
 
