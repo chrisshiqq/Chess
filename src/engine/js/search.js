@@ -248,7 +248,6 @@ let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
-const scratchOwnScanOrder = new Uint16Array(32);
 
 let activeSearchPieceState = null;
 
@@ -1520,10 +1519,6 @@ const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
-const SEARCH_RELATIVE_SCAN_SQUARES = [
-    new Uint8Array(REL_SQUARES),
-    new Uint8Array(REL_SQUARES)
-];
 // 数值安全只查询对方将所在九宫的空格。
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
 const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
@@ -1538,8 +1533,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
     for (let sq = 0; sq < REL_SQUARES; sq++) {
         const r = SQ_ROW[sq];
         const c = SQ_COL[sq];
-        SEARCH_RELATIVE_SCAN_SQUARES[0][sq] = sq;
-        SEARCH_RELATIVE_SCAN_SQUARES[1][sq] = (ROWS - 1 - r) * COLS + c;
         if (c >= 3 && c <= 5) {
             if (r <= 2) SEARCH_ATTACK_TARGET[sq] = 2;
             else if (r >= 7) SEARCH_ATTACK_TARGET[sq] = 1;
@@ -1898,28 +1891,33 @@ const snapshotLeafWeights = () => {
 };
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
-    const pieceSquares = pieceState.pieceSquares;
+    const squareToSlot = pieceState.squareToSlot;
+    const rowOccupancy = pieceState.rowOccupancy;
     const slots = scratchOwnScanSlots;
-    const orders = scratchOwnScanOrder;
-    const scanOrder = SEARCH_RELATIVE_SCAN_SQUARES[isRed ? 0 : 1];
+    const alive = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
     let n = 0;
-    let mask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
-    while (mask !== 0) {
-        const bit = mask & -mask;
-        const slot = 31 - Math.clz32(bit);
-        mask ^= bit;
-        const sq = pieceSquares[slot];
-        if (sq >= REL_SQUARES) continue;
-        const order = scanOrder[sq];
-        let j = n - 1;
-        while (j >= 0 && orders[j] > order) {
-            orders[j + 1] = orders[j];
-            slots[j + 1] = slots[j];
-            j--;
+    if (isRed) {
+        for (let r = 0; r < ROWS; r++) {
+            let bits = rowOccupancy[r];
+            const row = r * 9;
+            while (bits !== 0) {
+                const bit = bits & -bits;
+                bits ^= bit;
+                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
+                if (slot >= 0 && (alive & (1 << slot)) !== 0) slots[n++] = slot;
+            }
         }
-        orders[j + 1] = order;
-        slots[j + 1] = slot;
-        n++;
+    } else {
+        for (let r = ROWS - 1; r >= 0; r--) {
+            let bits = rowOccupancy[r];
+            const row = r * 9;
+            while (bits !== 0) {
+                const bit = bits & -bits;
+                bits ^= bit;
+                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
+                if (slot >= 0 && (alive & (1 << slot)) !== 0) slots[n++] = slot;
+            }
+        }
     }
     return n;
 };
@@ -4780,7 +4778,9 @@ const zobristHasher = new ZobristHasher();
 // 定长槽位 TT：8 字节 AoS + generation O(1) clear。
 // 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
 const TT_DEFAULT_SIZE = 1 << 22; // 4194304
-const TT_FLAG_NAMES = ['exact', 'lowerbound', 'upperbound'];
+const TT_FLAG_EXACT = 0;
+const TT_FLAG_LOWER = 1;
+const TT_FLAG_UPPER = 2;
 // word0: key16:0-15 | gen:16-23 | flag:24-25 | keyHigh:26 | depth:27-31
 // word1: value18:0-17 | move:18-31
 // 索引已用 key 低 22 位；key16 只存高 16 位，校验强度与原先满 32 位 key 相同。
@@ -4818,7 +4818,7 @@ class TranspositionTable {
         this.entryScratch = {
             depth: 0,
             value: 0,
-            flag: 'exact',
+            flag: TT_FLAG_EXACT,
             bestMove: null
         };
 
@@ -4865,7 +4865,7 @@ class TranspositionTable {
         const live = this.retainedGenerations === 0
             ? slotGen === gen
             : slotGen !== 0 && ((gen - slotGen) >>> 0) <= this.retainedGenerations;
-        const flagCode = flag === 'exact' ? 0 : (flag === 'lowerbound' ? 1 : 2);
+        const flagCode = flag;
         const move = bestMove || 0;
 
         if (live && (word0 & TT_W0_KEY_MASK) === key16 &&
@@ -4938,7 +4938,7 @@ class TranspositionTable {
         const e = this.entryScratch;
         e.depth = word0 >>> TT_W0_DEPTH_SHIFT;
         e.value = (word1 << 14) >> 14;
-        e.flag = TT_FLAG_NAMES[flagCode];
+        e.flag = flagCode;
         e.bestMove = (word1 >>> TT_W1_MOVE_SHIFT) || null;
         return e;
     }
@@ -5581,9 +5581,9 @@ const alphaBeta = (
     if (ttEntry) {
         ttMove = ttEntry.bestMove || null;
         if (ttEntry.depth >= d) {
-            if (ttEntry.flag === 'exact') return ttEntry.value;
-            if (ttEntry.flag === 'lowerbound' && ttEntry.value >= beta) return ttEntry.value;
-            if (ttEntry.flag === 'upperbound' && ttEntry.value <= alpha) return ttEntry.value;
+            if (ttEntry.flag === TT_FLAG_EXACT) return ttEntry.value;
+            if (ttEntry.flag === TT_FLAG_LOWER && ttEntry.value >= beta) return ttEntry.value;
+            if (ttEntry.flag === TT_FLAG_UPPER && ttEntry.value <= alpha) return ttEntry.value;
         }
     }
 
@@ -5842,9 +5842,9 @@ const alphaBeta = (
     }
 
     let flag;
-    if (bestEval <= originalAlpha) flag = 'upperbound';
-    else if (bestEval >= originalBeta) flag = 'lowerbound';
-    else flag = 'exact';
+    if (bestEval <= originalAlpha) flag = TT_FLAG_UPPER;
+    else if (bestEval >= originalBeta) flag = TT_FLAG_LOWER;
+    else flag = TT_FLAG_EXACT;
     transpositionTable.store(ttKey, d, bestEval, flag, bestMove);
     return bestEval;
 };
@@ -6196,7 +6196,7 @@ const getBestMove = (
       // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
       const exactFromTt = () => {
         const entry = transpositionTable.retrieve(childTTKey);
-        if (!entry || entry.flag !== 'exact' || entry.depth < remaining) return null;
+        if (!entry || entry.flag !== TT_FLAG_EXACT || entry.depth < remaining) return null;
         if (entry.value > rootAlpha) return null;
         return entry.value;
       };
@@ -6277,7 +6277,7 @@ const getBestMove = (
       rootTTKey,
       currentDepth,
       rootScores[0],
-      'exact',
+      TT_FLAG_EXACT,
       rootMoves[0]
     );
 
