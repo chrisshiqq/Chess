@@ -199,10 +199,6 @@ const createRelationBoardInfo = () => {
     clearAttackBits(scratchRedAttack);
     clearAttackBits(scratchBlackAttack);
     return {
-        useRelationMasks: true,
-        useAttackBits: true,
-        skipControlMask: false,
-        palaceControlOnly: false,
         attackMask: scratchAttackMask,
         guardMask: scratchGuardMask,
         controlMask: scratchControlMask,
@@ -219,8 +215,6 @@ const clearPieceAtSq = () => {
 
 // 复用 relCtx，避免每子 new 小对象
 const scratchRelCtx = {
-    skipControlMask: false, // 搜索叶：不写空控 controlMask（仍写攻击位图+机动）
-    palaceControlOnly: false,
     pieceIndex: 0,
     attackMask: null,
     guardMask: null,
@@ -228,16 +222,6 @@ const scratchRelCtx = {
     redAttack: null,
     blackAttack: null
 };
-
-const isPalaceControlSquare = (sq) => {
-    const r = (sq / 9) | 0;
-    const c = sq % 9;
-    return c >= 3 && c <= 5 && (r <= 2 || r >= 7);
-};
-
-const shouldWriteControlMask = (relCtx, sq) => (
-    !relCtx.skipControlMask && (!relCtx.palaceControlOnly || isPalaceControlSquare(sq))
-);
 
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
@@ -617,14 +601,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
             threat: redThreat * VALUE_WEIGHTS.threat,
             safety: redSafety * VALUE_WEIGHTS.safety,
             mobility: redMobility * VALUE_WEIGHTS.mobility,
-            phase: outputPhase,
-            weights: {
-                material: 0.4,
-                position: 0.2,
-                safety: 0.1,
-                mobility: 0.05,
-                threat: 0.15
-            }
+            phase: outputPhase
         },
         black: {
             total: blackTotal,
@@ -633,14 +610,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
             threat: blackThreat * VALUE_WEIGHTS.threat,
             safety: blackSafety * VALUE_WEIGHTS.safety,
             mobility: blackMobility * VALUE_WEIGHTS.mobility,
-            phase: outputPhase,
-            weights: {
-                material: 0.4,
-                position: 0.2,
-                safety: 0.1,
-                mobility: 0.05,
-                threat: 0.15
-            }
+            phase: outputPhase
         },
         piecesInfo: piecesInfo,
         gameStage: gameStage,
@@ -1055,6 +1025,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
     const pieceState = activePieceStateFor(board);
     const materialValues = pieceState.materialValues;
     const useSimpleSearchSort = !currentIsInCheck && !hasThreatened && !hasCanCapture;
+    const moveCount = moves.length;
     const isMarkedThreatened = (sq) => {
         if (!hasThreatened) return false;
         for (let i = 0; i < threatenedMarkEnd; i++) {
@@ -1066,7 +1037,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
     if (useSimpleSearchSort) {
         const squareToSlot = pieceState.squareToSlot;
         const pieceCodes = pieceState.pieceCodes;
-        for (let index = 0; index < moves.length; index++) {
+        for (let index = 0; index < moveCount; index++) {
             const move = moves[index];
             const fromSq = move >>> 7;
             const toSq = move & MOVE_TO_MASK;
@@ -1097,7 +1068,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
             sortMovePriorityScratch[index] = priority;
             sortMoveScoreScratch[index] = score;
         }
-    } else for (let index = 0; index < moves.length; index++) {
+    } else for (let index = 0; index < moveCount; index++) {
         const move = moves[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
@@ -1163,7 +1134,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
 
     const extraA = parallelArrays && parallelArrays[0];
     const extraB = parallelArrays && parallelArrays[1];
-    for (let i = 1; i < moves.length; i++) {
+    for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
         const extraAVal = extraA ? extraA[i] : null;
         const extraBVal = extraB ? extraB[i] : null;
@@ -1195,8 +1166,15 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
 };
 
 // 普通节点着法排序。未将军走 packed 简单分支；将军局面走通用排序。
-const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
+const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck, checkInfo = null) => {
     if (inCheck) {
+        if (checkInfo) {
+            const n = Math.min(checkInfo.count, CHECK_INFO_CAP);
+            for (let i = 0; i < n; i++) {
+                const sq = checkInfo.sq[i];
+                if (sq >= 0) markSortSquare(sq);
+            }
+        }
         return sortRootMoves(moves, board, currentPlayer, null, ttMove, killers, true);
     }
     const pieceState = activePieceStateFor(board);
@@ -1206,8 +1184,9 @@ const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
+    const moveCount = moves.length;
 
-    for (let index = 0; index < moves.length; index++) {
+    for (let index = 0; index < moveCount; index++) {
         const move = moves[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
@@ -1239,7 +1218,7 @@ const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
         sortMoveScoreScratch[index] = score;
     }
 
-    for (let i = 1; i < moves.length; i++) {
+    for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
         const priority = sortMovePriorityScratch[i];
         const score = sortMoveScoreScratch[i];
@@ -1511,11 +1490,6 @@ const SEARCH_ELEPHANT_DEST_OFF = packedElephantDest.offsets;
 const SEARCH_ELEPHANT_DEST_DATA = packedElephantDest.data;
 const SEARCH_HORSE_DEST_OFF = packedHorseDest.offsets;
 const SEARCH_HORSE_DEST_DATA = packedHorseDest.data;
-// All orthogonal rays live in one compact buffer. The offset table avoids
-// hundreds of tiny TypedArrays in the relation, pseudo-move, and check paths.
-const SEARCH_RAY_OFFSETS = new Uint16Array(REL_SQUARES * ORTH_DIRS.length + 1);
-let SEARCH_RAY_SQUARES = null;
-const SEARCH_RAY_DIRS = 4;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
@@ -1524,7 +1498,6 @@ const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
 
 (() => {
-    const searchRaySquares = [];
     const horseCheckerWords = [];
     const markGiveCheckNear = (kingSq, target) => {
         SEARCH_GIVES_CHECK_NEAR[kingSq * 3 + (target >>> 5)] |= 1 << (target & 31);
@@ -1536,14 +1509,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
         if (c >= 3 && c <= 5) {
             if (r <= 2) SEARCH_ATTACK_TARGET[sq] = 2;
             else if (r >= 7) SEARCH_ATTACK_TARGET[sq] = 1;
-        }
-        for (let dir = 0; dir < ORTH_DIRS.length; dir++) {
-            SEARCH_RAY_OFFSETS[(sq << 2) | dir] = searchRaySquares.length;
-            const dr = ORTH_DIRS[dir][0];
-            const dc = ORTH_DIRS[dir][1];
-            for (let nr = r + dr, nc = c + dc; nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS; nr += dr, nc += dc) {
-                searchRaySquares.push(nr * 9 + nc);
-            }
         }
 
         SEARCH_HORSE_CHECKER_OFF[sq] = horseCheckerWords.length;
@@ -1571,8 +1536,6 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
     }
     SEARCH_HORSE_CHECKER_OFF[REL_SQUARES] = horseCheckerWords.length;
     SEARCH_HORSE_CHECKER_DATA = new Uint16Array(horseCheckerWords);
-    SEARCH_RAY_OFFSETS[REL_SQUARES << 2] = searchRaySquares.length;
-    SEARCH_RAY_SQUARES = new Uint8Array(searchRaySquares);
 })();
 
 // Ranks use 9-bit occupancy and files use 10-bit occupancy. Each lookup returns
@@ -2530,7 +2493,7 @@ const applyRelationSquare = (squareCodes, info, pieceAtSq, tr, tc, bit, relCtx, 
     const targetCode = squareCodes[tr * 9 + tc];
     if (!targetCode) {
         const sq = tr * 9 + tc;
-        if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
+        relCtx.controlMask[sq] |= bit;
         if (isRed) setAttackBit(relCtx.redAttack, sq);
         else setAttackBit(relCtx.blackAttack, sq);
         return EVALUATION_PARAMETERS.mobility.baseMoveValue;
@@ -2612,7 +2575,7 @@ const fillNonCannonRelations = (squareCodes, info, pieceAtSq, relCtx) => {
                     const targetCode = squareCodes[nr * 9 + nc];
                     if (!targetCode) {
                         const sq = nr * 9 + nc;
-                        if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
+                        relCtx.controlMask[sq] |= bit;
                         if (isRed) setAttackBit(relCtx.redAttack, sq);
                         else setAttackBit(relCtx.blackAttack, sq);
                         mobilityValue += EVALUATION_PARAMETERS.mobility.baseMoveValue;
@@ -2680,7 +2643,7 @@ const fillCannonRelations = (squareCodes, info, pieceAtSq, relCtx) => {
                 mobilityValue += 1;
             } else if (screenFoundCount === 1) {
                 const sq = nr * 9 + nc;
-                if (shouldWriteControlMask(relCtx, sq)) relCtx.controlMask[sq] |= bit;
+                relCtx.controlMask[sq] |= bit;
                 if (isRed) setAttackBit(relCtx.redAttack, sq);
                 else setAttackBit(relCtx.blackAttack, sq);
             }
@@ -3089,8 +3052,6 @@ const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
     }
 
     const relCtx = scratchRelCtx;
-    relCtx.skipControlMask = !!boardInfo.skipControlMask;
-    relCtx.palaceControlOnly = !!boardInfo.palaceControlOnly;
     relCtx.attackMask = boardInfo.attackMask;
     relCtx.guardMask = boardInfo.guardMask;
     relCtx.controlMask = boardInfo.controlMask;
@@ -4101,106 +4062,7 @@ class OpeningBook {
             }
         };
 
-        // Helper function to check if position is valid
-        const isValidPos = (r, c) => r >= 0 && r < 10 && c >= 0 && c < 9;
-
-        // Helper function to get horse moves
-        const getHorseMoves = (pos) => {
-            if (!pos) return [];
-            const moves = [];
-            const { r, c } = pos;
-            const directions = [
-                { dr: -2, dc: -1 }, { dr: -2, dc: 1 },
-                { dr: -1, dc: -2 }, { dr: -1, dc: 2 },
-                { dr: 1, dc: -2 }, { dr: 1, dc: 2 },
-                { dr: 2, dc: -1 }, { dr: 2, dc: 1 }
-            ];
-
-            // Check if the horse can move in the direction
-            const canMove = (blockedR, blockedC) => {
-                if (!isValidPos(r + blockedR, c + blockedC)) return false;
-                return true;
-            };
-
-            directions.forEach(({ dr, dc }, index) => {
-                const blockedR = dr > 0 ? 1 : dr < 0 ? -1 : 0;
-                const blockedC = dc > 0 ? 1 : dc < 0 ? -1 : 0;
-                
-                // Check if the path is blocked
-                if ((index < 2 || index >= 6) && blockedR !== 0) {
-                    // Vertical blocked
-                    if (!canMove(blockedR, 0)) return;
-                } else if (blockedC !== 0) {
-                    // Horizontal blocked
-                    if (!canMove(0, blockedC)) return;
-                }
-
-                const newR = r + dr;
-                const newC = c + dc;
-                if (isValidPos(newR, newC)) {
-                    moves.push({ r: newR, c: newC });
-                }
-            });
-
-            return moves;
-        };
-
-        // Helper function to get elephant moves
-        const getElephantMoves = (pos, color) => {
-            if (!pos) return [];
-            const moves = [];
-            const { r, c } = pos;
-            const directions = [
-                { dr: -2, dc: -2 }, { dr: -2, dc: 2 },
-                { dr: 2, dc: -2 }, { dr: 2, dc: 2 }
-            ];
-
-            // Elephant's territory - red elephants can only be in r<=4, black elephants in r>=5
-            const isInTerritory = (r) => {
-                return color === 'red' ? r <= 4 : r >= 5;
-            };
-
-            directions.forEach(({ dr, dc }) => {
-                const midR = r + dr / 2;
-                const midC = c + dc / 2;
-                const newR = r + dr;
-                const newC = c + dc;
-
-                // Check if mid position is empty and new position is valid
-                if (isValidPos(midR, midC) && isValidPos(newR, newC) && isInTerritory(newR)) {
-                    moves.push({ r: newR, c: newC });
-                }
-            });
-
-            return moves;
-        };
-
-        // Helper function to get advisor moves
-        const getAdvisorMoves = (pos, color) => {
-            if (!pos) return [];
-            const moves = [];
-            const { r, c } = pos;
-            const directions = [
-                { dr: -1, dc: -1 }, { dr: -1, dc: 1 },
-                { dr: 1, dc: -1 }, { dr: 1, dc: 1 }
-            ];
-
-            // Advisor's territory (palace) - red advisors in r=0-2,c=3-5, black advisors in r=7-9,c=3-5
-            const isInPalace = (r, c) => {
-                const rRange = color === 'red' ? [0, 2] : [7, 9];
-                return r >= rRange[0] && r <= rRange[1] && c >= 3 && c <= 5;
-            };
-
-            directions.forEach(({ dr, dc }) => {
-                const newR = r + dr;
-                const newC = c + dc;
-                if (isValidPos(newR, newC) && isInPalace(newR, newC)) {
-                    moves.push({ r: newR, c: newC });
-                }
-            });
-
-            return moves;
-        };
+        const isValidPos = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
 
         let tempBoard = initialBoard
             ? encodeBoardToSearchCodes(initialBoard)
@@ -4215,6 +4077,22 @@ class OpeningBook {
                 tempBoard[i] = Array(9).fill(0);
             }
         }
+
+        const pickLeaperTarget = (dests, fromPos, direction, toColOrStepNotation, needClearBlocker) => {
+            let targetCol = colMap[toColOrStepNotation];
+            if (targetCol === undefined) return null;
+            if (currentColor === 'black') targetCol = 8 - targetCol;
+            if (!dests) return undefined;
+            for (let i = 0; i < dests.length; i++) {
+                const move = dests[i];
+                if (needClearBlocker && tempBoard[move.br][move.bc]) continue;
+                const forward = currentColor === 'red' ? move.r > fromPos.r : move.r < fromPos.r;
+                if ((direction === '进' ? forward : !forward) && move.c === targetCol) {
+                    return { r: move.r, c: move.c };
+                }
+            }
+            return undefined;
+        };
 
         console.log('Total moves:', notation.length);
         notation.forEach(moveNotation => {
@@ -4264,112 +4142,35 @@ class OpeningBook {
                 }
                 
                 toPos = { r: fromPos.r, c: toCol };
+            } else if (pieceType === 'horse' || pieceType === 'elephant' || pieceType === 'advisor') {
+                const fromSq = fromPos.r * 9 + fromPos.c;
+                const colorIdx = currentColor === 'red' ? 0 : 1;
+                const dests = pieceType === 'horse'
+                    ? HORSE_DEST[fromSq]
+                    : pieceType === 'elephant'
+                        ? ELEPHANT_DEST[colorIdx][fromSq]
+                        : ADVISOR_DEST[colorIdx][fromSq];
+                toPos = pickLeaperTarget(
+                    dests, fromPos, direction, toColOrStepNotation, pieceType !== 'advisor'
+                );
+                if (toPos === null) {
+                    console.error('Invalid target column notation for', pieceType, toColOrStepNotation, 'in move:', moveNotation);
+                    return;
+                }
             } else {
-                // Vertical or diagonal movement
                 const steps = chineseNumberMap[toColOrStepNotation];
-                  
                 if (steps === undefined) {
                     console.error('Invalid step count:', toColOrStepNotation, 'for move:', moveNotation);
                     return;
                 }
-
-                if (pieceType === 'horse') {
-                    // Horse moves in L-shape
-                    const possibleMoves = getHorseMoves(fromPos);
-                    // Parse target column from notation
-                    const targetColNotation = toColOrStepNotation;
-                    let targetCol = colMap[targetColNotation];
-                    if (targetCol === undefined) {
-                        console.error('Invalid target column notation for horse:', targetColNotation, 'in move:', moveNotation);
-                        return;
-                    }
-                    
-                    // Mirror the column for black
-                    if (currentColor === 'black') {
-                        targetCol = 8 - targetCol;
-                    }
-                    
-                    // Find the move that matches both direction and target column
-                    toPos = possibleMoves.find(move => {
-                        // Check direction (row)
-                        // 红方进是r增大（向黑方方向），退是r减小（向红方方向）
-                        // 黑方进是r减小（向红方方向），退是r增大（向黑方方向）
-                        const directionMatch = direction === '进' ? 
-                            (currentColor === 'red' ? move.r > fromPos.r : move.r < fromPos.r) :
-                            (currentColor === 'red' ? move.r < fromPos.r : move.r > fromPos.r);
-                        // Check column
-                        const columnMatch = move.c === targetCol;
-                        return directionMatch && columnMatch;
-                    });
-                } else if (pieceType === 'elephant') {
-                    // Elephant moves diagonally 2 steps
-                    const possibleMoves = getElephantMoves(fromPos, currentColor);
-                    // Parse target column from notation
-                    const targetColNotation = toColOrStepNotation;
-                    let targetCol = colMap[targetColNotation];
-                    if (targetCol === undefined) {
-                        console.error('Invalid target column notation for elephant:', targetColNotation, 'in move:', moveNotation);
-                        return;
-                    }
-                    
-                    // Mirror the column for black
-                    if (currentColor === 'black') {
-                        targetCol = 8 - targetCol;
-                    }
-                    
-                    // Find the move that matches both direction and target column
-                    toPos = possibleMoves.find(move => {
-                        // Check direction (row)
-                        // 红方进是r增大（向黑方方向），退是r减小（向红方方向）
-                        // 黑方进是r减小（向红方方向），退是r增大（向黑方方向）
-                        const directionMatch = direction === '进' ? 
-                            (currentColor === 'red' ? move.r > fromPos.r : move.r < fromPos.r) :
-                            (currentColor === 'red' ? move.r < fromPos.r : move.r > fromPos.r);
-                        // Check column
-                        const columnMatch = move.c === targetCol;
-                        return directionMatch && columnMatch;
-                    });
-                } else if (pieceType === 'advisor') {
-                    // Advisor moves diagonally 1 step
-                    const possibleMoves = getAdvisorMoves(fromPos, currentColor);
-                    // Parse target column from notation
-                    const targetColNotation = toColOrStepNotation;
-                    let targetCol = colMap[targetColNotation];
-                    if (targetCol === undefined) {
-                        console.error('Invalid target column notation for advisor:', targetColNotation, 'in move:', moveNotation);
-                        return;
-                    }
-                    
-                    // Mirror the column for black
-                    if (currentColor === 'black') {
-                        targetCol = 8 - targetCol;
-                    }
-                    
-                    // Find the move that matches both direction and target column
-                    toPos = possibleMoves.find(move => {
-                        // Check direction (row)
-                        // 红方进是r增大（向黑方方向），退是r减小（向红方方向）
-                        // 黑方进是r减小（向红方方向），退是r增大（向黑方方向）
-                        const directionMatch = direction === '进' ? 
-                            (currentColor === 'red' ? move.r > fromPos.r : move.r < fromPos.r) :
-                            (currentColor === 'red' ? move.r < fromPos.r : move.r > fromPos.r);
-                        // Check column
-                        const columnMatch = move.c === targetCol;
-                        return directionMatch && columnMatch;
-                    });
-                } else {
-                    // Straight line movement (chariot, cannon, soldier)
-                    // 红方进是r增大（向黑方方向），退是r减小（向红方方向）
-                    // 黑方进是r减小（向红方方向），退是r增大（向黑方方向）
-                    const step = direction === '进' ? (currentColor === 'red' ? 1 : -1) * steps :
-                                                   (currentColor === 'red' ? -1 : 1) * steps;
-                    const newR = fromPos.r + step;
-                    if (newR < 0 || newR >= 10) {
-                        console.error('Invalid row position after move:', newR, 'for move:', moveNotation);
-                        return;
-                    }
-                    toPos = { r: newR, c: fromPos.c };
+                const step = direction === '进' ? (currentColor === 'red' ? 1 : -1) * steps :
+                                               (currentColor === 'red' ? -1 : 1) * steps;
+                const newR = fromPos.r + step;
+                if (newR < 0 || newR >= ROWS) {
+                    console.error('Invalid row position after move:', newR, 'for move:', moveNotation);
+                    return;
                 }
+                toPos = { r: newR, c: fromPos.c };
             }
 
             if (!toPos) {
@@ -4457,8 +4258,6 @@ class OpeningBook {
 
 // Initialize Opening Book
 const openingBook = new OpeningBook(12);
-
-const isValidPos = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS;
 
 // 收集全部将军者（最多 4 个）。车/将走第一子，炮走第二子，马走无腿，兵走邻格。
 const collectCheckersFromState = (state, color, out) => {
@@ -5169,10 +4968,6 @@ for (let depth = 1; depth <= LMR_TABLE_DEPTH_MAX; depth++) {
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
 const playStagedMoveBuffers = [];
-// 着法合法性：true=搜索内试走时检测（可跳过剪枝未触及着法）；false=prepare 时全量 filterLegalMoves（旧路径）
-
-// Zobrist/TT：true=搜索内增量维护局面哈希 + 数值 TT key；false=每节点全盘 hash + 字符串 key（旧路径，便于 A/B）
-// 调试：增量后与全盘 hash 比对（仅校验脚本开启，正式搜索关闭）
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -5440,8 +5235,9 @@ const sortCaptures = (captures, board) => {
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
+    const captureCount = captures.length;
 
-    for (let index = 0; index < captures.length; index++) {
+    for (let index = 0; index < captureCount; index++) {
         const move = captures[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
@@ -5451,7 +5247,7 @@ const sortCaptures = (captures, board) => {
     }
 
     // Stable insertion ordering exactly matches the previous numeric comparator.
-    for (let i = 1; i < captures.length; i++) {
+    for (let i = 1; i < captureCount; i++) {
         const move = captures[i];
         const score = captureSortScoreScratch[i];
         let j = i - 1;
@@ -5506,13 +5302,14 @@ const quiescence = (
     } else {
         generateQuiescenceMoves(b, currentPlayer, moves);
     }
-    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moves.length;
-    if (moves.length === 0) return inCheck
+    const moveCount = moves.length;
+    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moveCount;
+    if (moveCount === 0) return inCheck
         ? quiescenceMateValue(currentPlayer, searchInitiator)
         : standPat;
 
     if (inCheck) {
-        sortMoves(moves, b, currentPlayer, null, null, false);
+        sortMoves(moves, b, currentPlayer, null, null, true, checkInfo);
     } else {
         sortCaptures(moves, b);
     }
@@ -5520,7 +5317,7 @@ const quiescence = (
     const nextPlayer = currentPlayer ^ 1;
     let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
     let legalMovesFound = 0;
-    for (let i = 0; i < moves.length; i++) {
+    for (let i = 0; i < moveCount; i++) {
         const move = moves[i];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
@@ -5659,7 +5456,7 @@ const alphaBeta = (
     } else {
         moves = sortMoves(
             moves, b, currentPlayer,
-            ttMove, killersAtDepth, inCheck
+            ttMove, killersAtDepth, inCheck, checkInfo
         );
     }
 
@@ -6081,18 +5878,15 @@ const getBestMove = (
   }
 
   const emitSearchProgress = (info) => {
-    if (typeof searchContext.reportSearchProgress !== 'function') return;
-    try {
-      searchContext.reportSearchProgress({
-        turn,
-        maxDepth,
-        rootMoves: rootMoves.length,
-        elapsedMs: Date.now() - startTime,
-        ...info
-      });
-    } catch (_) {
-      /* debug sink must never break search */
-    }
+    const report = searchContext.reportSearchProgress;
+    if (typeof report !== 'function') return;
+    report({
+      turn,
+      maxDepth,
+      rootMoves: rootMoves.length,
+      elapsedMs: Date.now() - startTime,
+      ...info
+    });
   };
   emitSearchProgress({ phase: 'start', completedDepth: 0 });
 
@@ -6314,108 +6108,6 @@ const getBestMove = (
   }
 };
 
-const searchTestApi = {
-  collectPackedCaptures(board, capturePlayer) {
-    return runWithPieceState(board, () =>
-      generateQuiescenceMoves(board, colorToSide(capturePlayer), []).slice()
-    );
-  },
-  collectCheckers(board, color) {
-    return runWithPieceState(board, () => {
-      const state = activePieceStateFor(board);
-      if (!state) return { count: 0 };
-      const side = colorToSide(color);
-      const info = createCheckInfo();
-      collectCheckersFromState(state, side, info);
-      return {
-        count: info.count,
-        sq: info.sq.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
-        kind: info.kind.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
-        leg: info.leg.slice(0, Math.min(info.count, CHECK_INFO_CAP)),
-        generalSq: side === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq
-      };
-    });
-  },
-  generatedEvasions(board, color) {
-    return runWithPieceState(board, () => {
-      const state = activePieceStateFor(board);
-      if (!state) return [];
-      const side = colorToSide(color);
-      const info = createCheckInfo();
-      collectCheckersFromState(state, side, info);
-      const moves = [];
-      generateCheckEvasions(moves, side, state, info);
-      return moves.slice();
-    });
-  },
-  legalEvasions(board, color) {
-    return runWithPieceState(board, () => {
-      const state = activePieceStateFor(board);
-      if (!state) return [];
-      const side = colorToSide(color);
-      const info = createCheckInfo();
-      collectCheckersFromState(state, side, info);
-      if (info.count <= 0) return [];
-      const legal = [];
-      appendLegalEvasions(legal, board, side, state, info);
-      return legal;
-    });
-  },
-  allLegalMoves(board, color) {
-    return runWithPieceState(board, () => {
-      const legal = [];
-      const state = activePieceStateFor(board);
-      const side = colorToSide(color);
-      const wantRed = side === SIDE_RED;
-      const inCheck = isCheckFromState(state, side);
-      let checkInfo = null;
-      if (inCheck) {
-        collectCheckersFromState(state, side, scratchLegalCheckInfo);
-        checkInfo = scratchLegalCheckInfo;
-      }
-      for (let fromSq = 0; fromSq < REL_SQUARES; fromSq++) {
-        const code = state.squareCodes[fromSq];
-        if (!code || (code < 8) !== wantRed) continue;
-        const dests = getValidMovesFromSq(board, fromSq, inCheck, checkInfo);
-        for (let i = 0; i < dests.length; i++) {
-          legal.push((fromSq << 7) | dests[i]);
-        }
-      }
-      return legal;
-    });
-  },
-  readSquareCodes(board) {
-    return runWithPieceState(board, () => {
-      const state = activePieceStateFor(board);
-      return state ? Array.from(state.squareCodes) : [];
-    });
-  },
-  hashConsistency(board) {
-    return runWithPieceState(board, () => {
-      const state = activePieceStateFor(board);
-      const objectHash = zobristHasher.hash(board);
-      const codeHash = zobristHasher.hashFromSquareCodes(state.squareCodes);
-      const mirroredBoard = zobristHasher.mirrorBoard(board);
-      const mirroredObject = zobristHasher.hash(mirroredBoard);
-      const mirroredCodes = zobristHasher.hashMirroredFromSquareCodes(state.squareCodes);
-      const bookObject = openingBook.hasher.hash(board);
-      const bookCodes = openingBook.hasher.hashFromSquareCodes(state.squareCodes);
-      const bookMirroredObject = openingBook.hasher.hash(mirroredBoard);
-      const bookMirroredCodes = openingBook.hasher.hashMirroredFromSquareCodes(state.squareCodes);
-      return {
-        objectHash,
-        codeHash,
-        match: objectHash === codeHash,
-        mirroredObject,
-        mirroredCodes,
-        mirroredMatch: mirroredObject === mirroredCodes,
-        bookMatch: bookObject === bookCodes,
-        bookMirroredMatch: bookMirroredObject === bookMirroredCodes
-      };
-    });
-  }
-};
-
 export {
   checkGameState,
   evaluateBoard,
@@ -6428,7 +6120,6 @@ export {
   isValidPlacement,
   logPerfStats,
   openingBook,
-  searchTestApi,
   snapshotPerfStats
 };
 
