@@ -912,28 +912,33 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
     return true;
 };
 
+// 未动将：将线未变且不是腾马腿，则不可能新被将。被将解开已知将后同样适用。
+const leavesKingUnsafeWithoutKingMove = (pieceState, color, generalSq, fromSq, toSq) => {
+    if (generalSq < 0) return true;
+    const gr = SQ_ROW[generalSq];
+    const gc = SQ_COL[generalSq];
+    const fromR = SQ_ROW[fromSq];
+    const fromC = SQ_COL[fromSq];
+    const toR = SQ_ROW[toSq];
+    const toC = SQ_COL[toSq];
+    if (
+        fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
+        (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
+    ) {
+        return false;
+    }
+    return isCheckAfterSafeMoveFromCoords(
+        pieceState, color !== SIDE_RED, generalSq, gr, gc,
+        fromR, fromC, toR, toC
+    );
+};
+
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeSearchMove。
 const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
     const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
         if (generalSq === toSq) return isCheckFromState(pieceState, color);
-        if (generalSq < 0) return true;
-        const gr = SQ_ROW[generalSq];
-        const gc = SQ_COL[generalSq];
-        const fromR = SQ_ROW[fromSq];
-        const fromC = SQ_COL[fromSq];
-        const toR = SQ_ROW[toSq];
-        const toC = SQ_COL[toSq];
-        if (
-            fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
-            (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
-        ) {
-            return false;
-        }
-        return isCheckAfterSafeMoveFromCoords(
-            pieceState, color !== SIDE_RED, generalSq, gr, gc,
-            fromR, fromC, toR, toC
-        );
+        return leavesKingUnsafeWithoutKingMove(pieceState, color, generalSq, fromSq, toSq);
     }
     if (
         checkInfo &&
@@ -942,12 +947,7 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
     ) {
         if (generalSq === toSq) return isCheckFromState(pieceState, color);
         if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
-        return generalSq < 0 || isCheckAfterSafeMoveFromCoords(
-            pieceState, color !== SIDE_RED, generalSq,
-            SQ_ROW[generalSq], SQ_COL[generalSq],
-            SQ_ROW[fromSq], SQ_COL[fromSq],
-            SQ_ROW[toSq], SQ_COL[toSq]
-        );
+        return leavesKingUnsafeWithoutKingMove(pieceState, color, generalSq, fromSq, toSq);
     }
     return isCheckFromState(pieceState, color);
 };
