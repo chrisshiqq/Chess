@@ -1810,17 +1810,15 @@ const applyPinnedGuardFilterToLeaf = (pieceState) => {
     if (attacked === 0) return;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
-    let relevantSlots = 0;
+    let relevantGuards = 0;
     let bits = attacked;
     while (bits !== 0) {
         const bit = bits & -bits;
-        const target = 31 - Math.clz32(bit);
         bits ^= bit;
-        relevantSlots |= attackBySlot[target];
-        relevantSlots |= guardBySlot[target];
+        relevantGuards |= guardBySlot[31 - Math.clz32(bit)];
     }
-    if (relevantSlots === 0) return;
-    const pinned = collectPinnedGuardSlots(pieceState, relevantSlots);
+    if (relevantGuards === 0) return;
+    const pinned = collectPinnedGuardSlots(pieceState, relevantGuards);
     if (pinned === 0) return;
     const pieceSquares = pieceState.pieceSquares;
     bits = attacked;
