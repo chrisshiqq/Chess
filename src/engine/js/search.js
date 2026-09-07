@@ -1670,7 +1670,7 @@ const FILE_THIRD_LOW = SEARCH_FILE_LOOKUP.thirdLow;
 const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
 const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
 
-// 垫将：离开钉线会发现对方将。线外失去保护；钉线上仍可反吃。
+// 垫将：离开钉线会发现对方将。线外失去保护与威胁；钉线上仍可反吃。
 // 车/将面对面：整条横/竖线；炮隔两子：只能保那门炮；马腿：只能保那匹马。
 const pinOwnGuardSlot = (squareCodes, squareToSlot, sq, kingIsRed, rank, file, onlySq) => {
     const code = squareCodes[sq];
@@ -1808,28 +1808,44 @@ const dropPinnedOffLineGuards = (guards, pinned, targetSq) => {
 const applyPinnedGuardFilterToLeaf = (pieceState) => {
     let attacked = scratchLeafAttackedTargetMask >>> 0;
     if (attacked === 0) return;
+    const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
-    let relevantGuards = 0;
+    let relevantSlots = 0;
     let bits = attacked;
-    while (bits !== 0) {
-        const bit = bits & -bits;
-        bits ^= bit;
-        relevantGuards |= guardBySlot[31 - Math.clz32(bit)];
-    }
-    if (relevantGuards === 0) return;
-    const pinned = collectPinnedGuardSlots(pieceState, relevantGuards);
-    if (pinned === 0) return;
-    const pieceSquares = pieceState.pieceSquares;
-    bits = attacked;
     while (bits !== 0) {
         const bit = bits & -bits;
         const target = 31 - Math.clz32(bit);
         bits ^= bit;
-        const guards = guardBySlot[target] >>> 0;
-        if ((guards & pinned) === 0) continue;
-        const drop = dropPinnedOffLineGuards(guards, pinned, pieceSquares[target]);
-        if (drop) guardBySlot[target] = guards & ~drop;
+        relevantSlots |= attackBySlot[target];
+        relevantSlots |= guardBySlot[target];
     }
+    if (relevantSlots === 0) return;
+    const pinned = collectPinnedGuardSlots(pieceState, relevantSlots);
+    if (pinned === 0) return;
+    const pieceSquares = pieceState.pieceSquares;
+    bits = attacked;
+    let remainingAttacked = 0;
+    while (bits !== 0) {
+        const bit = bits & -bits;
+        const target = 31 - Math.clz32(bit);
+        bits ^= bit;
+        const targetSq = pieceSquares[target];
+        const guards = guardBySlot[target] >>> 0;
+        if ((guards & pinned) !== 0) {
+            const drop = dropPinnedOffLineGuards(guards, pinned, targetSq);
+            if (drop) guardBySlot[target] = guards & ~drop;
+        }
+        let attackers = attackBySlot[target] >>> 0;
+        if ((attackers & pinned) !== 0) {
+            const drop = dropPinnedOffLineGuards(attackers, pinned, targetSq);
+            if (drop) {
+                attackers = (attackers & ~drop) >>> 0;
+                attackBySlot[target] = attackers;
+            }
+        }
+        if (attackers) remainingAttacked |= bit;
+    }
+    scratchLeafAttackedTargetMask = remainingAttacked >>> 0;
 };
 
 const applyPinnedGuardFilterToRelations = (board, piecesInfo, boardInfo) => {
@@ -1839,23 +1855,26 @@ const applyPinnedGuardFilterToRelations = (board, piecesInfo, boardInfo) => {
         const pinnedSlots = collectPinnedGuardSlots(state);
         if (pinnedSlots === 0) return;
         const squareToSlot = state.squareToSlot;
-        const guardMask = boardInfo.guardMask;
-        for (let sq = 0; sq < REL_SQUARES; sq++) {
-            let gm = guardMask[sq] >>> 0;
-            if (gm === 0) continue;
-            let keep = 0;
-            while (gm !== 0) {
-                const bit = gm & -gm;
-                const info = piecesInfo[31 - Math.clz32(bit)];
-                const guardSlot = squareToSlot[info.r * 9 + info.c];
-                if (guardSlot < 0 || (pinnedSlots & (1 << guardSlot)) === 0 ||
-                    pinnedCanGuardSquare(guardSlot, sq)) {
-                    keep |= bit;
+        const filterPinnedMask = (mask) => {
+            for (let sq = 0; sq < REL_SQUARES; sq++) {
+                let bits = mask[sq] >>> 0;
+                if (bits === 0) continue;
+                let keep = 0;
+                while (bits !== 0) {
+                    const bit = bits & -bits;
+                    const info = piecesInfo[31 - Math.clz32(bit)];
+                    const slot = squareToSlot[info.r * 9 + info.c];
+                    if (slot < 0 || (pinnedSlots & (1 << slot)) === 0 ||
+                        pinnedCanGuardSquare(slot, sq)) {
+                        keep |= bit;
+                    }
+                    bits ^= bit;
                 }
-                gm ^= bit;
+                mask[sq] = keep;
             }
-            guardMask[sq] = keep;
-        }
+        };
+        filterPinnedMask(boardInfo.guardMask);
+        filterPinnedMask(boardInfo.attackMask);
     });
 };
 
