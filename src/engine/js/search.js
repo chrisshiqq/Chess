@@ -261,14 +261,48 @@ const EVAL_VERIFY_HASH_BY_CODE = Array.from({ length: 16 }, () => new Int32Array
     }
 })();
 
-const createSearchPieceState = (board, gameStage = 'mid') => {
-    const squareToSlot = new Int8Array(REL_SQUARES);
-    const squareCodes = new Uint8Array(REL_SQUARES);
-    const rowOccupancy = new Uint16Array(ROWS);
-    const colOccupancy = new Uint16Array(COLS);
-    const pieceCodes = new Uint8Array(32);
-    const pieceSquares = new Uint8Array(32);
+const createEmptySearchPieceState = () => ({
+    board: null,
+    squareToSlot: new Int8Array(REL_SQUARES),
+    squareCodes: new Uint8Array(REL_SQUARES),
+    rowOccupancy: new Uint16Array(ROWS),
+    colOccupancy: new Uint16Array(COLS),
+    pieceCodes: new Uint8Array(32),
+    pieceSquares: new Uint8Array(32),
+    redAliveMask: 0,
+    blackAliveMask: 0,
+    materialValues: searchMaterialTable('mid'),
+    redMaterial: 0,
+    redPosition: 0,
+    blackMaterial: 0,
+    blackPosition: 0,
+    redGeneralSq: -1,
+    blackGeneralSq: -1,
+    evalVerificationHash: 0,
+    slotCount: 0,
+    moverStack: new Int8Array(32),
+    capturedStack: new Int8Array(32),
+    stackDepth: 0
+});
+
+const loadSearchPieceState = (state, board, gameStage = 'mid') => {
+    const squareToSlot = state.squareToSlot;
+    const squareCodes = state.squareCodes;
+    const rowOccupancy = state.rowOccupancy;
+    const colOccupancy = state.colOccupancy;
+    const pieceCodes = state.pieceCodes;
+    const pieceSquares = state.pieceSquares;
     const materialValues = searchMaterialTable(gameStage);
+    squareToSlot.fill(-1);
+    squareCodes.fill(0);
+    rowOccupancy.fill(0);
+    colOccupancy.fill(0);
+    pieceCodes.fill(0);
+    pieceSquares.fill(0);
+    state.moverStack.fill(0);
+    state.capturedStack.fill(0);
+    state.stackDepth = 0;
+    state.materialValues = materialValues;
     let slotCount = 0;
     let redMaterial = 0;
     let redPosition = 0;
@@ -279,7 +313,6 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
     let evalVerificationHash = 0;
     let redAliveMask = 0;
     let blackAliveMask = 0;
-    squareToSlot.fill(-1);
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const code = cellToSearchCode(board[r][c]);
@@ -310,44 +343,41 @@ const createSearchPieceState = (board, gameStage = 'mid') => {
             }
         }
     }
-    return {
-        // 身份句柄：UI/点棋绑对象棋盘；搜索改绑到空 token，不再持有 10×9
-        board,
-        squareToSlot,
-        squareCodes,
-        rowOccupancy,
-        colOccupancy,
-        pieceCodes,
-        pieceSquares,
-        redAliveMask,
-        blackAliveMask,
-        materialValues,
-        redMaterial,
-        redPosition,
-        blackMaterial,
-        blackPosition,
-        redGeneralSq,
-        blackGeneralSq,
-        evalVerificationHash,
-        slotCount,
-        moverStack: new Int8Array(32),
-        capturedStack: new Int8Array(32),
-        stackDepth: 0
-    };
+    state.board = board;
+    state.redAliveMask = redAliveMask;
+    state.blackAliveMask = blackAliveMask;
+    state.redMaterial = redMaterial;
+    state.redPosition = redPosition;
+    state.blackMaterial = blackMaterial;
+    state.blackPosition = blackPosition;
+    state.redGeneralSq = redGeneralSq;
+    state.blackGeneralSq = blackGeneralSq;
+    state.evalVerificationHash = evalVerificationHash;
+    state.slotCount = slotCount;
+    return state;
 };
+
+const retainedSearchPieceState = createEmptySearchPieceState();
+
+const createSearchPieceState = (board, gameStage = 'mid') =>
+    loadSearchPieceState(createEmptySearchPieceState(), board, gameStage);
 
 const activePieceStateFor = (board) => {
     const state = activeSearchPieceState;
     return state && state.board === board ? state : null;
 };
 
-// 点棋/根着法/终局判定没有搜索 pieceState 时临时建一份，使 isCheck 走占位表。
-// 已有 state 则直接用；不得覆盖搜索中的身份句柄。
+// 点棋/根着法/终局判定：无绑定则填 retained buffer。搜索中已绑其它句柄时另建一份，不覆盖热路径数组。
 const runWithPieceState = (board, fn) => {
     if (activePieceStateFor(board)) return fn();
     const previous = activeSearchPieceState;
-    const created = createSearchPieceState(board, 'mid');
-    if (created) activeSearchPieceState = created;
+    if (!previous) {
+        const loaded = loadSearchPieceState(retainedSearchPieceState, board, 'mid');
+        if (loaded) activeSearchPieceState = loaded;
+    } else {
+        const created = createSearchPieceState(board, 'mid');
+        if (created) activeSearchPieceState = created;
+    }
     try {
         return fn();
     } finally {
@@ -510,7 +540,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
     const __t0 = searchContext.profile ? performance.now() : 0;
 
     const outputPhase = gameStage;
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const materialValues = searchMaterialTable(gameStage);
 
     // 遍历棋盘：只收集子力/PST；着法+关系统一在 calculatePieceRelations 一次几何生成（对齐炮）
@@ -626,7 +656,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
 const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     runWithPieceState(board, () => {
     const piecesInfo = [];
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const materialValues = searchMaterialTable(gameStage);
     const slotCount = pieceState ? pieceState.slotCount : 0;
     for (let slot = 0; slot < slotCount; slot++) {
@@ -933,17 +963,17 @@ const filterLegalMoves = (board, fromSq, color, encodedMoves, wasInCheck, checkI
     for (let i = 0; i < encodedMoves.length; i++) {
         const encoded = encodedMoves[i];
         const toSq = encoded & MOVE_TO_MASK;
-        makeSearchMove(board, encoded);
+        makeSearchMove(encoded);
         const illegal = leavesOwnKingUnsafe(
-            activePieceStateFor(board), color, fromSq, toSq, wasInCheck, checkInfo
+            activeSearchPieceState, color, fromSq, toSq, wasInCheck, checkInfo
         );
-        unmakeSearchMove(board, encoded);
+        unmakeSearchMove(encoded);
         if (!illegal) validMoves.push(toSq);
     }
     return validMoves;
 };
 
-const makeSearchMove = (board, move) => {
+const makeSearchMove = (move) => {
     const state = activeSearchPieceState;
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
@@ -957,7 +987,7 @@ const makeSearchMove = (board, move) => {
     updatePieceStateAfterMakeCapture(state, from, to, moverSlot, moverCode, capturedSlot);
 };
 
-const unmakeSearchMove = (board, move) => {
+const unmakeSearchMove = (move) => {
     const state = activeSearchPieceState;
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
@@ -988,24 +1018,24 @@ const clearSortSquareMarks = () => {
     squareMarkTouched.length = 0;
 };
 
-const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = null, killers = null, knownInCheck = null, parallelArrays = null) => {
+const sortRootMoves = (moves, board, currentPlayer, sortHints = null, ttMove = null, killers = null, knownInCheck = null, parallelArrays = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.sortMovesCount++;
     const currentIsInCheck = knownInCheck != null
         ? knownInCheck
-        : !!(boardInfo && (
-            (currentPlayer === SIDE_RED && boardInfo.redIsInCheck) ||
-            (currentPlayer === SIDE_BLACK && boardInfo.blackIsInCheck)
+        : !!(sortHints && (
+            (currentPlayer === SIDE_RED && sortHints.redIsInCheck) ||
+            (currentPlayer === SIDE_BLACK && sortHints.blackIsInCheck)
         ));
 
-    if (currentIsInCheck && boardInfo && boardInfo.checkerSquares) {
-        const checkers = boardInfo.checkerSquares;
+    if (currentIsInCheck && sortHints && sortHints.checkerSquares) {
+        const checkers = sortHints.checkerSquares;
         for (let i = 0; i < checkers.length; i++) {
             markSortSquare(checkers[i]);
         }
     }
 
-    const threatenedSquares = boardInfo && boardInfo.threatenedSquares;
+    const threatenedSquares = sortHints && sortHints.threatenedSquares;
     const hasThreatened = !currentIsInCheck && !!(threatenedSquares && threatenedSquares.length > 0);
     if (hasThreatened) {
         for (let i = 0; i < threatenedSquares.length; i++) {
@@ -1014,7 +1044,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
     }
     const threatenedMarkEnd = squareMarkTouched.length;
 
-    const canCaptureSquares = boardInfo && boardInfo.canCaptureSquares;
+    const canCaptureSquares = sortHints && sortHints.canCaptureSquares;
     const hasCanCapture = !currentIsInCheck && !!(canCaptureSquares && canCaptureSquares.length > 0);
     if (hasCanCapture) {
         for (let i = 0; i < canCaptureSquares.length; i++) {
@@ -1022,7 +1052,7 @@ const sortRootMoves = (moves, board, currentPlayer, boardInfo = null, ttMove = n
         }
     }
 
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const materialValues = pieceState.materialValues;
     const useSimpleSearchSort = !currentIsInCheck && !hasThreatened && !hasCanCapture;
     const moveCount = moves.length;
@@ -1170,7 +1200,7 @@ const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
     if (inCheck) {
         return sortRootMoves(moves, board, currentPlayer, null, ttMove, killers, true);
     }
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
 
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.sortMovesCount++;
@@ -1238,7 +1268,7 @@ const sortMoves = (moves, board, currentPlayer, ttMove, killers, inCheck) => {
 const sortStagedMoveRange = (moves, start, end, board, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchContext.profile ? performance.now() : 0;
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
@@ -1295,7 +1325,7 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
         const inCheck = currentPlayer === SIDE_RED ? !!boardInfo.redIsInCheck : !!boardInfo.blackIsInCheck;
         let checkInfo = null;
         if (inCheck) {
-            const state = activePieceStateFor(board);
+            const state = activeSearchPieceState;
             if (state) {
                 collectCheckersFromState(state, currentPlayer, scratchLegalCheckInfo);
                 checkInfo = scratchLegalCheckInfo;
@@ -1804,7 +1834,7 @@ const applyPinnedGuardFilterToLeaf = (pieceState) => {
 
 const applyPinnedGuardFilterToRelations = (board, piecesInfo, boardInfo) => {
     runWithPieceState(board, () => {
-        const state = activePieceStateFor(board);
+        const state = activeSearchPieceState;
         if (!state) return;
         const pinnedSlots = collectPinnedGuardSlots(state);
         if (pinnedSlots === 0) return;
@@ -2369,17 +2399,17 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     }
 };
 
-const appendLegalEvasions = (out, board, color, pieceState, checkInfo) => {
+const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
     const encoded = scratchLegalEncoded;
     encoded.length = 0;
     generateCheckEvasions(encoded, color, pieceState, checkInfo);
     for (let i = 0; i < encoded.length; i++) {
         const move = encoded[i];
-        makeSearchMove(board, move);
+        makeSearchMove(move);
         const unsafe = leavesOwnKingUnsafe(
             pieceState, color, move >>> 7, move & MOVE_TO_MASK, true, checkInfo
         );
-        unmakeSearchMove(board, move);
+        unmakeSearchMove(move);
         if (!unsafe) out.push(move);
     }
 };
@@ -3031,7 +3061,7 @@ const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
 
 // 计算棋子关系：写 Uint32 格位 mask
 const calculatePieceRelations = (board, piecesInfo, boardInfo) => {
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     if (!pieceState) {
         return runWithPieceState(board, () => calculatePieceRelations(board, piecesInfo, boardInfo));
     }
@@ -3215,7 +3245,7 @@ const calculateStaticExchangeScore = (
 // 按被威胁子聚合：每个目标最多一次 SEE；分值加给最低 bit 攻击方
 // （与旧“攻击方外层遍历首次计分”归属一致）
 const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, board = null) => {
-    const squareCodes = board && activePieceStateFor(board) ? activePieceStateFor(board).squareCodes : null;
+    const squareCodes = board && activeSearchPieceState ? activeSearchPieceState.squareCodes : null;
     const collectUi = !!boardInfo;
     if (collectUi) {
         boardInfo.checks = [];
@@ -4484,14 +4514,14 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
     const state = activePieceStateFor(board);
     if (state) return isCheckFromState(state, side);
     return runWithPieceState(board, () => {
-        const created = activePieceStateFor(board);
+        const created = activeSearchPieceState;
         return created ? isCheckFromState(created, side) : true;
     });
 };
 
 // 合法着法：伪合法 + 不送将/不飞将。返回落点格号（r * 9 + c），UI 再解码。
 const getValidMovesFromSq = (board, fromSq, wasInCheck = null, checkInfo = null) => {
-  const state = activePieceStateFor(board);
+  const state = activeSearchPieceState;
   if (!state) return [];
   const pieceCode = state.squareCodes[fromSq];
   if (!pieceCode) return [];
@@ -4528,7 +4558,7 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     let inCheck = false;
     const side = colorToSide(turn);
     runWithPieceState(board, () => {
-        const state = activePieceStateFor(board);
+        const state = activeSearchPieceState;
         inCheck = isCheckFromState(state, side);
         let checkInfo = null;
         if (inCheck) {
@@ -5040,7 +5070,7 @@ const childBoardHash = (boardHash, move, moverCode, capturedCode) => {
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
 const evaluateLeaf = (board, searchInitiator) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const stateCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
     const squareCodes = pieceState.squareCodes;
@@ -5149,7 +5179,7 @@ const evaluateLeaf = (board, searchInitiator) => {
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
 const staticSearchEval = (board, searchInitiator, boardHash = 0) => {
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator);
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const verificationKey = pieceState ? pieceState.evalVerificationHash : 0;
     const combinedKey = cacheKey ^ verificationKey;
     const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
@@ -5176,7 +5206,7 @@ const generateQuiescenceMoves = (board, currentPlayer, destination = null) => {
     if (searchContext.profile) perfStats.captureGenCount++;
     const moves = destination || [];
     moves.length = 0;
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
     const isRed = currentPlayer === SIDE_RED;
@@ -5224,7 +5254,7 @@ const quiescenceMateValue = (currentPlayer, searchInitiator) =>
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const sortCaptures = (captures, board) => {
-    const pieceState = activePieceStateFor(board);
+    const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
@@ -5259,7 +5289,7 @@ const quiescence = (
     searchInitiator, qsDepth, boardHash = 0, qsPly = 0, knownInCheck
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
-    const qsState = activePieceStateFor(b);
+    const qsState = activeSearchPieceState;
     let checkInfo = null;
     const inCheck = knownInCheck;
     if (inCheck) {
@@ -5316,9 +5346,9 @@ const quiescence = (
         const toSq = move & MOVE_TO_MASK;
         const moverCode = qsState.squareCodes[fromSq];
         const capturedCode = qsState.squareCodes[toSq];
-        makeSearchMove(b, move);
+        makeSearchMove(move);
         if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
-            unmakeSearchMove(b, move);
+            unmakeSearchMove(move);
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
@@ -5331,7 +5361,7 @@ const quiescence = (
             b, alpha, beta, !maximizing, nextPlayer,
             searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
         );
-        unmakeSearchMove(b, move);
+        unmakeSearchMove(move);
 
         if (maximizing) {
             if (value > bestEval) bestEval = value;
@@ -5377,7 +5407,7 @@ const alphaBeta = (
         }
     }
 
-    const stagedPieceState = activePieceStateFor(b);
+    const stagedPieceState = activeSearchPieceState;
     const plyFromRoot = searchDepth - d;
     let checkInfo = null;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
@@ -5473,9 +5503,9 @@ const alphaBeta = (
         const moverCode = stagedPieceState.squareCodes[fromSq];
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
-        makeSearchMove(b, move);
+        makeSearchMove(move);
         if (leavesOwnKingUnsafe(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
-            unmakeSearchMove(b, move);
+            unmakeSearchMove(move);
             continue;
         }
         const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
@@ -5600,7 +5630,7 @@ const alphaBeta = (
                 searchDepth, searchInitiator, nextHash, true, childInCheck
             );
         }
-        unmakeSearchMove(b, move);
+        unmakeSearchMove(move);
 
         if (maximizing) {
             if (value > bestEval) {
@@ -5651,14 +5681,14 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
     const entry = transpositionTable.retrieve(zobristHasher.ttKeyFromHash(hash, currentTurn));
     const move = entry && entry.bestMove;
     if (!move) break;
-    const state = activePieceStateFor(board);
+    const state = activeSearchPieceState;
     const from = move >>> 7;
     const moverCode = state.squareCodes[from];
     const capturedCode = state.squareCodes[move & MOVE_TO_MASK];
     if (!moverCode || ((moverCode < 8) !== (currentTurn === SIDE_RED))) break;
-    makeSearchMove(board, move);
+    makeSearchMove(move);
     if (leavesOwnKingUnsafe(state, currentTurn, from, move & MOVE_TO_MASK, true)) {
-      unmakeSearchMove(board, move);
+      unmakeSearchMove(move);
       break;
     }
     sequence.push(move);
@@ -5667,7 +5697,7 @@ const extractPvFromTt = (board, turn, boardHash, maxPly) => {
     currentTurn ^= 1;
   }
   for (let i = undoMoves.length - 1; i >= 0; i--) {
-    unmakeSearchMove(board, undoMoves[i]);
+    unmakeSearchMove(undoMoves[i]);
   }
   return sequence;
 };
@@ -5676,7 +5706,7 @@ const scratchRootThreatenedSquares = [];
 const scratchRootCanCaptureSquares = [];
 const scratchRootCheckerSquares = [];
 const scratchRootCheckInfo = createCheckInfo();
-const scratchRootSortInfo = {
+const scratchRootSortHints = {
     redIsInCheck: false,
     blackIsInCheck: false,
     threatenedSquares: scratchRootThreatenedSquares,
@@ -5689,8 +5719,8 @@ const fillRootSortHints = (pieceState, turn) => {
     scratchRootCanCaptureSquares.length = 0;
     scratchRootCheckerSquares.length = 0;
     const inCheck = isCheckFromState(pieceState, turn);
-    scratchRootSortInfo.redIsInCheck = turn === SIDE_RED && inCheck;
-    scratchRootSortInfo.blackIsInCheck = turn === SIDE_BLACK && inCheck;
+    scratchRootSortHints.redIsInCheck = turn === SIDE_RED && inCheck;
+    scratchRootSortHints.blackIsInCheck = turn === SIDE_BLACK && inCheck;
     if (inCheck) {
         collectCheckersFromState(pieceState, turn, scratchRootCheckInfo);
         const n = Math.min(scratchRootCheckInfo.count, CHECK_INFO_CAP);
@@ -5698,7 +5728,7 @@ const fillRootSortHints = (pieceState, turn) => {
             const sq = scratchRootCheckInfo.sq[i];
             if (sq >= 0) scratchRootCheckerSquares.push(sq);
         }
-        return scratchRootSortInfo;
+        return scratchRootSortHints;
     }
     const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
     calculatePackedSearchLeafRelations(pieceState, aliveMask);
@@ -5722,7 +5752,7 @@ const fillRootSortHints = (pieceState, turn) => {
             scratchRootThreatenedSquares.push(pieceSquares[slot]);
         }
     }
-    return scratchRootSortInfo;
+    return scratchRootSortHints;
 };
 
 // exactRootScores: true=Analysis 根着法精确分（数量由 exactRootLimit 限制，0=不限制）；false=对弈标准 PVS（fail-low 不回搜）
@@ -5744,7 +5774,7 @@ const getBestMove = (
   const searchBoard = {};
   const phase = getGamePhase();
   const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-  activeSearchPieceState = createSearchPieceState(board, gameStage);
+  activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, gameStage);
   if (activeSearchPieceState) activeSearchPieceState.board = searchBoard;
   const rootPieceState = activeSearchPieceState;
   try {
@@ -5815,8 +5845,8 @@ const getBestMove = (
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
-  const rootBoardInfo = fillRootSortHints(rootPieceState, side);
-  const rootInCheck = side === SIDE_RED ? rootBoardInfo.redIsInCheck : rootBoardInfo.blackIsInCheck;
+  const rootSortHints = fillRootSortHints(rootPieceState, side);
+  const rootInCheck = side === SIDE_RED ? rootSortHints.redIsInCheck : rootSortHints.blackIsInCheck;
   const rootCheckInfo = rootInCheck ? scratchRootCheckInfo : null;
 
   // 收集根节点走法（只做一次）：编码整数 + 平行分数/PV
@@ -5827,7 +5857,7 @@ const getBestMove = (
   const wantRed = side === SIDE_RED;
   if (rootInCheck) {
     const evasionMoves = [];
-    appendLegalEvasions(evasionMoves, searchBoard, side, rootPieceState, rootCheckInfo);
+    appendLegalEvasions(evasionMoves, side, rootPieceState, rootCheckInfo);
     for (let i = 0; i < evasionMoves.length; i++) {
       const encoded = evasionMoves[i];
       if (excludedRootMoveSet.has(encoded)) continue;
@@ -5953,7 +5983,7 @@ const getBestMove = (
     const ttEntry = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttEntry && ttEntry.bestMove ? ttEntry.bestMove : null;
     const prevBest = rootMoves[0];
-    sortRootMoves(rootMoves, searchBoard, side, rootBoardInfo, ttMove, null, null, [rootScores, rootSeqs]);
+    sortRootMoves(rootMoves, searchBoard, side, rootSortHints, ttMove, null, null, [rootScores, rootSeqs]);
     // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
     promoteRootMove(ttMove);
     promoteRootMove(prevBest);
@@ -5969,7 +5999,7 @@ const getBestMove = (
       const rootToSq = encodedRootMove & MOVE_TO_MASK;
       const moverCode = activeSearchPieceState.squareCodes[rootFromSq];
       const capturedCode = activeSearchPieceState.squareCodes[rootToSq];
-      makeSearchMove(searchBoard, encodedRootMove);
+      makeSearchMove(encodedRootMove);
       const childHash = childBoardHash(rootHash, encodedRootMove, moverCode, capturedCode);
       const childInCheck = leavesEnemyKingUnsafe(
         activeSearchPieceState, nextSide, rootFromSq, rootToSq
@@ -6037,7 +6067,7 @@ const getBestMove = (
         ];
       }
 
-      unmakeSearchMove(searchBoard, encodedRootMove);
+      unmakeSearchMove(encodedRootMove);
 
       if (scoreIsExact) {
         rootScores[i] = score;
