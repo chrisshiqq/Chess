@@ -696,8 +696,8 @@ const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     };
     });
 
-// 父局面未将军且未动将：新将军来自 from/to 将线变化（含落点成炮架），或腾出马腿。
-const isCheckAfterSafeMoveFromCoords = (
+// 将未动：只看 from/to 是否改变将的横竖线（车/将/炮，含落点成炮架）或腾出马腿。
+const rayOrUncoveredHorseGivesCheck = (
     state, enemyIsRed, generalSq, gr, gc,
     fromR, fromC, toR, toC
 ) => {
@@ -776,11 +776,12 @@ const isCheckAfterSafeMoveFromCoords = (
     return false;
 };
 
-const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
+// 同上，从格号取将位。color 是被将军方。
+const rayOrUncoveredHorseGivesCheckFromMove = (state, color, fromSq, toSq) => {
     const ownIsRed = color === SIDE_RED;
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
-    return isCheckAfterSafeMoveFromCoords(
+    return rayOrUncoveredHorseGivesCheck(
         state, !ownIsRed, generalSq,
         SQ_ROW[generalSq], SQ_COL[generalSq],
         SQ_ROW[fromSq], SQ_COL[fromSq],
@@ -788,8 +789,8 @@ const isCheckAfterSafeMove = (state, color, fromSq, toSq) => {
     );
 };
 
-// 落点马/兵直接将。车炮将/闪将/炮架/腾腿由 isCheckAfterSafeMove 覆盖。
-const moverGivesDirectShortCheck = (state, checkedColor, toSq) => {
+// 落点这枚马/兵是否直接打将。车炮将、闪将、炮架、腾腿不在这里。
+const horseOrSoldierGivesCheckAt = (state, checkedColor, toSq) => {
     const pieceCode = state.squareCodes[toSq];
     const pieceType = pieceCode & 7;
     if (pieceType !== 3 && pieceType !== 7) return false;
@@ -821,10 +822,10 @@ const moverGivesDirectShortCheck = (state, checkedColor, toSq) => {
     return false;
 };
 
-// 已 make：对方将是否被将。将线增量 + 马/兵直接将，不扫未变的射线。
-const isCheckAfterGivingMove = (state, checkedColor, fromSq, toSq) =>
-    isCheckAfterSafeMove(state, checkedColor, fromSq, toSq) ||
-    moverGivesDirectShortCheck(state, checkedColor, toSq);
+// 已 make：这步是否将军 checkedColor。将线增量 + 落点马/兵，不扫未动的射线。
+const moveGivesCheck = (state, checkedColor, fromSq, toSq) =>
+    rayOrUncoveredHorseGivesCheckFromMove(state, checkedColor, fromSq, toSq) ||
+    horseOrSoldierGivesCheckAt(state, checkedColor, toSq);
 
 const CHECK_KIND_RAY = 1;
 const CHECK_KIND_HORSE = 2;
@@ -930,7 +931,7 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
         ) {
             return false;
         }
-        return isCheckAfterSafeMoveFromCoords(
+        return rayOrUncoveredHorseGivesCheck(
             pieceState, color !== SIDE_RED, generalSq, gr, gc,
             fromR, fromC, toR, toC
         );
@@ -942,7 +943,7 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
     ) {
         if (generalSq === toSq) return isCheckFromState(pieceState, color);
         if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
-        return generalSq < 0 || isCheckAfterSafeMoveFromCoords(
+        return generalSq < 0 || rayOrUncoveredHorseGivesCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
             SQ_ROW[fromSq], SQ_COL[fromSq],
@@ -4500,7 +4501,7 @@ const leavesEnemyKingUnsafe = (state, checkedColor, fromSq, toSq) => {
             return false;
         }
     }
-    return isCheckAfterGivingMove(state, checkedColor, fromSq, toSq);
+    return moveGivesCheck(state, checkedColor, fromSq, toSq);
 };
 
 const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
@@ -5357,10 +5358,14 @@ const quiescence = (
         );
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
-        const value = quiescence(
-            b, alpha, beta, !maximizing, nextPlayer,
-            searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
-        );
+        // 下一层已到静搜终点且未被将时，递归入口只会静态评估后返回。
+        // 被将仍须递归搜索全部解将。
+        const value = qsDepth <= 1 && !childInCheck
+            ? staticSearchEval(b, searchInitiator, nextHash)
+            : quiescence(
+                b, alpha, beta, !maximizing, nextPlayer,
+                searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
+            );
         unmakeSearchMove(move);
 
         if (maximizing) {
