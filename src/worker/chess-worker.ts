@@ -6,7 +6,7 @@ import {
   evaluateBoard,
   evaluatePiece,
   evaluatePieceInfo,
-  getGamePhase,
+  getGameStage,
   hydrateRelationsFromMasks,
   setValueWeights
 } from '../engine/js/evaluation.js';
@@ -21,10 +21,7 @@ import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../en
 
 type Emit = (message: WorkerResponse) => void;
 
-const gameStage = (): 'early' | 'mid' | 'late' => {
-  const phase = getGamePhase();
-  return phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
-};
+const gameStage = getGameStage;
 
 const emptyPieceEvaluation = () => ({
   material: 0,

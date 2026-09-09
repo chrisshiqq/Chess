@@ -1925,6 +1925,8 @@ const applyOccupiedSliderHit = (
 const appendSearchShortMoves = (
     moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
 ) => {
+    const materialValues = activeSearchPieceState.materialValues;
+    const moverValue = materialValues[squareCodes[fromSq] & 7];
     for (let i = destStart; i < destEnd; i++) {
         let toSq = destData[i];
         if (blocked) {
@@ -1937,6 +1939,8 @@ const appendSearchShortMoves = (
             if (capturesOnly) continue;
             moves.push((fromSq << 7) | toSq);
         } else if (!quietsOnly && (targetCode < 8) !== isRed) {
+            captureSortScoreScratch[moves.length] =
+                materialValues[targetCode & 7] * 16 - moverValue;
             moves.push((fromSq << 7) | toSq);
         }
     }
@@ -1962,6 +1966,10 @@ const appendSliderCapture = (moves, fromSq, sq, squareCodes, isRed, quietsOnly, 
     if (quietsOnly) return;
     const targetCode = squareCodes[sq];
     if ((targetCode < 8) !== isRed && (!targetMask || targetMask[sq])) {
+        const materialValues = activeSearchPieceState.materialValues;
+        captureSortScoreScratch[moves.length] =
+            materialValues[targetCode & 7] * 16 -
+            materialValues[squareCodes[fromSq] & 7];
         moves.push((fromSq << 7) | sq);
     }
 };
@@ -4591,8 +4599,8 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
 
 
 
-const getGamePhase = () => {
-  return 'opening';
+const getGameStage = () => {
+  return 'early';
 };
 
 // 实例化ZobristHasher
@@ -5254,23 +5262,10 @@ const quiescenceMateValue = (currentPlayer, searchInitiator) =>
     currentPlayer === searchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
-const sortCaptures = (captures, board) => {
-    const pieceState = activeSearchPieceState;
-    const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = pieceState.pieceCodes;
-    const materialValues = pieceState.materialValues;
+const sortCaptures = (captures) => {
     const captureCount = captures.length;
 
-    for (let index = 0; index < captureCount; index++) {
-        const move = captures[index];
-        const fromSq = move >>> 7;
-        const toSq = move & MOVE_TO_MASK;
-        captureSortScoreScratch[index] =
-            materialValues[pieceCodes[squareToSlot[toSq]] & 7] * 16 -
-            materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
-    }
-
-    // Stable insertion ordering exactly matches the previous numeric comparator.
+    // 分数已在吃子 push 时写入；稳定插排与原先数值比较器一致。
     for (let i = 1; i < captureCount; i++) {
         const move = captures[i];
         const score = captureSortScoreScratch[i];
@@ -5285,32 +5280,15 @@ const sortCaptures = (captures, board) => {
     }
 };
 
-const quiescence = (
+// 被将静搜：不能 stand-pat，必须搜解将；qsDepth<=0 仍延伸。
+const quiescenceEvasion = (
     b, alpha, beta, maximizing, currentPlayer,
-    searchInitiator, qsDepth, boardHash = 0, qsPly = 0, knownInCheck
+    searchInitiator, qsDepth, boardHash, qsPly
 ) => {
     if (searchContext.profile) perfStats.quiescenceCalls++;
     const qsState = activeSearchPieceState;
-    let checkInfo = null;
-    const inCheck = knownInCheck;
-    if (inCheck) {
-        checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
-        collectCheckersFromState(qsState, currentPlayer, checkInfo);
-    }
-    let standPat;
-    if (!inCheck) {
-        standPat = staticSearchEval(
-            b, searchInitiator, boardHash
-        );
-        if (qsDepth <= 0) return standPat;
-        if (maximizing) {
-            if (standPat >= beta) return standPat;
-            if (standPat > alpha) alpha = standPat;
-        } else {
-            if (standPat <= alpha) return standPat;
-            if (standPat < beta) beta = standPat;
-        }
-    }
+    const checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
+    collectCheckersFromState(qsState, currentPlayer, checkInfo);
 
     let moves = quiescenceMoveBuffers[qsPly];
     if (!moves) {
@@ -5319,27 +5297,13 @@ const quiescence = (
     } else {
         moves.length = 0;
     }
-    if (inCheck) {
-        generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
-    } else if (leafRelationScratchFresh) {
-        emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
-    } else {
-        generateQuiescenceMoves(b, currentPlayer, moves);
-    }
+    generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
     const moveCount = moves.length;
     if (searchContext.profile) perfStats.quiescenceCaptureMoves += moveCount;
-    if (moveCount === 0) return inCheck
-        ? quiescenceMateValue(currentPlayer, searchInitiator)
-        : standPat;
-
-    if (inCheck) {
-        sortMoves(moves, b, currentPlayer, null, null, false);
-    } else {
-        sortCaptures(moves, b);
-    }
+    sortMoves(moves, b, currentPlayer, null, null, false);
 
     const nextPlayer = currentPlayer ^ 1;
-    let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
+    let bestEval = maximizing ? -Infinity : Infinity;
     let legalMovesFound = 0;
     for (let i = 0; i < moveCount; i++) {
         const move = moves[i];
@@ -5348,7 +5312,7 @@ const quiescence = (
         const moverCode = qsState.squareCodes[fromSq];
         const capturedCode = qsState.squareCodes[toSq];
         makeSearchMove(move);
-        if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
+        if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, true, checkInfo)) {
             unmakeSearchMove(move);
             continue;
         }
@@ -5358,14 +5322,17 @@ const quiescence = (
         );
         legalMovesFound++;
         if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
-        // 下一层已到静搜终点且未被将时，递归入口只会静态评估后返回。
-        // 被将仍须递归搜索全部解将。
-        const value = qsDepth <= 1 && !childInCheck
-            ? staticSearchEval(b, searchInitiator, nextHash)
-            : quiescence(
+        const value = childInCheck
+            ? quiescenceEvasion(
                 b, alpha, beta, !maximizing, nextPlayer,
-                searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
-            );
+                searchInitiator, qsDepth - 1, nextHash, qsPly + 1
+            )
+            : (qsDepth <= 1
+                ? staticSearchEval(b, searchInitiator, nextHash)
+                : quiescence(
+                    b, alpha, beta, !maximizing, nextPlayer,
+                    searchInitiator, qsDepth - 1, nextHash, qsPly + 1
+                ));
         unmakeSearchMove(move);
 
         if (maximizing) {
@@ -5377,8 +5344,86 @@ const quiescence = (
         }
         if (beta <= alpha) break;
     }
-    if (inCheck && legalMovesFound === 0) {
+    if (legalMovesFound === 0) {
         return quiescenceMateValue(currentPlayer, searchInitiator);
+    }
+    return bestEval;
+};
+
+// 未将静搜：stand-pat + 只搜吃子。被将走 quiescenceEvasion。
+const quiescence = (
+    b, alpha, beta, maximizing, currentPlayer,
+    searchInitiator, qsDepth, boardHash = 0, qsPly = 0
+) => {
+    if (searchContext.profile) perfStats.quiescenceCalls++;
+    const qsState = activeSearchPieceState;
+    const standPat = staticSearchEval(
+        b, searchInitiator, boardHash
+    );
+    if (qsDepth <= 0) return standPat;
+    if (maximizing) {
+        if (standPat >= beta) return standPat;
+        if (standPat > alpha) alpha = standPat;
+    } else {
+        if (standPat <= alpha) return standPat;
+        if (standPat < beta) beta = standPat;
+    }
+
+    let moves = quiescenceMoveBuffers[qsPly];
+    if (!moves) {
+        moves = [];
+        quiescenceMoveBuffers[qsPly] = moves;
+    } else {
+        moves.length = 0;
+    }
+    if (leafRelationScratchFresh) {
+        emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
+    } else {
+        generateQuiescenceMoves(b, currentPlayer, moves);
+    }
+    const moveCount = moves.length;
+    if (searchContext.profile) perfStats.quiescenceCaptureMoves += moveCount;
+        sortCaptures(moves);
+
+    const nextPlayer = currentPlayer ^ 1;
+    let bestEval = standPat;
+    for (let i = 0; i < moveCount; i++) {
+        const move = moves[i];
+        const fromSq = move >>> 7;
+        const toSq = move & MOVE_TO_MASK;
+        const moverCode = qsState.squareCodes[fromSq];
+        const capturedCode = qsState.squareCodes[toSq];
+        makeSearchMove(move);
+        if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, false, null)) {
+            unmakeSearchMove(move);
+            continue;
+        }
+        const nextHash = childBoardHash(boardHash, move, moverCode, capturedCode);
+        const childInCheck = leavesEnemyKingUnsafe(
+            qsState, nextPlayer, fromSq, toSq
+        );
+        if (searchContext.collectMetrics) perfStats.legalMovesSearched++;
+        const value = childInCheck
+            ? quiescenceEvasion(
+                b, alpha, beta, !maximizing, nextPlayer,
+                searchInitiator, qsDepth - 1, nextHash, qsPly + 1
+            )
+            : (qsDepth <= 1
+                ? staticSearchEval(b, searchInitiator, nextHash)
+                : quiescence(
+                    b, alpha, beta, !maximizing, nextPlayer,
+                    searchInitiator, qsDepth - 1, nextHash, qsPly + 1
+                ));
+        unmakeSearchMove(move);
+
+        if (maximizing) {
+            if (value > bestEval) bestEval = value;
+            if (value > alpha) alpha = value;
+        } else {
+            if (value < bestEval) bestEval = value;
+            if (value < beta) beta = value;
+        }
+        if (beta <= alpha) break;
     }
     return bestEval;
 };
@@ -5394,10 +5439,15 @@ const alphaBeta = (
     if (searchContext.collectMetrics) perfStats.alphaBetaCalls++;
 
     if (d === 0) {
-        return quiescence(
-            b, alpha, beta, maximizing, currentPlayer,
-            searchInitiator, SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
-        );
+        return knownInCheck
+            ? quiescenceEvasion(
+                b, alpha, beta, maximizing, currentPlayer,
+                searchInitiator, SEARCH_QUIESCENCE_DEPTH, boardHash, 0
+            )
+            : quiescence(
+                b, alpha, beta, maximizing, currentPlayer,
+                searchInitiator, SEARCH_QUIESCENCE_DEPTH, boardHash, 0
+            );
     }
 
     const ttKey = makeSearchTTKey(currentPlayer, boardHash);
@@ -5777,8 +5827,7 @@ const getBestMove = (
 
   const side = colorToSide(turn);
   const searchBoard = {};
-  const phase = getGamePhase();
-  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
+  const gameStage = getGameStage();
   activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, gameStage);
   if (activeSearchPieceState) activeSearchPieceState.board = searchBoard;
   const rootPieceState = activeSearchPieceState;
@@ -6141,7 +6190,7 @@ export {
   evaluateBoard,
   evaluatePiece,
   getBestMove,
-  getGamePhase,
+  getGameStage,
   getValidMoves,
   hydrateRelationsFromMasks,
   isCheck,
