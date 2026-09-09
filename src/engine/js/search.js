@@ -5202,152 +5202,6 @@ const staticSearchEval = (board, searchInitiator, boardHash = 0) => {
 // move is in check and must search all evasions.
 const quiescenceMoveBuffers = [];
 
-const appendScoredQuiescenceCapture = (
-    moves, fromSq, toSq, isRed, moverValue, pieceState
-) => {
-    const targetCode = pieceState.squareCodes[toSq];
-    if (targetCode === 0 || (targetCode < 8) === isRed) return;
-    captureSortScoreScratch[moves.length] =
-        pieceState.materialValues[targetCode & 7] * 16 - moverValue;
-    moves.push((fromSq << 7) | toSq);
-};
-
-const appendScoredQuiescenceShortCaptures = (
-    moves, fromSq, pieceState, isRed, moverValue,
-    destData, destStart, destEnd, blocked
-) => {
-    const squareCodes = pieceState.squareCodes;
-    for (let i = destStart; i < destEnd; i++) {
-        let toSq = destData[i];
-        if (blocked) {
-            if (squareCodes[toSq >>> 7] !== 0) continue;
-            toSq &= MOVE_TO_MASK;
-        }
-        const targetCode = squareCodes[toSq];
-        if (targetCode === 0 || (targetCode < 8) === isRed) continue;
-        captureSortScoreScratch[moves.length] =
-            pieceState.materialValues[targetCode & 7] * 16 - moverValue;
-        moves.push((fromSq << 7) | toSq);
-    }
-};
-
-// 静搜专用吃子生成：只生成吃子，并在 push 时同步写同索引的 MVV-LVA 分数。
-const appendScoredQuiescenceCapturesForPiece = (
-    moves, fromSq, pieceCode, pieceState
-) => {
-    const isRed = pieceCode < 8;
-    const colorIdx = isRed ? 0 : 1;
-    const moverValue = pieceState.materialValues[pieceCode & 7];
-    const pieceType = pieceCode & 7;
-    let destBase;
-
-    switch (pieceType) {
-        case 1:
-            destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_GENERAL_DEST_DATA,
-                SEARCH_GENERAL_DEST_OFF[destBase], SEARCH_GENERAL_DEST_OFF[destBase + 1], false
-            );
-            break;
-        case 5:
-            destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_ADVISOR_DEST_DATA,
-                SEARCH_ADVISOR_DEST_OFF[destBase], SEARCH_ADVISOR_DEST_OFF[destBase + 1], false
-            );
-            break;
-        case 4:
-            destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_ELEPHANT_DEST_DATA,
-                SEARCH_ELEPHANT_DEST_OFF[destBase], SEARCH_ELEPHANT_DEST_OFF[destBase + 1], true
-            );
-            break;
-        case 3:
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_HORSE_DEST_DATA,
-                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1], true
-            );
-            break;
-        case 7:
-            destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_SOLDIER_DEST_DATA,
-                SEARCH_SOLDIER_DEST_OFF[destBase], SEARCH_SOLDIER_DEST_OFF[destBase + 1], false
-            );
-            break;
-        case 2: {
-            const r = SQ_ROW[fromSq];
-            const c = SQ_COL[fromSq];
-            const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
-            const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
-            let target = RANK_FIRST_HIGH[rankKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, r * COLS + target, isRed, moverValue, pieceState
-                );
-            }
-            target = RANK_FIRST_LOW[rankKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, r * COLS + target, isRed, moverValue, pieceState
-                );
-            }
-            target = FILE_FIRST_HIGH[fileKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, target * COLS + c, isRed, moverValue, pieceState
-                );
-            }
-            target = FILE_FIRST_LOW[fileKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, target * COLS + c, isRed, moverValue, pieceState
-                );
-            }
-            break;
-        }
-        case 6: {
-            const r = SQ_ROW[fromSq];
-            const c = SQ_COL[fromSq];
-            const rankKey = c * RANK_OCC_COUNT + pieceState.rowOccupancy[r];
-            const fileKey = r * FILE_OCC_COUNT + pieceState.colOccupancy[c];
-            let target = RANK_SECOND_HIGH[rankKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, r * COLS + target, isRed, moverValue, pieceState
-                );
-            }
-            target = RANK_SECOND_LOW[rankKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, r * COLS + target, isRed, moverValue, pieceState
-                );
-            }
-            target = FILE_SECOND_HIGH[fileKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, target * COLS + c, isRed, moverValue, pieceState
-                );
-            }
-            target = FILE_SECOND_LOW[fileKey];
-            if (target !== 255) {
-                appendScoredQuiescenceCapture(
-                    moves, fromSq, target * COLS + c, isRed, moverValue, pieceState
-                );
-            }
-            break;
-        }
-        default:
-            break;
-    }
-};
-
 const generateQuiescenceMoves = (board, currentPlayer, destination = null) => {
     const __t0 = searchContext.profile ? performance.now() : 0;
     if (searchContext.profile) perfStats.captureGenCount++;
@@ -5360,8 +5214,8 @@ const generateQuiescenceMoves = (board, currentPlayer, destination = null) => {
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
-        appendScoredQuiescenceCapturesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState
+        appendSearchPseudoMovesForPiece(
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
         );
     }
     if (searchContext.profile) perfStats.captureGenMs += performance.now() - __t0;
@@ -5388,8 +5242,8 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         if ((attackerUnion & (1 << slot)) === 0) continue;
-        appendScoredQuiescenceCapturesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState
+        appendSearchPseudoMovesForPiece(
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState, true
         );
     }
 };
@@ -5400,8 +5254,21 @@ const quiescenceMateValue = (currentPlayer, searchInitiator) =>
     currentPlayer === searchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
-const sortCaptures = (captures) => {
+const sortCaptures = (captures, board) => {
+    const pieceState = activeSearchPieceState;
+    const squareToSlot = pieceState.squareToSlot;
+    const pieceCodes = pieceState.pieceCodes;
+    const materialValues = pieceState.materialValues;
     const captureCount = captures.length;
+
+    for (let index = 0; index < captureCount; index++) {
+        const move = captures[index];
+        const fromSq = move >>> 7;
+        const toSq = move & MOVE_TO_MASK;
+        captureSortScoreScratch[index] =
+            materialValues[pieceCodes[squareToSlot[toSq]] & 7] * 16 -
+            materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+    }
 
     // Stable insertion ordering exactly matches the previous numeric comparator.
     for (let i = 1; i < captureCount; i++) {
@@ -5468,7 +5335,7 @@ const quiescence = (
     if (inCheck) {
         sortMoves(moves, b, currentPlayer, null, null, false);
     } else {
-        sortCaptures(moves);
+        sortCaptures(moves, b);
     }
 
     const nextPlayer = currentPlayer ^ 1;
