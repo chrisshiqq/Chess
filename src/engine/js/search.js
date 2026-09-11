@@ -40,7 +40,7 @@ const EVALUATION_PARAMETERS = {
     },
     // 将军：仅作小额先手加分，禁止按将/帅材料值(10000)计入威胁/SEE
     check: {
-        bonus: 80
+        bonus: 50
     }
 };
 

@@ -633,8 +633,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
   const frameBorderColor = isSetupMode ? '#0f766e' : currentSkin.border;
 
   return (
-    // 左右各留 6px，避免描边 box-shadow 在窄屏被 overflow-x 裁切
-    <div ref={boardViewportRef} className="w-full max-w-[512px] mx-auto px-[6px] box-border">
+    <div ref={boardViewportRef} className="w-full max-w-[500px] mx-auto box-border">
       <div
         className="relative mx-auto"
         style={{
@@ -648,12 +647,11 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
             width: WIDTH,
             height: HEIGHT,
             backgroundColor: currentSkin.containerBg,
-            // 用 box-shadow 描边，避免 border 增加布局宽度导致手机端更易裁切
-            boxShadow: `0 0 0 6px ${frameBorderColor}, 0 25px 50px -12px rgba(0,0,0,0.35)`,
+            boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)',
+            outline: isSetupMode ? `3px solid ${frameBorderColor}` : undefined,
             transform: `scale(${boardScale})`,
             transformOrigin: 'top left',
-            // 选中放大 / 阴影允许溢出描边，不再 overflow:hidden 裁棋子
-            overflow: 'visible',
+            overflow: 'hidden',
         }}
       >
       <svg
@@ -661,7 +659,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
         height={HEIGHT}
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         className="block"
-        style={{ background: bgColor, overflow: 'visible' }}
+        style={{ overflow: 'visible' }}
       >
         <defs>
             {/* 箭头标记定义 */}

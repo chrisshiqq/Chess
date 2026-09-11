@@ -1420,6 +1420,7 @@ const App: React.FC = () => {
 
         const searchToken = { gameId: capturedGameId, aborted: false };
         const excludedRootMoves: Move[] = [];
+        let lastExclusionType: 'chase' | 'check' | null = null;
         aiSearchAbortRef.current = searchToken;
 
         // 开始搜索，显示齿轮转动效果
@@ -1652,9 +1653,22 @@ const App: React.FC = () => {
                             await executeMoveWithDelay(idleFallback, currentTurn, isAutoMode, delay);
                             return;
                         }
-                        const winner = currentTurn === 'red' ? 'black' : 'red';
-                        handleGameOver('checkmate', winner, 'LONG CHECK!');
                         setIsThinking(false);
+                        if (excludedRootMoves.length > 0) {
+                            const winner = currentTurn === 'red' ? 'black' : 'red';
+                            handleGameOver(
+                                'checkmate',
+                                winner,
+                                lastExclusionType === 'chase' ? 'LONG CHASE!' : 'LONG CHECK!'
+                            );
+                            return;
+                        }
+                        // 无着且没有禁过根着：将死/困毙，不是长将
+                        const terminal = await workerCheckGameState(currentBoard, currentTurn);
+                        if (searchToken.aborted) return;
+                        if (terminal.status !== 'playing') {
+                            armPendingGameOver(terminal);
+                        }
                         return;
                     }
 
@@ -1678,6 +1692,7 @@ const App: React.FC = () => {
                             setIsThinking(false);
                             return;
                         }
+                        lastExclusionType = repetition.type === 'chase' ? 'chase' : 'check';
                         excludedRootMoves.push(bestMove);
                         setAiSearchDebug(prev => ({
                             ...prev,
@@ -1793,7 +1808,7 @@ const App: React.FC = () => {
         // Check if current player should be controlled by AI
         const shouldAIMove = (turn === 'red' && redIsAuto) || (turn === 'black' && blackIsAuto);
         
-        if (shouldAIMove && !gameOver && !isReplaying && !isSetupMode && !isThinking) {
+        if (shouldAIMove && !gameOver && !pendingGameOver && !isReplaying && !isSetupMode && !isThinking) {
             //console.log('AI should move now!');
             // hasStarted 由 executeMove 设置；勿写入 deps，否则一开搜就会被 cleanup 掐掉
          
@@ -1819,7 +1834,7 @@ const App: React.FC = () => {
             aiSearchCleanupRef.current?.();
             aiSearchCleanupRef.current = null;
         };
-    }, [turn, playerColor, gameOver, isReplaying, isSetupMode, difficulty, gameId, redIsAuto, blackIsAuto]);
+    }, [turn, playerColor, gameOver, pendingGameOver, isReplaying, isSetupMode, difficulty, gameId, redIsAuto, blackIsAuto]);
 
     const executeMove = async (move: Move, moveTurn?: Color): Promise<boolean> => {
         //console.log('executeMove called with move:', move, 'moveTurn:', moveTurn);
@@ -4242,7 +4257,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     }}
                                     className="px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
                                 >
-                                    {onlineInfo ? 'Back to Lobby' : 'Rematch'}
+                                    {onlineInfo ? 'Back to Lobby' : 'Restart'}
                                 </button>
                             </div>
                         </>
