@@ -616,11 +616,11 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
         if (pieceCode < 8) {
             redThreat += threatValue;
             redSafety += safetyValue;
-            if ((pieceCode & 7) !== 7) redMobility += mobilityValue;
+            redMobility += mobilityValue;
         } else {
             blackThreat += threatValue;
             blackSafety += safetyValue;
-            if ((pieceCode & 7) !== 7) blackMobility += mobilityValue;
+            blackMobility += mobilityValue;
         }
     }
     
@@ -2637,7 +2637,7 @@ const fillNonCannonRelations = (squareCodes, info, pieceAtSq, relCtx) => {
             const dests = SOLDIER_DEST[colorIdx][fromSq];
             for (let i = 0; i < dests.length; i++) {
                 const d = dests[i];
-                applyRelationSquare(
+                mobilityValue += applyRelationSquare(
                     squareCodes, info, pieceAtSq, d.r, d.c, bit, relCtx, isRed
                 );
             }
@@ -2790,6 +2790,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
+                        mobilityValue += 1;
                     } else {
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
@@ -2799,6 +2800,8 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                if (isRed) redMobility += mobilityValue;
+                else blackMobility += mobilityValue;
                 break;
             }
             case 4: {
@@ -2991,7 +2994,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             default:
                 break;
         }
-        // 兵仍扫空步做威胁/安全，不进机动分；机动已在 1–6 兵种分支内累加
+        // 各兵种的合法空落点均计入机动；吃子只进入威胁关系。
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
@@ -5807,10 +5810,9 @@ const alphaBeta = (
 };
 
 
-// 从子节点沿 TT bestMove 回放 PV；走子须可还原，避免污染后续根着法。
-const extractPvFromTt = (turn, boardHash, maxPly) => {
-  const sequence = [];
-  const undoMoves = [];
+// 从子节点沿 TT bestMove 追加 PV；直接复用根 PV 数组，并用追加段逆序还原走子。
+const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
+  const undoStart = sequence.length;
   let currentTurn = turn;
   let hash = boardHash;
   const plyLimit = Math.max(0, maxPly | 0);
@@ -5820,25 +5822,23 @@ const extractPvFromTt = (turn, boardHash, maxPly) => {
     if (!move) break;
     const state = activeSearchPieceState;
     const from = move >>> 7;
-    const moverCode = state.squareCodes[from];
-    const capturedCode = state.squareCodes[move & MOVE_TO_MASK];
-    if (!moverCode || ((moverCode < 8) !== (currentTurn === SIDE_RED))) break;
     const to = move & MOVE_TO_MASK;
+    const moverCode = state.squareCodes[from];
+    const capturedCode = state.squareCodes[to];
+    if (!moverCode || ((moverCode < 8) !== (currentTurn === SIDE_RED))) break;
     makeSearchMove(from, to);
     if (leavesOwnKingUnsafe(state, currentTurn, from, to, true)) {
       unmakeSearchMove(from, to);
       break;
     }
     sequence.push(move);
-    undoMoves.push(move);
     hash = childBoardHash(hash, from, to, moverCode, capturedCode);
     currentTurn ^= 1;
   }
-  for (let i = undoMoves.length - 1; i >= 0; i--) {
-    const move = undoMoves[i];
+  for (let i = sequence.length - 1; i >= undoStart; i--) {
+    const move = sequence[i];
     unmakeSearchMove(move >>> 7, move & MOVE_TO_MASK);
   }
-  return sequence;
 };
 
 const scratchRootThreatenedSquares = [];
@@ -6148,21 +6148,22 @@ const getBestMove = (
       let scoreIsExact = true;
       const remaining = currentDepth - 1;
       const exactThisMove = useExactRoot && (exactRootLimit <= 0 || i < exactRootLimit);
-      const childTTKey = makeSearchTTKey(nextSide, childHash);
-      // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
-      const exactFromTt = () => {
-        const entry = transpositionTable.retrieve(childTTKey);
-        if (!entry || entry.flag !== TT_FLAG_EXACT || entry.depth < remaining) return null;
-        if (entry.value > rootAlpha) return null;
-        return entry.value;
-      };
+      const childTTKey = exactThisMove ? makeSearchTTKey(nextSide, childHash) : 0;
       if (i === 0 || rootAlpha === -Infinity) {
         score = alphaBeta(
           remaining, -Infinity, Infinity,
           false, nextSide, currentDepth, side, childHash, true, childInCheck
         );
       } else {
-        const cachedExact = exactThisMove ? exactFromTt() : null;
+        let cachedExact = null;
+        if (exactThisMove) {
+          // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
+          const entry = transpositionTable.retrieve(childTTKey);
+          if (entry && entry.flag === TT_FLAG_EXACT &&
+              entry.depth >= remaining && entry.value <= rootAlpha) {
+            cachedExact = entry.value;
+          }
+        }
         if (cachedExact != null) {
           score = cachedExact;
         } else {
@@ -6176,9 +6177,10 @@ const getBestMove = (
               false, nextSide, currentDepth, side, childHash, true, childInCheck
             );
           } else if (exactThisMove) {
-            const afterProbe = exactFromTt();
-            if (afterProbe != null) {
-              score = afterProbe;
+            const entry = transpositionTable.retrieve(childTTKey);
+            if (entry && entry.flag === TT_FLAG_EXACT &&
+                entry.depth >= remaining && entry.value <= rootAlpha) {
+              score = entry.value;
             } else {
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
@@ -6199,10 +6201,9 @@ const getBestMove = (
       }
 
       if (collectRootPv) {
-        rootSeqs[i] = [
-          encodedRootMove,
-          ...extractPvFromTt(nextSide, childHash, currentDepth - 1)
-        ];
+        const sequence = [encodedRootMove];
+        appendPvFromTt(sequence, nextSide, childHash, currentDepth - 1);
+        rootSeqs[i] = sequence;
       }
 
       unmakeSearchMove(rootFromSq, rootToSq);
