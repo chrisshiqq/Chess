@@ -1,15 +1,23 @@
+export let searchProfile = false;
+export let collectSearchMetrics = false;
+export let searchLmrMinDepth = 3;
+export let searchLmrMinMove = 5;
+export let searchLmrMaxReduction = 2;
+export let searchNmpMinDepth = 3;
+export let searchNmpReduction = 2;
+
 export const searchContext = {
-  profile: false,
-  collectMetrics: false,
+  profile: searchProfile,
+  collectMetrics: collectSearchMetrics,
   // LMR：靠后的安静着先减深空窗搜索，fail-high 再全深回搜
-  lmrMinDepth: 3,
+  lmrMinDepth: searchLmrMinDepth,
   // 合法着序号 >= minMove 才 LMR；5 = 前 4 手全深（防守/冷着更不易被过早减深）
-  lmrMinMove: 5,
+  lmrMinMove: searchLmrMinMove,
   // 减深上限：原先公式在 d12 可减到只剩 1–2 层，战术漏着严重
-  lmrMaxReduction: 2,
+  lmrMaxReduction: searchLmrMaxReduction,
   // NMP：仅在非 PV、未被将且仍有车马炮时尝试，禁止连续空步
-  nmpMinDepth: 3,
-  nmpReduction: 2,
+  nmpMinDepth: searchNmpMinDepth,
+  nmpReduction: searchNmpReduction,
   ttMaxAge: 1,
   ttReuseScope: 'default',
   ttSearchPly: 0,
@@ -32,13 +40,20 @@ export const configureSearch = ({
   ply = 0,
   exactRootLimit = 0
 } = {}) => {
-  searchContext.profile = !!profile;
-  searchContext.collectMetrics = !!metrics;
-  searchContext.lmrMinDepth = Math.max(2, lmrMinDepth | 0);
-  searchContext.lmrMinMove = Math.max(2, lmrMinMove | 0);
-  searchContext.lmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
-  searchContext.nmpMinDepth = Math.max(2, nmpMinDepth | 0);
-  searchContext.nmpReduction = Math.max(1, nmpReduction | 0);
+  searchProfile = !!profile;
+  collectSearchMetrics = !!metrics;
+  searchLmrMinDepth = Math.max(2, lmrMinDepth | 0);
+  searchLmrMinMove = Math.max(2, lmrMinMove | 0);
+  searchLmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
+  searchNmpMinDepth = Math.max(2, nmpMinDepth | 0);
+  searchNmpReduction = Math.max(1, nmpReduction | 0);
+  searchContext.profile = searchProfile;
+  searchContext.collectMetrics = collectSearchMetrics;
+  searchContext.lmrMinDepth = searchLmrMinDepth;
+  searchContext.lmrMinMove = searchLmrMinMove;
+  searchContext.lmrMaxReduction = searchLmrMaxReduction;
+  searchContext.nmpMinDepth = searchNmpMinDepth;
+  searchContext.nmpReduction = searchNmpReduction;
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);
   searchContext.ttReuseScope = ttReuseScope == null ? null : String(ttReuseScope);
   searchContext.ttSearchPly = Math.max(0, ply | 0);
