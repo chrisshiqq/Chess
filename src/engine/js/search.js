@@ -714,8 +714,8 @@ const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     });
 
 // 将未动：只看 from/to 是否改变将的横竖线（车/将/炮，含落点成炮架）或腾出马腿。
-const rayOrUncoveredHorseGivesCheck = (
-    state, enemyIsRed, generalSq, gr, gc,
+const moveCreatesLineOrUnblockedHorseCheck = (
+    state, attackerIsRed, generalSq, gr, gc,
     fromR, fromC, toR, toC
 ) => {
     const squareCodes = state.squareCodes;
@@ -730,11 +730,11 @@ const rayOrUncoveredHorseGivesCheck = (
             const first = RANK_FIRST_HIGH[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
-                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
+                if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) < 3) return true;
                 const second = RANK_SECOND_HIGH[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
-                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                    if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) === 6) return true;
                 }
             }
         }
@@ -742,11 +742,11 @@ const rayOrUncoveredHorseGivesCheck = (
             const first = RANK_FIRST_LOW[rankKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[gr * COLS + first];
-                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
+                if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) < 3) return true;
                 const second = RANK_SECOND_LOW[rankKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[gr * COLS + second];
-                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                    if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) === 6) return true;
                 }
             }
         }
@@ -757,11 +757,11 @@ const rayOrUncoveredHorseGivesCheck = (
             const first = FILE_FIRST_HIGH[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
-                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
+                if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) < 3) return true;
                 const second = FILE_SECOND_HIGH[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
-                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                    if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) === 6) return true;
                 }
             }
         }
@@ -769,11 +769,11 @@ const rayOrUncoveredHorseGivesCheck = (
             const first = FILE_FIRST_LOW[fileKey];
             if (first !== 255) {
                 let pieceCode = squareCodes[first * COLS + gc];
-                if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) < 3) return true;
+                if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) < 3) return true;
                 const second = FILE_SECOND_LOW[fileKey];
                 if (second !== 255) {
                     pieceCode = squareCodes[second * COLS + gc];
-                    if ((pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 6) return true;
+                    if ((pieceCode < 8) === attackerIsRed && (pieceCode & 7) === 6) return true;
                 }
             }
         }
@@ -786,35 +786,19 @@ const rayOrUncoveredHorseGivesCheck = (
             const entry = horseCheckerData[i];
             if (fromSq !== (entry >>> 7)) continue;
             const pieceCode = squareCodes[entry & 127];
-            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
+            if (pieceCode !== 0 && (pieceCode < 8) === attackerIsRed && (pieceCode & 7) === 3) return true;
         }
     }
 
     return false;
 };
 
-// 同上，从格号取将位。color 是被将军方。
-const rayOrUncoveredHorseGivesCheckFromMove = (state, color, fromSq, toSq) => {
-    const ownIsRed = color === SIDE_RED;
-    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) return true;
-    return rayOrUncoveredHorseGivesCheck(
-        state, !ownIsRed, generalSq,
-        SQ_ROW[generalSq], SQ_COL[generalSq],
-        SQ_ROW[fromSq], SQ_COL[fromSq],
-        SQ_ROW[toSq], SQ_COL[toSq]
-    );
-};
-
 // 落点这枚马/兵是否直接打将。车炮将、闪将、炮架、腾腿不在这里。
-const horseOrSoldierGivesCheckAt = (state, checkedColor, toSq) => {
+const movedHorseOrSoldierChecksKing = (state, attackerIsRed, generalSq, toSq) => {
     const pieceCode = state.squareCodes[toSq];
     const pieceType = pieceCode & 7;
     if (pieceType !== 3 && pieceType !== 7) return false;
 
-    const ownIsRed = checkedColor === SIDE_RED;
-    const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
-    const enemyIsRed = !ownIsRed;
     const squareCodes = state.squareCodes;
 
     if (pieceType === 3) {
@@ -829,20 +813,15 @@ const horseOrSoldierGivesCheckAt = (state, checkedColor, toSq) => {
 
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
-    const enemyForward = enemyIsRed ? 1 : -1;
+    const enemyForward = attackerIsRed ? 1 : -1;
     if (SQ_COL[toSq] === gc && SQ_ROW[toSq] === gr - enemyForward) return true;
-    const crossedRiver = enemyIsRed ? gr >= 5 : gr <= 4;
+    const crossedRiver = attackerIsRed ? gr >= 5 : gr <= 4;
     if (crossedRiver && SQ_ROW[toSq] === gr) {
         const toC = SQ_COL[toSq];
         if (toC === gc + 1 || toC === gc - 1) return true;
     }
     return false;
 };
-
-// 已 make：这步是否将军 checkedColor。将线增量 + 落点马/兵，不扫未动的射线。
-const moveGivesCheck = (state, checkedColor, fromSq, toSq) =>
-    rayOrUncoveredHorseGivesCheckFromMove(state, checkedColor, fromSq, toSq) ||
-    horseOrSoldierGivesCheckAt(state, checkedColor, toSq);
 
 const CHECK_KIND_RAY = 1;
 const CHECK_KIND_HORSE = 2;
@@ -931,10 +910,10 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 };
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeSearchMove。
-const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
+const moveLeavesOwnKingInCheck = (pieceState, color, fromSq, toSq, wasInCheck = true, checkInfo = null) => {
     const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
-        if (generalSq === toSq) return isCheckFromState(pieceState, color);
+        if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
         if (generalSq < 0) return true;
         const gr = SQ_ROW[generalSq];
         const gc = SQ_COL[generalSq];
@@ -942,13 +921,16 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
         const fromC = SQ_COL[fromSq];
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
-        if (
-            fromR !== gr && fromC !== gc && toR !== gr && toC !== gc &&
-            (fromR - gr > 1 || fromR - gr < -1 || fromC - gc > 1 || fromC - gc < -1)
-        ) {
-            return false;
+        if (fromR !== gr && fromC !== gc && toR !== gr && toC !== gc) {
+            const nearBase = generalSq * 3;
+            if (
+                (SEARCH_GIVES_CHECK_NEAR[nearBase + (fromSq >>> 5)] &
+                    (1 << (fromSq & 31))) === 0
+            ) {
+                return false;
+            }
         }
-        return rayOrUncoveredHorseGivesCheck(
+        return moveCreatesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq, gr, gc,
             fromR, fromC, toR, toC
         );
@@ -958,16 +940,16 @@ const leavesOwnKingUnsafe = (pieceState, color, fromSq, toSq, wasInCheck = true,
         checkInfo.count > 0 &&
         checkInfo.count <= CHECK_INFO_CAP
     ) {
-        if (generalSq === toSq) return isCheckFromState(pieceState, color);
+        if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
         if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
-        return generalSq < 0 || rayOrUncoveredHorseGivesCheck(
+        return generalSq < 0 || moveCreatesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
             SQ_ROW[fromSq], SQ_COL[fromSq],
             SQ_ROW[toSq], SQ_COL[toSq]
         );
     }
-    return isCheckFromState(pieceState, color);
+    return isKingInCheckFromState(pieceState, color);
 };
 
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
@@ -982,7 +964,7 @@ const filterLegalMoves = (fromSq, color, encodedMoves, wasInCheck, checkInfo) =>
         const encoded = encodedMoves[i];
         const toSq = encoded & MOVE_TO_MASK;
         makeSearchMove(fromSq, toSq);
-        const illegal = leavesOwnKingUnsafe(
+        const illegal = moveLeavesOwnKingInCheck(
             activeSearchPieceState, color, fromSq, toSq, wasInCheck, checkInfo
         );
         unmakeSearchMove(fromSq, toSq);
@@ -2419,7 +2401,7 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
         makeSearchMove(fromSq, toSq);
-        const unsafe = leavesOwnKingUnsafe(
+        const unsafe = moveLeavesOwnKingInCheck(
             pieceState, color, fromSq, toSq, true, checkInfo
         );
         unmakeSearchMove(fromSq, toSq);
@@ -4414,7 +4396,7 @@ const collectCheckersFromState = (state, color, out) => {
 };
 
 // 占位表将军检测：occupancy 查车/将/炮，再查马和兵。白脸将算第一子为敌将。
-const isCheckFromState = (state, color) => {
+const isKingInCheckFromState = (state, color) => {
     const ownIsRed = color === SIDE_RED;
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
@@ -4496,17 +4478,22 @@ const isCheckFromState = (state, color) => {
     return false;
 };
 
-// 已 make：对方将是否不安全。先按坐标否证（将线 / 马位腿 / 兵位），再走增量。
-const leavesEnemyKingUnsafe = (state, checkedColor, fromSq, toSq) => {
+// 已 make：增量判断本步是否将军。先按将线/马位腿/兵位快速否证。
+const moveGivesCheck = (state, checkedColor, fromSq, toSq) => {
+    const checkedIsRed = checkedColor === SIDE_RED;
     const generalSq = checkedColor === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) return true;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
+    const fromR = SQ_ROW[fromSq];
+    const fromC = SQ_COL[fromSq];
+    const toR = SQ_ROW[toSq];
+    const toC = SQ_COL[toSq];
     if (
-        SQ_ROW[fromSq] !== gr &&
-        SQ_ROW[toSq] !== gr &&
-        SQ_COL[fromSq] !== gc &&
-        SQ_COL[toSq] !== gc
+        fromR !== gr &&
+        toR !== gr &&
+        fromC !== gc &&
+        toC !== gc
     ) {
         const nearBase = generalSq * 3;
         if (
@@ -4516,7 +4503,10 @@ const leavesEnemyKingUnsafe = (state, checkedColor, fromSq, toSq) => {
             return false;
         }
     }
-    return moveGivesCheck(state, checkedColor, fromSq, toSq);
+    return moveCreatesLineOrUnblockedHorseCheck(
+        state, !checkedIsRed, generalSq, gr, gc,
+        fromR, fromC, toR, toC
+    ) || movedHorseOrSoldierChecksKing(state, !checkedIsRed, generalSq, toSq);
 };
 
 const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
@@ -4528,10 +4518,10 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
         return side === SIDE_RED ? piecesInfo[0].redIsInCheck : piecesInfo[0].blackIsInCheck;
     }
     const state = activePieceStateFor(board);
-    if (state) return isCheckFromState(state, side);
+    if (state) return isKingInCheckFromState(state, side);
     return runWithPieceState(board, () => {
         const created = activeSearchPieceState;
-        return created ? isCheckFromState(created, side) : true;
+        return created ? isKingInCheckFromState(created, side) : true;
     });
 };
 
@@ -4545,7 +4535,7 @@ const getValidMovesFromSq = (fromSq, wasInCheck = null, checkInfo = null) => {
   let inCheck = wasInCheck;
   let info = checkInfo;
   if (inCheck == null) {
-    inCheck = isCheckFromState(state, side);
+    inCheck = isKingInCheckFromState(state, side);
     info = null;
   }
   if (inCheck && !info) {
@@ -4575,7 +4565,7 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     const side = colorToSide(turn);
     runWithPieceState(board, () => {
         const state = activeSearchPieceState;
-        inCheck = isCheckFromState(state, side);
+        inCheck = isKingInCheckFromState(state, side);
         let checkInfo = null;
         if (inCheck) {
             collectCheckersFromState(state, side, scratchLegalCheckInfo);
@@ -5480,14 +5470,14 @@ const quiescence = (
         const moverCode = qsState.squareCodes[fromSq];
         const capturedCode = qsState.squareCodes[toSq];
         makeSearchMove(fromSq, toSq);
-        if (leavesOwnKingUnsafe(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
+        if (moveLeavesOwnKingInCheck(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(fromSq, toSq);
             continue;
         }
         const nextHash = childBoardHash(
             boardHash, fromSq, toSq, moverCode, capturedCode
         );
-        const childInCheck = leavesEnemyKingUnsafe(
+        const childInCheck = moveGivesCheck(
             qsState, nextPlayer, fromSq, toSq
         );
         legalMovesFound++;
@@ -5642,14 +5632,14 @@ const alphaBeta = (
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
         makeSearchMove(fromSq, toSq);
-        if (leavesOwnKingUnsafe(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
+        if (moveLeavesOwnKingInCheck(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(fromSq, toSq);
             continue;
         }
         const nextHash = childBoardHash(
             boardHash, fromSq, toSq, moverCode, capturedCode
         );
-        const childInCheck = leavesEnemyKingUnsafe(stagedPieceState, nextPlayer, fromSq, toSq);
+        const childInCheck = moveGivesCheck(stagedPieceState, nextPlayer, fromSq, toSq);
         legalMovesFound++;
         if (collectSearchMetrics) perfStats.legalMovesSearched++;
         // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
@@ -5827,7 +5817,7 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const capturedCode = state.squareCodes[to];
     if (!moverCode || ((moverCode < 8) !== (currentTurn === SIDE_RED))) break;
     makeSearchMove(from, to);
-    if (leavesOwnKingUnsafe(state, currentTurn, from, to, true)) {
+    if (moveLeavesOwnKingInCheck(state, currentTurn, from, to, true)) {
       unmakeSearchMove(from, to);
       break;
     }
@@ -5857,7 +5847,7 @@ const fillRootSortHints = (pieceState, turn) => {
     scratchRootThreatenedSquares.length = 0;
     scratchRootCanCaptureSquares.length = 0;
     scratchRootCheckerSquares.length = 0;
-    const inCheck = isCheckFromState(pieceState, turn);
+    const inCheck = isKingInCheckFromState(pieceState, turn);
     scratchRootSortHints.redIsInCheck = turn === SIDE_RED && inCheck;
     scratchRootSortHints.blackIsInCheck = turn === SIDE_BLACK && inCheck;
     if (inCheck) {
@@ -6140,7 +6130,7 @@ const getBestMove = (
       const childHash = childBoardHash(
         rootHash, rootFromSq, rootToSq, moverCode, capturedCode
       );
-      const childInCheck = leavesEnemyKingUnsafe(
+      const childInCheck = moveGivesCheck(
         activeSearchPieceState, nextSide, rootFromSq, rootToSq
       );
 
