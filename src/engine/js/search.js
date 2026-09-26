@@ -389,11 +389,9 @@ const runWithPieceState = (board, fn) => {
     if (activePieceStateFor(board)) return fn();
     const previous = activeSearchPieceState;
     if (!previous) {
-        const loaded = loadSearchPieceState(retainedSearchPieceState, board, 'mid');
-        if (loaded) activeSearchPieceState = loaded;
+        activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, 'mid');
     } else {
-        const created = createSearchPieceState(board, 'mid');
-        if (created) activeSearchPieceState = created;
+        activeSearchPieceState = createSearchPieceState(board, 'mid');
     }
     try {
         return fn();
@@ -477,7 +475,6 @@ const updatePieceStateAfterMakeCapture = (state, fromSq, toSq, moverSlot, moverC
 const updatePieceStateAfterUnmakeQuiet = (state, fromSq, toSq) => {
     const stackIndex = --state.stackDepth;
     const moverSlot = state.moverStack[stackIndex];
-    if (moverSlot < 0) return;
     const moverCode = state.pieceCodes[moverSlot];
     const fromR = SQ_ROW[fromSq];
     const fromC = SQ_COL[fromSq];
@@ -508,7 +505,6 @@ const updatePieceStateAfterUnmakeCapture = (state, fromSq, toSq) => {
     const stackIndex = --state.stackDepth;
     const moverSlot = state.moverStack[stackIndex];
     const capturedSlot = state.capturedStack[stackIndex];
-    if (moverSlot < 0) return;
     const moverCode = state.pieceCodes[moverSlot];
     const fromR = SQ_ROW[fromSq];
     const fromC = SQ_COL[fromSq];
@@ -914,7 +910,6 @@ const moveLeavesOwnKingInCheck = (pieceState, color, fromSq, toSq, wasInCheck = 
     const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
         if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
-        if (generalSq < 0) return true;
         const gr = SQ_ROW[generalSq];
         const gc = SQ_COL[generalSq];
         const fromR = SQ_ROW[fromSq];
@@ -1828,7 +1823,6 @@ const applyPinnedGuardFilterToLeaf = (pieceState) => {
 const applyPinnedGuardFilterToRelations = (board, piecesInfo, boardInfo) => {
     runWithPieceState(board, () => {
         const state = activeSearchPieceState;
-        if (!state) return;
         const pinnedSlots = collectPinnedGuardSlots(state);
         if (pinnedSlots === 0) return;
         const squareToSlot = state.squareToSlot;
@@ -2420,7 +2414,6 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     if (!isEncodedMove(move) || containsEncodedMoveBefore(moves, moves.length, move)) return false;
     const fromSq = move >>> 7;
     const toSq = move & MOVE_TO_MASK;
-    if (fromSq >= REL_SQUARES || toSq >= REL_SQUARES) return false;
     const slot = pieceState.squareToSlot[fromSq];
     if (slot < 0) return false;
     const pieceCode = pieceState.pieceCodes[slot];
@@ -4528,7 +4521,6 @@ const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
 // 合法着法：伪合法 + 不送将/不飞将。返回落点格号（r * 9 + c），UI 再解码。
 const getValidMovesFromSq = (fromSq, wasInCheck = null, checkInfo = null) => {
   const state = activeSearchPieceState;
-  if (!state) return [];
   const pieceCode = state.squareCodes[fromSq];
   if (!pieceCode) return [];
   const side = pieceCode < 8 ? SIDE_RED : SIDE_BLACK;
