@@ -12,7 +12,7 @@ export {
   VALUE_WEIGHTS,
   evaluateBoard,
   evaluatePiece,
-  getGamePhase,
+  getGameStage,
   hydrateRelationsFromMasks,
   setValueWeights
 } from './search.js';

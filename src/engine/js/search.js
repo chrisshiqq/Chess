@@ -992,158 +992,51 @@ const unmakeSearchMove = (from, to) => {
 const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
-const squareMarkScratch = new Uint8Array(REL_SQUARES);
-const squareMarkTouched = [];
 
-const markSortSquare = (sq) => {
-    if (!squareMarkScratch[sq]) {
-        squareMarkScratch[sq] = 1;
-        squareMarkTouched.push(sq);
-    }
-};
-
-const clearSortSquareMarks = () => {
-    for (let i = 0; i < squareMarkTouched.length; i++) {
-        squareMarkScratch[squareMarkTouched[i]] = 0;
-    }
-    squareMarkTouched.length = 0;
-};
-
-const sortRootMoves = (moves, currentPlayer, sortHints = null, ttMove = null, killers = null, knownInCheck = null, parallelArrays = null) => {
+// 根节点与树内共用。未将军：吃子、killer、history。被将：吃子先于走将。
+const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.sortMovesCount++;
-    const currentIsInCheck = knownInCheck != null
-        ? knownInCheck
-        : !!(sortHints && (
-            (currentPlayer === SIDE_RED && sortHints.redIsInCheck) ||
-            (currentPlayer === SIDE_BLACK && sortHints.blackIsInCheck)
-        ));
-
-    if (currentIsInCheck && sortHints && sortHints.checkerSquares) {
-        const checkers = sortHints.checkerSquares;
-        for (let i = 0; i < checkers.length; i++) {
-            markSortSquare(checkers[i]);
-        }
-    }
-
-    const threatenedSquares = sortHints && sortHints.threatenedSquares;
-    const hasThreatened = !currentIsInCheck && !!(threatenedSquares && threatenedSquares.length > 0);
-    if (hasThreatened) {
-        for (let i = 0; i < threatenedSquares.length; i++) {
-            markSortSquare(threatenedSquares[i]);
-        }
-    }
-    const threatenedMarkEnd = squareMarkTouched.length;
-
-    const canCaptureSquares = sortHints && sortHints.canCaptureSquares;
-    const hasCanCapture = !currentIsInCheck && !!(canCaptureSquares && canCaptureSquares.length > 0);
-    if (hasCanCapture) {
-        for (let i = 0; i < canCaptureSquares.length; i++) {
-            markSortSquare(canCaptureSquares[i]);
-        }
-    }
-
     const pieceState = activeSearchPieceState;
+    const squareToSlot = pieceState.squareToSlot;
+    const pieceCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
-    const useSimpleSearchSort = !currentIsInCheck && !hasThreatened && !hasCanCapture;
     const moveCount = moves.length;
-    const isMarkedThreatened = (sq) => {
-        if (!hasThreatened) return false;
-        for (let i = 0; i < threatenedMarkEnd; i++) {
-            if (squareMarkTouched[i] === sq) return true;
-        }
-        return false;
-    };
 
-    if (useSimpleSearchSort) {
-        const squareToSlot = pieceState.squareToSlot;
-        const pieceCodes = pieceState.pieceCodes;
-        for (let index = 0; index < moveCount; index++) {
-            const move = moves[index];
-            const fromSq = move >>> 7;
-            const toSq = move & MOVE_TO_MASK;
-            const targetSlot = squareToSlot[toSq];
-            const targetPieceCode = targetSlot >= 0 ? pieceCodes[targetSlot] : 0;
-            let priority = 4;
-            let score = 0;
-
-            if (ttMove === move) {
-                priority = -1;
-                score = 1000000;
-            } else if (targetSlot >= 0) {
-                priority = 3;
-                score = materialValues[targetPieceCode & 7] * 16 - materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
-            }
-
-            if (priority >= 0) {
-                if (targetSlot < 0 && killers && move === killers[0]) {
-                    priority = Math.min(priority, 2);
-                    score += 8000;
-                } else if (targetSlot < 0 && killers && move === killers[1]) {
-                    priority = Math.min(priority, 2);
-                    score += 7000;
-                }
-                score += getHistoryScore(move);
-            }
-
-            sortMovePriorityScratch[index] = priority;
-            sortMoveScoreScratch[index] = score;
-        }
-    } else for (let index = 0; index < moveCount; index++) {
+    for (let index = 0; index < moveCount; index++) {
         const move = moves[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        const moverCode = pieceState.squareCodes[fromSq];
-        const targetCode = pieceState.squareCodes[toSq];
-        const pieceValue = materialValues[moverCode & 7];
-        const hasTarget = targetCode !== 0;
-        const targetPieceValue = hasTarget ? materialValues[targetCode & 7] : 0;
-        const moverIsGeneral = (moverCode & 7) === 1;
+        const targetSlot = squareToSlot[toSq];
+        const hasTarget = targetSlot >= 0;
         let priority = 4;
         let score = 0;
 
         if (ttMove === move) {
             priority = -1;
             score = 1000000;
-        } else if (currentIsInCheck) {
-            const capturesChecker = hasTarget && squareMarkScratch[toSq] !== 0;
-            if (capturesChecker) {
-                priority = 0;
-                score = 10000 + targetPieceValue;
-            } else if (hasTarget) {
+        } else if (inCheck) {
+            const moverCode = pieceState.squareCodes[fromSq];
+            const pieceValue = materialValues[moverCode & 7];
+            if (hasTarget) {
                 priority = 2;
-                score = targetPieceValue * 16 - pieceValue;
-            } else if (moverIsGeneral) {
+                score = materialValues[pieceCodes[targetSlot] & 7] * 16 - pieceValue;
+            } else if ((moverCode & 7) === 1) {
                 priority = 3;
                 score = pieceValue;
-            }
-        } else if (hasThreatened) {
-            if (isMarkedThreatened(fromSq)) {
-                priority = 1;
-                score = pieceValue;
-            } else if (hasTarget) {
-                priority = hasCanCapture && squareMarkScratch[toSq] !== 0 ? 2 : 3;
-                score = targetPieceValue;
-            }
-        } else if (hasCanCapture) {
-            if (squareMarkScratch[toSq] !== 0) {
-                priority = 2;
-                score = targetPieceValue;
-            } else if (hasTarget) {
-                priority = 3;
-                score = targetPieceValue;
             }
         } else if (hasTarget) {
             priority = 3;
-            score = targetPieceValue * 16 - pieceValue;
+            score = materialValues[pieceCodes[targetSlot] & 7] * 16 -
+                materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
         }
 
         if (priority >= 0) {
             if (!hasTarget && killers && move === killers[0]) {
-                priority = Math.min(priority, 2);
+                priority = 2;
                 score += 8000;
             } else if (!hasTarget && killers && move === killers[1]) {
-                priority = Math.min(priority, 2);
+                priority = 2;
                 score += 7000;
             }
             score += getHistoryScore(move);
@@ -1181,80 +1074,12 @@ const sortRootMoves = (moves, currentPlayer, sortHints = null, ttMove = null, ki
         sortMoveScoreScratch[j + 1] = score;
     }
 
-    clearSortSquareMarks();
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
 
-// 普通节点着法排序。未将军走 packed 简单分支；将军局面走通用排序。
-const sortMoves = (moves, currentPlayer, ttMove, killers, inCheck) => {
-    if (inCheck) {
-        return sortRootMoves(moves, currentPlayer, null, ttMove, killers, true);
-    }
-    const pieceState = activeSearchPieceState;
-
-    const __t0 = searchProfile ? performance.now() : 0;
-    if (searchProfile) perfStats.sortMovesCount++;
-    const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = pieceState.pieceCodes;
-    const materialValues = pieceState.materialValues;
-    const moveCount = moves.length;
-
-    for (let index = 0; index < moveCount; index++) {
-        const move = moves[index];
-        const fromSq = move >>> 7;
-        const toSq = move & MOVE_TO_MASK;
-        const targetSlot = squareToSlot[toSq];
-        let priority = 4;
-        let score = 0;
-
-        if (ttMove === move) {
-            priority = -1;
-            score = 1000000;
-        } else if (targetSlot >= 0) {
-            priority = 3;
-            score = materialValues[pieceCodes[targetSlot] & 7] * 16 -
-                materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
-        }
-
-        if (priority >= 0) {
-            if (targetSlot < 0 && killers && move === killers[0]) {
-                priority = 2;
-                score += 8000;
-            } else if (targetSlot < 0 && killers && move === killers[1]) {
-                priority = 2;
-                score += 7000;
-            }
-            score += getHistoryScore(move);
-        }
-
-        sortMovePriorityScratch[index] = priority;
-        sortMoveScoreScratch[index] = score;
-    }
-
-    for (let i = 1; i < moveCount; i++) {
-        const move = moves[i];
-        const priority = sortMovePriorityScratch[i];
-        const score = sortMoveScoreScratch[i];
-        let j = i - 1;
-        while (
-            j >= 0 &&
-            (sortMovePriorityScratch[j] > priority ||
-             (sortMovePriorityScratch[j] === priority && sortMoveScoreScratch[j] < score))
-        ) {
-            moves[j + 1] = moves[j];
-            sortMovePriorityScratch[j + 1] = sortMovePriorityScratch[j];
-            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
-            j--;
-        }
-        moves[j + 1] = move;
-        sortMovePriorityScratch[j + 1] = priority;
-        sortMoveScoreScratch[j + 1] = score;
-    }
-
-    if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
-    return moves;
-};
+const sortMoves = (moves, _currentPlayer, ttMove, killers, inCheck) =>
+    sortSearchMoves(moves, ttMove, killers, inCheck);
 
 const sortStagedMoveRange = (moves, start, end, killers) => {
     if (end - start <= 1) return;
@@ -4588,9 +4413,7 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
 
 
 
-const getGamePhase = () => {
-  return 'opening';
-};
+const getGameStage = () => 'early';
 
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
@@ -5823,58 +5646,7 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
   }
 };
 
-const scratchRootThreatenedSquares = [];
-const scratchRootCanCaptureSquares = [];
-const scratchRootCheckerSquares = [];
 const scratchRootCheckInfo = createCheckInfo();
-const scratchRootSortHints = {
-    redIsInCheck: false,
-    blackIsInCheck: false,
-    threatenedSquares: scratchRootThreatenedSquares,
-    canCaptureSquares: scratchRootCanCaptureSquares,
-    checkerSquares: scratchRootCheckerSquares
-};
-
-const fillRootSortHints = (pieceState, turn) => {
-    scratchRootThreatenedSquares.length = 0;
-    scratchRootCanCaptureSquares.length = 0;
-    scratchRootCheckerSquares.length = 0;
-    const inCheck = isKingInCheckFromState(pieceState, turn);
-    scratchRootSortHints.redIsInCheck = turn === SIDE_RED && inCheck;
-    scratchRootSortHints.blackIsInCheck = turn === SIDE_BLACK && inCheck;
-    if (inCheck) {
-        collectCheckersFromState(pieceState, turn, scratchRootCheckInfo);
-        const n = Math.min(scratchRootCheckInfo.count, CHECK_INFO_CAP);
-        for (let i = 0; i < n; i++) {
-            const sq = scratchRootCheckInfo.sq[i];
-            if (sq >= 0) scratchRootCheckerSquares.push(sq);
-        }
-        return scratchRootSortHints;
-    }
-    const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
-    calculatePackedSearchLeafRelations(pieceState, aliveMask);
-    const attackBySlot = scratchLeafAttackBySlot;
-    const guardBySlot = scratchLeafGuardBySlot;
-    const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
-    const turnIsRed = turn === SIDE_RED;
-    const slotCount = pieceState.slotCount;
-    for (let slot = 0; slot < slotCount; slot++) {
-        const attackers = attackBySlot[slot] >>> 0;
-        if (!attackers) continue;
-        const targetCode = pieceCodes[slot];
-        if ((targetCode & 7) === 1) continue;
-        if (guardBySlot[slot]) continue;
-        const firstSlot = 31 - Math.clz32(attackers & -attackers);
-        const firstIsRed = pieceCodes[firstSlot] < 8;
-        if (firstIsRed === turnIsRed) {
-            scratchRootCanCaptureSquares.push(pieceSquares[slot]);
-        } else if ((targetCode < 8) === turnIsRed) {
-            scratchRootThreatenedSquares.push(pieceSquares[slot]);
-        }
-    }
-    return scratchRootSortHints;
-};
 
 // exactRootScores: true=Analysis 根着法精确分（数量由 exactRootLimit 限制，0=不限制）；false=对弈标准 PVS（fail-low 不回搜）
 const getBestMove = (
@@ -5892,8 +5664,7 @@ const getBestMove = (
   );
 
   const side = colorToSide(turn);
-  const phase = getGamePhase();
-  const gameStage = phase === 'opening' ? 'early' : phase === 'middlegame' ? 'mid' : 'late';
+  const gameStage = getGameStage();
   activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, gameStage);
   const rootPieceState = activeSearchPieceState;
   try {
@@ -5964,8 +5735,8 @@ const getBestMove = (
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
   resetSearchHeuristics(maxDepth);
-  const rootSortHints = fillRootSortHints(rootPieceState, side);
-  const rootInCheck = side === SIDE_RED ? rootSortHints.redIsInCheck : rootSortHints.blackIsInCheck;
+  const rootInCheck = isKingInCheckFromState(rootPieceState, side);
+  if (rootInCheck) collectCheckersFromState(rootPieceState, side, scratchRootCheckInfo);
   const rootCheckInfo = rootInCheck ? scratchRootCheckInfo : null;
 
   // 收集根节点走法（只做一次）：编码整数 + 平行分数/PV
@@ -6102,7 +5873,7 @@ const getBestMove = (
     const ttEntry = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttEntry && ttEntry.bestMove ? ttEntry.bestMove : null;
     const prevBest = rootMoves[0];
-    sortRootMoves(rootMoves, side, rootSortHints, ttMove, null, null, [rootScores, rootSeqs]);
+    sortSearchMoves(rootMoves, ttMove, null, rootInCheck, [rootScores, rootSeqs]);
     // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
     promoteRootMove(ttMove);
     promoteRootMove(prevBest);
@@ -6257,7 +6028,7 @@ export {
   evaluateBoard,
   evaluatePiece,
   getBestMove,
-  getGamePhase,
+  getGameStage,
   getValidMoves,
   hydrateRelationsFromMasks,
   isCheck,
