@@ -5356,14 +5356,12 @@ const alphaBeta = (
     let checkInfo = null;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
     const checkStarted = searchProfile ? performance.now() : 0;
-    const inCheck = knownInCheck;
-    if (inCheck) {
+    if (knownInCheck) {
         checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
         collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
     }
     if (searchProfile) perfStats.prepareCheckMs += performance.now() - checkStarted;
 
-    const useTrueStagedGeneration = !inCheck;
     let moves = playStagedMoveBuffers[plyFromRoot];
     if (!moves) {
         moves = [];
@@ -5371,7 +5369,7 @@ const alphaBeta = (
     } else {
         moves.length = 0;
     }
-    if (inCheck) {
+    if (knownInCheck) {
         const genStarted = searchProfile ? performance.now() : 0;
         generateCheckEvasions(
             moves, currentPlayer, stagedPieceState, checkInfo
@@ -5388,7 +5386,7 @@ const alphaBeta = (
 
     // 非 PV 空窗节点采用空步裁剪。空步不改变棋盘与哈希，只切换行棋方。
         const canNmp = allowNull &&
-        !inCheck &&
+        !knownInCheck &&
         d >= searchNmpMinDepth &&
         (beta - alpha) <= NULL_WINDOW &&
         Math.abs(alpha) < 90000 &&
@@ -5415,14 +5413,14 @@ const alphaBeta = (
 
     const killersAtDepth = killerMoves[plyFromRoot];
     let nextTrueStagedStage = 0;
-    if (useTrueStagedGeneration) {
+    if (!knownInCheck) {
         nextTrueStagedStage = advanceTrueStagedMoves(
             moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth
         );
     } else {
         moves = sortMoves(
-            moves, currentPlayer, ttMove, killersAtDepth, inCheck
+            moves, currentPlayer, ttMove, killersAtDepth, knownInCheck
         );
     }
 
@@ -5432,7 +5430,7 @@ const alphaBeta = (
 
     for (let moveIndex = 0; ; moveIndex++) {
         if (moveIndex >= moves.length) {
-            if (!useTrueStagedGeneration) break;
+            if (knownInCheck) break;
             const before = moves.length;
             nextTrueStagedStage = advanceTrueStagedMoves(
                 moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
@@ -5447,7 +5445,7 @@ const alphaBeta = (
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
         makeSearchMove(fromSq, toSq);
-        if (moveLeavesOwnKingInCheck(stagedPieceState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
+        if (moveLeavesOwnKingInCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo)) {
             unmakeSearchMove(fromSq, toSq);
             continue;
         }
@@ -5458,7 +5456,7 @@ const alphaBeta = (
         legalMovesFound++;
         if (collectSearchMetrics) perfStats.legalMovesSearched++;
         // LMR：未将军时，靠后的安静着先减深空窗；看起来能改进 α/β 再全深回搜
-        const canLmr = !inCheck &&
+        const canLmr = !knownInCheck &&
             !isCapture &&
             d >= searchLmrMinDepth &&
             legalMovesFound >= searchLmrMinMove &&
@@ -5482,67 +5480,36 @@ const alphaBeta = (
         }
 
         let value;
-        if (maximizing) {
+        if (!canLmr && !pvsEligible) {
+            value = alphaBeta(
+                d - 1, alpha, beta, !maximizing, nextPlayer,
+                searchDepth, searchInitiator, nextHash, true, childInCheck
+            );
+        } else {
+            const nullAlpha = maximizing ? alpha : beta - NULL_WINDOW;
+            const nullBeta = maximizing ? alpha + NULL_WINDOW : beta;
             if (canLmr) {
                 value = alphaBeta(
-                    reducedDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
+                    reducedDepth, nullAlpha, nullBeta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
-                if (value > alpha) {
-                    if (collectSearchMetrics) perfStats.lmrReSearches++;
-                    if (pvsEligible) {
-                        if (collectSearchMetrics) perfStats.pvsAttempts++;
-                        value = alphaBeta(
-                            d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, nextHash, true, childInCheck
-                        );
-                        if (value > alpha) {
-                            if (collectSearchMetrics) perfStats.pvsReSearches++;
-                            value = alphaBeta(
-                                d - 1, alpha, beta, !maximizing, nextPlayer,
-                                searchDepth, searchInitiator, nextHash, true, childInCheck
-                            );
-                        }
-                    } else {
-                        value = alphaBeta(
-                            d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, nextHash, true, childInCheck
-                        );
-                    }
-                }
-            } else if (pvsEligible) {
+            } else {
                 if (collectSearchMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
-                    d - 1, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, nextHash, true, childInCheck
-                );
-                if (value > alpha) {
-                    if (collectSearchMetrics) perfStats.pvsReSearches++;
-                    value = alphaBeta(
-                        d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, nextHash, true, childInCheck
-                    );
-                }
-            } else {
-                value = alphaBeta(
-                    d - 1, alpha, beta, !maximizing, nextPlayer,
+                    d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
             }
-        } else if (canLmr) {
-            value = alphaBeta(
-                reducedDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, nextHash, true, childInCheck
-            );
-            if (value < beta) {
+            const improves = maximizing ? value > alpha : value < beta;
+            if (improves && canLmr) {
                 if (collectSearchMetrics) perfStats.lmrReSearches++;
                 if (pvsEligible) {
                     if (collectSearchMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
-                        d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
+                        d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
                         searchDepth, searchInitiator, nextHash, true, childInCheck
                     );
-                    if (value < beta) {
+                    if (maximizing ? value > alpha : value < beta) {
                         if (collectSearchMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
                             d - 1, alpha, beta, !maximizing, nextPlayer,
@@ -5555,25 +5522,13 @@ const alphaBeta = (
                         searchDepth, searchInitiator, nextHash, true, childInCheck
                     );
                 }
-            }
-        } else if (pvsEligible) {
-            if (collectSearchMetrics) perfStats.pvsAttempts++;
-            value = alphaBeta(
-                d - 1, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, nextHash, true, childInCheck
-            );
-            if (value < beta) {
+            } else if (improves) {
                 if (collectSearchMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
                     d - 1, alpha, beta, !maximizing, nextPlayer,
                     searchDepth, searchInitiator, nextHash, true, childInCheck
                 );
             }
-        } else {
-            value = alphaBeta(
-                d - 1, alpha, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, nextHash, true, childInCheck
-            );
         }
         unmakeSearchMove(fromSq, toSq);
 
