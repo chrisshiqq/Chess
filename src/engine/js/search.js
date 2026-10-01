@@ -989,12 +989,11 @@ const unmakeSearchMove = (from, to) => {
     }
 };
 
-const sortMoveKeyScratch = [];
+const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
 
 // 根节点与树内共用。未将军：吃子、killer、history。被将：吃子先于走将。
-// sortKey：高 8 位 (4-priority) 越大越好，低 24 位 score 越大越好。
 const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.sortMovesCount++;
@@ -1014,7 +1013,7 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
         let score = 0;
 
         if (ttMove === move) {
-            priority = 0;
+            priority = -1;
             score = 1000000;
         } else if (inCheck) {
             const moverCode = pieceState.squareCodes[fromSq];
@@ -1032,7 +1031,7 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
                 materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
         }
 
-        if (priority > 0) {
+        if (priority >= 0) {
             if (!hasTarget && killers && move === killers[0]) {
                 priority = 2;
                 score += 8000;
@@ -1043,7 +1042,8 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
             score += getHistoryScore(move);
         }
 
-        sortMoveKeyScratch[index] = ((4 - priority) << 24) | (score >>> 0);
+        sortMovePriorityScratch[index] = priority;
+        sortMoveScoreScratch[index] = score;
     }
 
     const extraA = parallelArrays && parallelArrays[0];
@@ -1052,24 +1052,34 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
         const move = moves[i];
         const extraAVal = extraA ? extraA[i] : null;
         const extraBVal = extraB ? extraB[i] : null;
-        const sortKey = sortMoveKeyScratch[i];
+        const priority = sortMovePriorityScratch[i];
+        const score = sortMoveScoreScratch[i];
         let j = i - 1;
-        while (j >= 0 && sortMoveKeyScratch[j] < sortKey) {
+        while (
+            j >= 0 &&
+            (sortMovePriorityScratch[j] > priority ||
+             (sortMovePriorityScratch[j] === priority && sortMoveScoreScratch[j] < score))
+        ) {
             moves[j + 1] = moves[j];
             if (extraA) extraA[j + 1] = extraA[j];
             if (extraB) extraB[j + 1] = extraB[j];
-            sortMoveKeyScratch[j + 1] = sortMoveKeyScratch[j];
+            sortMovePriorityScratch[j + 1] = sortMovePriorityScratch[j];
+            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
             j--;
         }
         moves[j + 1] = move;
         if (extraA) extraA[j + 1] = extraAVal;
         if (extraB) extraB[j + 1] = extraBVal;
-        sortMoveKeyScratch[j + 1] = sortKey;
+        sortMovePriorityScratch[j + 1] = priority;
+        sortMoveScoreScratch[j + 1] = score;
     }
 
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
+
+const sortMoves = (moves, _currentPlayer, ttMove, killers, inCheck) =>
+    sortSearchMoves(moves, ttMove, killers, inCheck);
 
 const sortStagedMoveRange = (moves, start, end, killers) => {
     if (end - start <= 1) return;
@@ -5260,7 +5270,7 @@ const quiescence = (
         : standPat;
 
     if (inCheck) {
-        sortSearchMoves(moves, null, null, false);
+        sortMoves(moves, currentPlayer, null, null, false);
     } else {
         sortCaptures(moves);
     }
@@ -5409,7 +5419,9 @@ const alphaBeta = (
             ttMove, killersAtDepth
         );
     } else {
-        moves = sortSearchMoves(moves, ttMove, killersAtDepth, knownInCheck);
+        moves = sortMoves(
+            moves, currentPlayer, ttMove, killersAtDepth, knownInCheck
+        );
     }
 
     let bestEval = maximizing ? -Infinity : Infinity;
