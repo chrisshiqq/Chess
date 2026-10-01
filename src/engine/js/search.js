@@ -244,6 +244,7 @@ let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
 
 let activeSearchPieceState = null;
+let activeSearchInitiator = SIDE_RED;
 
 const SEARCH_MATERIAL_VALUES = {
     early: new Int16Array([0, 10000, 900, 400, 200, 200, 450, 100]),
@@ -1077,9 +1078,6 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
     return moves;
 };
-
-const sortMoves = (moves, _currentPlayer, ttMove, killers, inCheck) =>
-    sortSearchMoves(moves, ttMove, killers, inCheck);
 
 const sortStagedMoveRange = (moves, start, end, killers) => {
     if (end - start <= 1) return;
@@ -3185,8 +3183,8 @@ class ZobristHasher {
         return idx >= 0 ? idx : undefined;
     }
 
-    evalCacheKeyFromHash(boardHash, searchInitiator) {
-        return boardHash ^ this.evalInitiatorKeys[searchInitiator];
+    evalCacheKeyFromHash(boardHash) {
+        return boardHash ^ this.evalInitiatorKeys[activeSearchInitiator];
     }
 
     /**
@@ -4875,7 +4873,7 @@ const childBoardHash = (boardHash, from, to, moverCode, capturedCode) => {
 };
 
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluateLeaf = (searchInitiator) => {
+const evaluateLeaf = () => {
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
     const stateCodes = pieceState.pieceCodes;
@@ -4980,12 +4978,12 @@ const evaluateLeaf = (searchInitiator) => {
     } else if (collectSearchMetrics) {
         perfStats.fastLeafEvalCount++;
     }
-    return searchInitiator === SIDE_RED ? redTotal - blackTotal : blackTotal - redTotal;
+    return activeSearchInitiator === SIDE_RED ? redTotal - blackTotal : blackTotal - redTotal;
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (searchInitiator, boardHash = 0) => {
-    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash, searchInitiator);
+const staticSearchEval = (boardHash = 0) => {
+    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash);
     const pieceState = activeSearchPieceState;
     const verificationKey = pieceState.evalVerificationHash;
     const combinedKey = cacheKey ^ verificationKey;
@@ -4997,7 +4995,7 @@ const staticSearchEval = (searchInitiator, boardHash = 0) => {
         return evalCacheValues[cacheSlot];
     }
     if (collectSearchMetrics) perfStats.staticEvalCacheMisses++;
-    const net = evaluateLeaf(searchInitiator);
+    const net = evaluateLeaf();
     evalCacheGenerations[cacheSlot] = evalCacheGeneration;
     evalCacheKeys[cacheSlot] = combinedKey;
     evalCacheValues[cacheSlot] = net;
@@ -5202,8 +5200,8 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
 
 // generateCapturesForSearch removed (unused alias)
 
-const quiescenceMateValue = (currentPlayer, searchInitiator) =>
-    currentPlayer === searchInitiator ? -100000 : 100000;
+const quiescenceMateValue = (currentPlayer) =>
+    currentPlayer === activeSearchInitiator ? -100000 : 100000;
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const sortCaptures = (captures) => {
@@ -5226,7 +5224,7 @@ const sortCaptures = (captures) => {
 
 const quiescence = (
     alpha, beta, maximizing, currentPlayer,
-    searchInitiator, qsDepth, boardHash = 0, qsPly = 0, knownInCheck
+    qsDepth, boardHash = 0, qsPly = 0, knownInCheck
 ) => {
     if (searchProfile) perfStats.quiescenceCalls++;
     const qsState = activeSearchPieceState;
@@ -5238,7 +5236,7 @@ const quiescence = (
     }
     let standPat;
     if (!inCheck) {
-        standPat = staticSearchEval(searchInitiator, boardHash);
+        standPat = staticSearchEval(boardHash);
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
             if (standPat >= beta) return standPat;
@@ -5266,11 +5264,11 @@ const quiescence = (
     const moveCount = moves.length;
     if (searchProfile) perfStats.quiescenceCaptureMoves += moveCount;
     if (moveCount === 0) return inCheck
-        ? quiescenceMateValue(currentPlayer, searchInitiator)
+        ? quiescenceMateValue(currentPlayer)
         : standPat;
 
     if (inCheck) {
-        sortMoves(moves, currentPlayer, null, null, false);
+        sortSearchMoves(moves, null, null, false);
     } else {
         sortCaptures(moves);
     }
@@ -5300,10 +5298,10 @@ const quiescence = (
         // 下一层已到静搜终点且未被将时，递归入口只会静态评估后返回。
         // 被将仍须递归搜索全部解将。
         const value = qsDepth <= 1 && !childInCheck
-            ? staticSearchEval(searchInitiator, nextHash)
+            ? staticSearchEval(nextHash)
             : quiescence(
                 alpha, beta, !maximizing, nextPlayer,
-                searchInitiator, qsDepth - 1, nextHash, qsPly + 1, childInCheck
+                qsDepth - 1, nextHash, qsPly + 1, childInCheck
             );
         unmakeSearchMove(fromSq, toSq);
 
@@ -5317,14 +5315,14 @@ const quiescence = (
         if (beta <= alpha) break;
     }
     if (inCheck && legalMovesFound === 0) {
-        return quiescenceMateValue(currentPlayer, searchInitiator);
+        return quiescenceMateValue(currentPlayer);
     }
     return bestEval;
 };
 
 const alphaBeta = (
     d, alpha, beta, maximizing, currentPlayer,
-    searchDepth = 0, searchInitiator = currentPlayer, boardHash = 0,
+    searchDepth = 0, boardHash = 0,
     allowNull = true, knownInCheck
 ) => {
     const originalAlpha = alpha;
@@ -5335,7 +5333,7 @@ const alphaBeta = (
     if (d === 0) {
         return quiescence(
             alpha, beta, maximizing, currentPlayer,
-            searchInitiator, SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
+            SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
         );
     }
 
@@ -5376,7 +5374,7 @@ const alphaBeta = (
         );
         if (searchProfile) perfStats.prepareMoveGenMs += performance.now() - genStarted;
         if (moves.length === 0) {
-            const isInitiatorWinner = currentPlayer !== searchInitiator;
+            const isInitiatorWinner = currentPlayer !== activeSearchInitiator;
             return (isInitiatorWinner ? 100000 : -100000) +
                 (isInitiatorWinner ? d : (searchDepth - d));
         }
@@ -5399,11 +5397,11 @@ const alphaBeta = (
         const nullValue = maximizing
             ? alphaBeta(
                 nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, boardHash, false, false
+                searchDepth, boardHash, false, false
             )
             : alphaBeta(
                 nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, boardHash, false, false
+                searchDepth, boardHash, false, false
             );
         if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
             if (collectSearchMetrics) perfStats.nmpCutoffs++;
@@ -5419,9 +5417,7 @@ const alphaBeta = (
             ttMove, killersAtDepth
         );
     } else {
-        moves = sortMoves(
-            moves, currentPlayer, ttMove, killersAtDepth, knownInCheck
-        );
+        moves = sortSearchMoves(moves, ttMove, killersAtDepth, knownInCheck);
     }
 
     let bestEval = maximizing ? -Infinity : Infinity;
@@ -5483,7 +5479,7 @@ const alphaBeta = (
         if (!canLmr && !pvsEligible) {
             value = alphaBeta(
                 d - 1, alpha, beta, !maximizing, nextPlayer,
-                searchDepth, searchInitiator, nextHash, true, childInCheck
+                searchDepth, nextHash, true, childInCheck
             );
         } else {
             const nullAlpha = maximizing ? alpha : beta - NULL_WINDOW;
@@ -5491,13 +5487,13 @@ const alphaBeta = (
             if (canLmr) {
                 value = alphaBeta(
                     reducedDepth, nullAlpha, nullBeta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, nextHash, true, childInCheck
+                    searchDepth, nextHash, true, childInCheck
                 );
             } else {
                 if (collectSearchMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
                     d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, nextHash, true, childInCheck
+                    searchDepth, nextHash, true, childInCheck
                 );
             }
             const improves = maximizing ? value > alpha : value < beta;
@@ -5507,26 +5503,26 @@ const alphaBeta = (
                     if (collectSearchMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
                         d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, nextHash, true, childInCheck
+                        searchDepth, nextHash, true, childInCheck
                     );
                     if (maximizing ? value > alpha : value < beta) {
                         if (collectSearchMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
                             d - 1, alpha, beta, !maximizing, nextPlayer,
-                            searchDepth, searchInitiator, nextHash, true, childInCheck
+                            searchDepth, nextHash, true, childInCheck
                         );
                     }
                 } else {
                     value = alphaBeta(
                         d - 1, alpha, beta, !maximizing, nextPlayer,
-                        searchDepth, searchInitiator, nextHash, true, childInCheck
+                        searchDepth, nextHash, true, childInCheck
                     );
                 }
             } else if (improves) {
                 if (collectSearchMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
                     d - 1, alpha, beta, !maximizing, nextPlayer,
-                    searchDepth, searchInitiator, nextHash, true, childInCheck
+                    searchDepth, nextHash, true, childInCheck
                 );
             }
         }
@@ -5556,7 +5552,7 @@ const alphaBeta = (
     }
 
     if (legalMovesFound === 0) {
-        const isInitiatorWinner = currentPlayer !== searchInitiator;
+        const isInitiatorWinner = currentPlayer !== activeSearchInitiator;
         return (isInitiatorWinner ? 100000 : -100000) +
             (isInitiatorWinner ? d : (searchDepth - d));
     }
@@ -5689,6 +5685,7 @@ const getBestMove = (
   );
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
+  activeSearchInitiator = side;
   resetSearchHeuristics(maxDepth);
   const rootInCheck = isKingInCheckFromState(rootPieceState, side);
   if (rootInCheck) collectCheckersFromState(rootPieceState, side, scratchRootCheckInfo);
@@ -5860,7 +5857,7 @@ const getBestMove = (
       if (i === 0 || rootAlpha === -Infinity) {
         score = alphaBeta(
           remaining, -Infinity, Infinity,
-          false, nextSide, currentDepth, side, childHash, true, childInCheck
+          false, nextSide, currentDepth, childHash, true, childInCheck
         );
       } else {
         let cachedExact = null;
@@ -5877,12 +5874,12 @@ const getBestMove = (
         } else {
           const probe = alphaBeta(
             remaining, rootAlpha, rootAlpha + NULL_WINDOW,
-            false, nextSide, currentDepth, side, childHash, true, childInCheck
+            false, nextSide, currentDepth, childHash, true, childInCheck
           );
           if (probe > rootAlpha) {
             score = alphaBeta(
               remaining, rootAlpha, Infinity,
-              false, nextSide, currentDepth, side, childHash, true, childInCheck
+              false, nextSide, currentDepth, childHash, true, childInCheck
             );
           } else if (exactThisMove) {
             const entry = transpositionTable.retrieve(childTTKey);
@@ -5893,7 +5890,7 @@ const getBestMove = (
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
                 remaining, -Infinity, rootAlpha + NULL_WINDOW,
-                false, nextSide, currentDepth, side, childHash, true, childInCheck
+                false, nextSide, currentDepth, childHash, true, childInCheck
               );
               if (score > rootAlpha) {
                 // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
