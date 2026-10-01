@@ -252,6 +252,8 @@ function printSummary(label, run) {
     console.log(`  legalityCheckMs=${Math.round(perf.legalityCheckMs)}`);
     console.log(`  captureGenMs=${Math.round(perf.captureGenMs)}`);
     console.log(`  captureGenCount=${perf.captureGenCount}`);
+    console.log(`  emitCapturesFromRelMs=${Math.round(perf.emitCapturesFromRelMs ?? 0)}`);
+    console.log(`  emitCapturesFromRelCount=${perf.emitCapturesFromRelCount ?? 0}`);
     console.log(`  quiescenceCalls=${perf.quiescenceCalls}`);
   }
 

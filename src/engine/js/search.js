@@ -4669,6 +4669,8 @@ let perfStats = {
     sortMovesMs: 0,
     captureGenCount: 0,
     captureGenMs: 0,
+    emitCapturesFromRelCount: 0,
+    emitCapturesFromRelMs: 0,
     quiescenceCalls: 0,
     quiescenceCaptureMoves: 0,
     staticEvalCacheHits: 0,
@@ -4698,6 +4700,8 @@ const resetPerfStats = () => {
     perfStats.sortMovesMs = 0;
     perfStats.captureGenCount = 0;
     perfStats.captureGenMs = 0;
+    perfStats.emitCapturesFromRelCount = 0;
+    perfStats.emitCapturesFromRelMs = 0;
     perfStats.quiescenceCalls = 0;
     perfStats.quiescenceCaptureMoves = 0;
     perfStats.staticEvalCacheHits = 0;
@@ -4753,6 +4757,8 @@ const snapshotPerfStats = () => {
         sortMovesMs: perfStats.sortMovesMs,
         captureGenCount: perfStats.captureGenCount,
         captureGenMs: perfStats.captureGenMs,
+        emitCapturesFromRelCount: perfStats.emitCapturesFromRelCount,
+        emitCapturesFromRelMs: perfStats.emitCapturesFromRelMs,
         quiescenceCalls: perfStats.quiescenceCalls,
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         staticEvalCacheHits: evalHits,
@@ -5172,13 +5178,20 @@ const generateQuiescenceMoves = (currentPlayer, destination = null) => {
     return moves;
 };
 
-// Fast 叶关系已写入 attackBySlot。有吃才走原几何，落点顺序与 generateQuiescenceMoves 一致。
+// 叶关系 attackBySlot 直接展开吃子；外层扫描顺序与 generateQuiescenceMoves 一致。
 const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
+    const __t0 = searchProfile ? performance.now() : 0;
+    if (searchProfile) perfStats.emitCapturesFromRelCount++;
     const attacked = scratchLeafAttackedTargetMask >>> 0;
-    if (attacked === 0) return;
+    if (attacked === 0) {
+        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
+        return;
+    }
     const isRed = currentPlayer === SIDE_RED;
     const pieceSquares = pieceState.pieceSquares;
     const pieceCodes = pieceState.pieceCodes;
+    const squareCodes = pieceState.squareCodes;
+    const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     let attackerUnion = 0;
@@ -5188,14 +5201,30 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         attackerUnion |= attackBySlot[31 - Math.clz32(targetBit)];
         targets ^= targetBit;
     }
-    if (attackerUnion === 0) return;
+    if (attackerUnion === 0) {
+        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
+        return;
+    }
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
-        if ((attackerUnion & (1 << slot)) === 0) continue;
-        appendScoredQuiescenceCapturesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState
-        );
+        const attackerBit = 1 << slot;
+        if ((attackerUnion & attackerBit) === 0) continue;
+        const fromSq = pieceSquares[slot];
+        const moverValue = materialValues[pieceCodes[slot] & 7];
+        let targetBits = attacked;
+        while (targetBits !== 0) {
+            const targetBit = targetBits & -targetBits;
+            targetBits ^= targetBit;
+            const targetSlot = 31 - Math.clz32(targetBit);
+            if ((attackBySlot[targetSlot] & attackerBit) === 0) continue;
+            const toSq = pieceSquares[targetSlot];
+            const targetCode = squareCodes[toSq];
+            captureSortScoreScratch[moves.length] =
+                materialValues[targetCode & 7] * 16 - moverValue;
+            moves.push((fromSq << 7) | toSq);
+        }
     }
+    if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
 };
 
 // generateCapturesForSearch removed (unused alias)
