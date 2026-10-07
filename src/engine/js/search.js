@@ -23,7 +23,8 @@ import {
     searchLmrMinMove,
     searchNmpMinDepth,
     searchNmpReduction,
-    searchProfile
+    searchProfile,
+    searchQuiescenceDeltaPruning
 } from './search-context.js';
 import { isValidPlacement } from './rules.js';
 
@@ -4673,6 +4674,7 @@ let perfStats = {
     emitCapturesFromRelMs: 0,
     quiescenceCalls: 0,
     quiescenceCaptureMoves: 0,
+    quiescenceDeltaPruned: 0,
     staticEvalCacheHits: 0,
     staticEvalCacheMisses: 0,
     evaluateBoardMs: 0,
@@ -4704,6 +4706,7 @@ const resetPerfStats = () => {
     perfStats.emitCapturesFromRelMs = 0;
     perfStats.quiescenceCalls = 0;
     perfStats.quiescenceCaptureMoves = 0;
+    perfStats.quiescenceDeltaPruned = 0;
     perfStats.staticEvalCacheHits = 0;
     perfStats.staticEvalCacheMisses = 0;
     perfStats.evaluateBoardMs = 0;
@@ -4761,6 +4764,7 @@ const snapshotPerfStats = () => {
         emitCapturesFromRelMs: perfStats.emitCapturesFromRelMs,
         quiescenceCalls: perfStats.quiescenceCalls,
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
+        quiescenceDeltaPruned: perfStats.quiescenceDeltaPruned,
         staticEvalCacheHits: evalHits,
         staticEvalCacheMisses: evalMisses,
         evalCacheSize: EVAL_CACHE_SIZE,
@@ -5232,6 +5236,10 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
 const quiescenceMateValue = (currentPlayer) =>
     currentPlayer === activeSearchInitiator ? -100000 : 100000;
 
+// B6: delta pruning 安全边界。被吃子价值加此边界仍达不到 alpha/beta 时跳过该捕获。
+// 取一个兵/卒/炮/士的价值（200）——棋子价值表里最弱档，对应 chess 引擎常用的 1 兵边界。
+const QUIESCENCE_DELTA_MARGIN = 200;
+
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const sortCaptures = (captures) => {
     const captureCount = captures.length;
@@ -5311,6 +5319,25 @@ const quiescence = (
         const toSq = move & MOVE_TO_MASK;
         const moverCode = qsState.squareCodes[fromSq];
         const capturedCode = qsState.squareCodes[toSq];
+        // B6: delta pruning —— 仅吃子循环（!inCheck）剪枝。标准 alpha-based 公式：
+        //   maximizing: standPat + capturedValue + margin < alpha ⇒ 无法提升 alpha
+        //   minimizing: standPat - capturedValue - margin > beta  ⇒ 无法压低 beta
+        // 注意：fail-soft quiescence 下不是严格 sound——被剪捕获可能改写 bestEval
+        // （当 bestEval < alpha 时），导致根节点分数小幅偏差。需 SPRT 验证棋力。
+        if (searchQuiescenceDeltaPruning && !inCheck) {
+            const capturedValue = qsState.materialValues[capturedCode & 7];
+            if (maximizing) {
+                if (standPat + capturedValue + QUIESCENCE_DELTA_MARGIN < alpha) {
+                    if (collectSearchMetrics) perfStats.quiescenceDeltaPruned++;
+                    continue;
+                }
+            } else {
+                if (standPat - capturedValue - QUIESCENCE_DELTA_MARGIN > beta) {
+                    if (collectSearchMetrics) perfStats.quiescenceDeltaPruned++;
+                    continue;
+                }
+            }
+        }
         makeSearchMove(fromSq, toSq);
         if (moveLeavesOwnKingInCheck(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
             unmakeSearchMove(fromSq, toSq);
