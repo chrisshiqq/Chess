@@ -23,8 +23,7 @@ import {
     searchLmrMinMove,
     searchNmpMinDepth,
     searchNmpReduction,
-    searchProfile,
-    searchQuiescenceDeltaPruning
+    searchProfile
 } from './search-context.js';
 import { isValidPlacement } from './rules.js';
 
@@ -1300,24 +1299,38 @@ const packColorBlockedDests = (src) => {
     }
     return { offsets, data: new Uint16Array(words) };
 };
-const packSquareBlockedDests = (src) => {
+// 马的两个同向落点共用一条腿。每项按 [腿:7][落点2:7][落点1:7] 分组，
+// 127 表示没有第二个落点，使生成时每条腿只检查一次占位。
+const HORSE_GROUP_NO_DEST = 127;
+const packHorseDestGroups = (src) => {
     const offsets = new Uint16Array(DEST_OFF_STRIDE);
     const words = [];
     for (let sq = 0; sq < REL_SQUARES; sq++) {
         offsets[sq] = words.length;
         const dests = src[sq];
-        for (let i = 0; i < dests.length; i++) {
-            words.push((dests[i].br * 9 + dests[i].bc) * 128 + dests[i].r * 9 + dests[i].c);
+        for (let i = 0; i < dests.length;) {
+            const first = dests[i++];
+            const blockerSq = first.br * 9 + first.bc;
+            const firstSq = first.r * 9 + first.c;
+            let secondSq = HORSE_GROUP_NO_DEST;
+            if (i < dests.length) {
+                const next = dests[i];
+                if (next.br * 9 + next.bc === blockerSq) {
+                    secondSq = next.r * 9 + next.c;
+                    i++;
+                }
+            }
+            words.push((blockerSq << 14) | (secondSq << 7) | firstSq);
         }
     }
     offsets[REL_SQUARES] = words.length;
-    return { offsets, data: new Uint16Array(words) };
+    return { offsets, data: new Uint32Array(words) };
 };
 const packedGeneralDest = packColorShortDests(GENERAL_DEST);
 const packedAdvisorDest = packColorShortDests(ADVISOR_DEST);
 const packedSoldierDest = packColorShortDests(SOLDIER_DEST);
 const packedElephantDest = packColorBlockedDests(ELEPHANT_DEST);
-const packedHorseDest = packSquareBlockedDests(HORSE_DEST);
+const packedHorseGroups = packHorseDestGroups(HORSE_DEST);
 const SEARCH_GENERAL_DEST_OFF = packedGeneralDest.offsets;
 const SEARCH_GENERAL_DEST_DATA = packedGeneralDest.data;
 const SEARCH_ADVISOR_DEST_OFF = packedAdvisorDest.offsets;
@@ -1326,8 +1339,8 @@ const SEARCH_SOLDIER_DEST_OFF = packedSoldierDest.offsets;
 const SEARCH_SOLDIER_DEST_DATA = packedSoldierDest.data;
 const SEARCH_ELEPHANT_DEST_OFF = packedElephantDest.offsets;
 const SEARCH_ELEPHANT_DEST_DATA = packedElephantDest.data;
-const SEARCH_HORSE_DEST_OFF = packedHorseDest.offsets;
-const SEARCH_HORSE_DEST_DATA = packedHorseDest.data;
+const SEARCH_HORSE_GROUP_OFF = packedHorseGroups.offsets;
+const SEARCH_HORSE_GROUP_DATA = packedHorseGroups.data;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
@@ -1752,6 +1765,35 @@ const appendSearchShortMoves = (
     }
 };
 
+const appendSearchHorseMoves = (
+    moves, fromSq, groupStart, groupEnd, squareCodes,
+    isRed, capturesOnly, targetMask = null, quietsOnly = false
+) => {
+    for (let i = groupStart; i < groupEnd; i++) {
+        const group = SEARCH_HORSE_GROUP_DATA[i];
+        if (squareCodes[group >>> 14] !== 0) continue;
+
+        const firstSq = group & 127;
+        if (!targetMask || targetMask[firstSq]) {
+            const targetCode = squareCodes[firstSq];
+            if (targetCode === 0) {
+                if (!capturesOnly) moves.push((fromSq << 7) | firstSq);
+            } else if (!quietsOnly && (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | firstSq);
+            }
+        }
+
+        const secondSq = (group >>> 7) & 127;
+        if (secondSq === HORSE_GROUP_NO_DEST || (targetMask && !targetMask[secondSq])) continue;
+        const targetCode = squareCodes[secondSq];
+        if (targetCode === 0) {
+            if (!capturesOnly) moves.push((fromSq << 7) | secondSq);
+        } else if (!quietsOnly && (targetCode < 8) !== isRed) {
+            moves.push((fromSq << 7) | secondSq);
+        }
+    }
+};
+
 const appendLineEmpties = (moves, fromSq, firstSq, lastSq, stride, targetMask) => {
     if (stride > 0) {
         for (let sq = firstSq; sq <= lastSq; sq += stride) {
@@ -2008,10 +2050,10 @@ const appendSearchPseudoMovesForPiece = (
             break;
         }
         case 3:
-            appendSearchShortMoves(
-                moves, fromSq, SEARCH_HORSE_DEST_DATA,
-                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
-                squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+            appendSearchHorseMoves(
+                moves, fromSq,
+                SEARCH_HORSE_GROUP_OFF[fromSq], SEARCH_HORSE_GROUP_OFF[fromSq + 1],
+                squareCodes, isRed, capturesOnly, targetMask, quietsOnly
             );
             break;
         case 7: {
@@ -2053,6 +2095,16 @@ const blockedDestHas = (destData, destStart, destEnd, toSq, squareCodes) => {
     return false;
 };
 
+const horseGroupHas = (groupStart, groupEnd, toSq, squareCodes) => {
+    for (let i = groupStart; i < groupEnd; i++) {
+        const group = SEARCH_HORSE_GROUP_DATA[i];
+        if ((group & 127) === toSq || ((group >>> 7) & 127) === toSq) {
+            return squareCodes[group >>> 14] === 0;
+        }
+    }
+    return false;
+};
+
 // 与 appendSearchPseudoMovesForPiece 同一套几何，只判单步，不生成整表。
 const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
     const squareCodes = pieceState.squareCodes;
@@ -2086,9 +2138,8 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
             );
         }
         case 3:
-            return blockedDestHas(
-                SEARCH_HORSE_DEST_DATA,
-                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
+            return horseGroupHas(
+                SEARCH_HORSE_GROUP_OFF[fromSq], SEARCH_HORSE_GROUP_OFF[fromSq + 1],
                 toSq, squareCodes
             );
         case 7: {
@@ -2511,8 +2562,8 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     const soldierDestData = SEARCH_SOLDIER_DEST_DATA;
     const elephantDestOff = SEARCH_ELEPHANT_DEST_OFF;
     const elephantDestData = SEARCH_ELEPHANT_DEST_DATA;
-    const horseDestOff = SEARCH_HORSE_DEST_OFF;
-    const horseDestData = SEARCH_HORSE_DEST_DATA;
+    const horseGroupOff = SEARCH_HORSE_GROUP_OFF;
+    const horseGroupData = SEARCH_HORSE_GROUP_DATA;
     attackBySlot.fill(0);
     guardBySlot.fill(0);
     clearAttackBits(scratchRedAttack);
@@ -2627,23 +2678,26 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 break;
             }
             case 3: {
-                for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
-                    const packed = horseDestData[i];
-                    if (squareCodes[packed >>> 7] !== 0) continue;
-                    const sq = packed & 127;
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                for (let i = horseGroupOff[fromSq], n = horseGroupOff[fromSq + 1]; i < n; i++) {
+                    const group = horseGroupData[i];
+                    if (squareCodes[group >>> 14] !== 0) continue;
+                    for (let pairIndex = 0; pairIndex < 2; pairIndex++) {
+                        const sq = (group >>> (pairIndex * 7)) & 127;
+                        if (sq === HORSE_GROUP_NO_DEST) break;
+                        const targetCode = squareCodes[sq];
+                        if (targetCode === 0) {
+                            if (attackTarget[sq] & attackTargetBit) {
+                                attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            }
+                            mobilityValue += 1;
+                        } else {
+                            const targetSlot = squareToSlot[sq];
+                            if ((targetCode < 8) !== isRed) {
+                                attackedTargetMask |= 1 << targetSlot;
+                                attackBySlot[targetSlot] |= bit;
+                            }
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                         }
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
-                        }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 if (isRed) redMobility += mobilityValue;
@@ -5045,6 +5099,25 @@ const appendScoredQuiescenceShortCaptures = (
     }
 };
 
+const appendScoredQuiescenceHorseCaptures = (
+    moves, fromSq, pieceState, isRed, moverValue, groupStart, groupEnd
+) => {
+    const squareCodes = pieceState.squareCodes;
+    for (let i = groupStart; i < groupEnd; i++) {
+        const group = SEARCH_HORSE_GROUP_DATA[i];
+        if (squareCodes[group >>> 14] !== 0) continue;
+        for (let pairIndex = 0; pairIndex < 2; pairIndex++) {
+            const toSq = (group >>> (pairIndex * 7)) & 127;
+            if (toSq === HORSE_GROUP_NO_DEST) break;
+            const targetCode = squareCodes[toSq];
+            if (targetCode === 0 || (targetCode < 8) === isRed) continue;
+            captureSortScoreScratch[moves.length] =
+                pieceState.materialValues[targetCode & 7] * 16 - moverValue;
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
 // 静搜专用吃子生成：只生成吃子，并在 push 时同步写同索引的 MVV-LVA 分数。
 const appendScoredQuiescenceCapturesForPiece = (
     moves, fromSq, pieceCode, pieceState
@@ -5081,10 +5154,9 @@ const appendScoredQuiescenceCapturesForPiece = (
             );
             break;
         case 3:
-            appendScoredQuiescenceShortCaptures(
+            appendScoredQuiescenceHorseCaptures(
                 moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_HORSE_DEST_DATA,
-                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1], true
+                SEARCH_HORSE_GROUP_OFF[fromSq], SEARCH_HORSE_GROUP_OFF[fromSq + 1]
             );
             break;
         case 7:
@@ -5324,7 +5396,7 @@ const quiescence = (
         //   minimizing: standPat - capturedValue - margin > beta  ⇒ 无法压低 beta
         // 注意：fail-soft quiescence 下不是严格 sound——被剪捕获可能改写 bestEval
         // （当 bestEval < alpha 时），导致根节点分数小幅偏差。需 SPRT 验证棋力。
-        if (searchQuiescenceDeltaPruning && !inCheck) {
+        if (!inCheck) {
             const capturedValue = qsState.materialValues[capturedCode & 7];
             if (maximizing) {
                 if (standPat + capturedValue + QUIESCENCE_DELTA_MARGIN < alpha) {
