@@ -5,6 +5,10 @@ export let searchLmrMinMove = 5;
 export let searchLmrMaxReduction = 2;
 export let searchNmpMinDepth = 3;
 export let searchNmpReduction = 2;
+// 静默搜索 delta pruning：被吃子价值加 margin 仍达不到 alpha/beta 时跳过该捕获。
+// 注意：标准 alpha-based 公式不是严格 sound 的——fail-soft quiescence 中可能改写 bestEval
+// 进而影响根节点分数（小幅 bounded 误差）。需要 SPRT 验证棋力。
+export let searchQuiescenceDeltaPruning = true;
 
 export const searchContext = {
   profile: searchProfile,
@@ -18,6 +22,7 @@ export const searchContext = {
   // NMP：仅在非 PV、未被将且仍有车马炮时尝试，禁止连续空步
   nmpMinDepth: searchNmpMinDepth,
   nmpReduction: searchNmpReduction,
+  quiescenceDeltaPruning: searchQuiescenceDeltaPruning,
   ttMaxAge: 1,
   ttReuseScope: 'default',
   ttSearchPly: 0,
@@ -35,6 +40,7 @@ export const configureSearch = ({
   lmrMaxReduction = 2,
   nmpMinDepth = 3,
   nmpReduction = 2,
+  quiescenceDeltaPruning = true,
   ttMaxAge = 1,
   ttReuseScope = 'default',
   ply = 0,
@@ -47,6 +53,7 @@ export const configureSearch = ({
   searchLmrMaxReduction = Math.max(1, lmrMaxReduction | 0);
   searchNmpMinDepth = Math.max(2, nmpMinDepth | 0);
   searchNmpReduction = Math.max(1, nmpReduction | 0);
+  searchQuiescenceDeltaPruning = quiescenceDeltaPruning !== false;
   searchContext.profile = searchProfile;
   searchContext.collectMetrics = collectSearchMetrics;
   searchContext.lmrMinDepth = searchLmrMinDepth;
@@ -54,6 +61,7 @@ export const configureSearch = ({
   searchContext.lmrMaxReduction = searchLmrMaxReduction;
   searchContext.nmpMinDepth = searchNmpMinDepth;
   searchContext.nmpReduction = searchNmpReduction;
+  searchContext.quiescenceDeltaPruning = searchQuiescenceDeltaPruning;
   searchContext.ttMaxAge = Math.max(1, ttMaxAge | 0);
   searchContext.ttReuseScope = ttReuseScope == null ? null : String(ttReuseScope);
   searchContext.ttSearchPly = Math.max(0, ply | 0);
