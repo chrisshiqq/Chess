@@ -23,8 +23,7 @@ import {
     searchLmrMinMove,
     searchNmpMinDepth,
     searchNmpReduction,
-    searchProfile,
-    searchQuiescenceDeltaPruning
+    searchProfile
 } from './search-context.js';
 import { isValidPlacement } from './rules.js';
 
@@ -5210,19 +5209,17 @@ const sortCaptures = (captures) => {
 };
 
 const quiescence = (
-    alpha, beta, maximizing, currentPlayer,
+    alpha, beta, maximizing, currentPlayer, state,
     qsDepth, boardHash = 0, qsPly = 0, knownInCheck
 ) => {
     if (searchProfile) perfStats.quiescenceCalls++;
-    const qsState = activeSearchPieceState;
     let checkInfo = null;
-    const inCheck = knownInCheck;
-    if (inCheck) {
+    if (knownInCheck) {
         checkInfo = acquireCheckInfo(qsCheckInfoPool, qsPly);
-        collectCheckersFromState(qsState, currentPlayer, checkInfo);
+        collectCheckersFromState(state, currentPlayer, checkInfo);
     }
     let standPat;
-    if (!inCheck) {
+    if (!knownInCheck) {
         standPat = staticSearchEval(boardHash);
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
@@ -5241,41 +5238,41 @@ const quiescence = (
     } else {
         moves.length = 0;
     }
-    if (inCheck) {
-        generateCheckEvasions(moves, currentPlayer, qsState, checkInfo);
+    if (knownInCheck) {
+        generateCheckEvasions(moves, currentPlayer, state, checkInfo);
     } else if (leafRelationScratchFresh) {
-        emitCapturesFromLeafRelations(moves, currentPlayer, qsState);
+        emitCapturesFromLeafRelations(moves, currentPlayer, state);
     } else {
         generateQuiescenceMoves(currentPlayer, moves);
     }
     const moveCount = moves.length;
     if (searchProfile) perfStats.quiescenceCaptureMoves += moveCount;
-    if (moveCount === 0) return inCheck
+    if (moveCount === 0) return knownInCheck
         ? quiescenceMateValue(currentPlayer)
         : standPat;
 
-    if (inCheck) {
+    if (knownInCheck) {
         sortSearchMoves(moves, null, null, false);
     } else {
         sortCaptures(moves);
     }
 
     const nextPlayer = currentPlayer ^ 1;
-    let bestEval = inCheck ? (maximizing ? -Infinity : Infinity) : standPat;
+    let bestEval = knownInCheck ? (maximizing ? -Infinity : Infinity) : standPat;
     let legalMovesFound = 0;
     for (let i = 0; i < moveCount; i++) {
         const move = moves[i];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        const moverCode = qsState.squareCodes[fromSq];
-        const capturedCode = qsState.squareCodes[toSq];
-        // B6: delta pruning —— 仅吃子循环（!inCheck）剪枝。标准 alpha-based 公式：
+        const moverCode = state.squareCodes[fromSq];
+        const capturedCode = state.squareCodes[toSq];
+        // B6: delta pruning —— 仅吃子循环（!knownInCheck）剪枝。标准 alpha-based 公式：
         //   maximizing: standPat + capturedValue + margin < alpha ⇒ 无法提升 alpha
         //   minimizing: standPat - capturedValue - margin > beta  ⇒ 无法压低 beta
         // 注意：fail-soft quiescence 下不是严格 sound——被剪捕获可能改写 bestEval
         // （当 bestEval < alpha 时），导致根节点分数小幅偏差。需 SPRT 验证棋力。
-        if (searchQuiescenceDeltaPruning && !inCheck) {
-            const capturedValue = qsState.materialValues[capturedCode & 7];
+        if (!knownInCheck) {
+            const capturedValue = state.materialValues[capturedCode & 7];
             if (maximizing) {
                 if (standPat + capturedValue + QUIESCENCE_DELTA_MARGIN < alpha) {
                     if (collectSearchMetrics) perfStats.quiescenceDeltaPruned++;
@@ -5289,7 +5286,7 @@ const quiescence = (
             }
         }
         makeSearchMove(fromSq, toSq);
-        if (moveReceivesCheck(qsState, currentPlayer, fromSq, toSq, inCheck, checkInfo)) {
+        if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo)) {
             unmakeSearchMove(fromSq, toSq);
             continue;
         }
@@ -5297,7 +5294,7 @@ const quiescence = (
             boardHash, fromSq, toSq, moverCode, capturedCode
         );
         const childInCheck = moveGivesCheck(
-            qsState, nextPlayer, fromSq, toSq
+            state, nextPlayer, fromSq, toSq
         );
         legalMovesFound++;
         if (collectSearchMetrics) perfStats.legalMovesSearched++;
@@ -5306,7 +5303,7 @@ const quiescence = (
         const value = qsDepth <= 1 && !childInCheck
             ? staticSearchEval(nextHash)
             : quiescence(
-                alpha, beta, !maximizing, nextPlayer,
+                alpha, beta, !maximizing, nextPlayer, state,
                 qsDepth - 1, nextHash, qsPly + 1, childInCheck
             );
         unmakeSearchMove(fromSq, toSq);
@@ -5320,7 +5317,7 @@ const quiescence = (
         }
         if (beta <= alpha) break;
     }
-    if (inCheck && legalMovesFound === 0) {
+    if (knownInCheck && legalMovesFound === 0) {
         return quiescenceMateValue(currentPlayer);
     }
     return bestEval;
@@ -5336,9 +5333,11 @@ const alphaBeta = (
 
     if (collectSearchMetrics) perfStats.alphaBetaCalls++;
 
+    const stagedPieceState = activeSearchPieceState;
+
     if (d === 0) {
         return quiescence(
-            alpha, beta, maximizing, currentPlayer,
+            alpha, beta, maximizing, currentPlayer, stagedPieceState,
             SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
         );
     }
@@ -5355,7 +5354,6 @@ const alphaBeta = (
         }
     }
 
-    const stagedPieceState = activeSearchPieceState;
     const plyFromRoot = searchDepth - d;
     let checkInfo = null;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
