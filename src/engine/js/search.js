@@ -917,26 +917,24 @@ const filterLegalMoves = (fromSq, color, encodedMoves, wasInCheck, checkInfo) =>
     for (let i = 0; i < encodedMoves.length; i++) {
         const encoded = encodedMoves[i];
         const toSq = encoded & MOVE_TO_MASK;
-        makeSearchMove(fromSq, toSq);
+        makeSearchMove(activeSearchPieceState, fromSq, toSq);
         const illegal = moveReceivesCheck(
             activeSearchPieceState, color, fromSq, toSq, wasInCheck, checkInfo
         );
-        unmakeSearchMove(fromSq, toSq);
+        unmakeSearchMove(activeSearchPieceState, fromSq, toSq);
         if (!illegal) validMoves.push(toSq);
     }
     return validMoves;
 };
 
-const makeSearchMove = (from, to) => {
-    const state = activeSearchPieceState;
+const makeSearchMove = (state, from, to) => {
     const capturedSlot = state.squareToSlot[to];
     const moverSlot = state.squareToSlot[from];
     const moverCode = state.pieceCodes[moverSlot];
     updatePieceStateAfterMake(state, from, to, moverSlot, moverCode, capturedSlot);
 };
 
-const unmakeSearchMove = (from, to) => {
-    const state = activeSearchPieceState;
+const unmakeSearchMove = (state, from, to) => {
     updatePieceStateAfterUnmake(state, from, to);
 };
 
@@ -2167,11 +2165,11 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         const move = encoded[i];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        makeSearchMove(fromSq, toSq);
+        makeSearchMove(pieceState, fromSq, toSq);
         const unsafe = moveReceivesCheck(
             pieceState, color, fromSq, toSq, true, checkInfo
         );
-        unmakeSearchMove(fromSq, toSq);
+        unmakeSearchMove(pieceState, fromSq, toSq);
         if (!unsafe) out.push(move);
     }
 };
@@ -4832,9 +4830,8 @@ const childBoardHash = (boardHash, from, to, moverCode, capturedCode) => {
 };
 
 // 搜索叶：关系 + 威胁/SEE + 安全 + 汇总（要求 activeSearchPieceState 已绑定 board）
-const evaluateLeaf = () => {
+const evaluateLeaf = (pieceState) => {
     const __t0 = searchProfile ? performance.now() : 0;
-    const pieceState = activeSearchPieceState;
     const stateCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
     const squareCodes = pieceState.squareCodes;
@@ -4941,10 +4938,9 @@ const evaluateLeaf = () => {
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-const staticSearchEval = (boardHash = 0) => {
+const staticSearchEval = (boardHash, state) => {
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash);
-    const pieceState = activeSearchPieceState;
-    const verificationKey = pieceState.evalVerificationHash;
+    const verificationKey = state.evalVerificationHash;
     const combinedKey = cacheKey ^ verificationKey;
     const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
     if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
@@ -4954,7 +4950,7 @@ const staticSearchEval = (boardHash = 0) => {
         return evalCacheValues[cacheSlot];
     }
     if (collectSearchMetrics) perfStats.staticEvalCacheMisses++;
-    const net = evaluateLeaf();
+    const net = evaluateLeaf(state);
     evalCacheGenerations[cacheSlot] = evalCacheGeneration;
     evalCacheKeys[cacheSlot] = combinedKey;
     evalCacheValues[cacheSlot] = net;
@@ -5220,7 +5216,7 @@ const quiescence = (
     }
     let standPat;
     if (!knownInCheck) {
-        standPat = staticSearchEval(boardHash);
+        standPat = staticSearchEval(boardHash, state);
         if (qsDepth <= 0) return standPat;
         if (maximizing) {
             if (standPat >= beta) return standPat;
@@ -5285,9 +5281,9 @@ const quiescence = (
                 }
             }
         }
-        makeSearchMove(fromSq, toSq);
+        makeSearchMove(state, fromSq, toSq);
         if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo)) {
-            unmakeSearchMove(fromSq, toSq);
+            unmakeSearchMove(state, fromSq, toSq);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5301,12 +5297,12 @@ const quiescence = (
         // 下一层已到静搜终点且未被将时，递归入口只会静态评估后返回。
         // 被将仍须递归搜索全部解将。
         const value = qsDepth <= 1 && !childInCheck
-            ? staticSearchEval(nextHash)
+            ? staticSearchEval(nextHash, state)
             : quiescence(
                 alpha, beta, !maximizing, nextPlayer, state,
                 qsDepth - 1, nextHash, qsPly + 1, childInCheck
             );
-        unmakeSearchMove(fromSq, toSq);
+        unmakeSearchMove(state, fromSq, toSq);
 
         if (maximizing) {
             if (value > bestEval) bestEval = value;
@@ -5444,9 +5440,9 @@ const alphaBeta = (
         const moverCode = stagedPieceState.squareCodes[fromSq];
         const capturedCode = stagedPieceState.squareCodes[toSq];
         const isCapture = capturedCode !== 0;
-        makeSearchMove(fromSq, toSq);
+        makeSearchMove(stagedPieceState, fromSq, toSq);
         if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo)) {
-            unmakeSearchMove(fromSq, toSq);
+            unmakeSearchMove(stagedPieceState, fromSq, toSq);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5530,7 +5526,7 @@ const alphaBeta = (
                 );
             }
         }
-        unmakeSearchMove(fromSq, toSq);
+        unmakeSearchMove(stagedPieceState, fromSq, toSq);
 
         if (maximizing) {
             if (value > bestEval) {
@@ -5586,9 +5582,9 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const moverCode = state.squareCodes[from];
     const capturedCode = state.squareCodes[to];
     if (!moverCode || ((moverCode < 8) !== (currentTurn === SIDE_RED))) break;
-    makeSearchMove(from, to);
+    makeSearchMove(state, from, to);
     if (moveReceivesCheck(state, currentTurn, from, to, true)) {
-      unmakeSearchMove(from, to);
+      unmakeSearchMove(state, from, to);
       break;
     }
     sequence.push(move);
@@ -5597,7 +5593,7 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
   }
   for (let i = sequence.length - 1; i >= undoStart; i--) {
     const move = sequence[i];
-    unmakeSearchMove(move >>> 7, move & MOVE_TO_MASK);
+    unmakeSearchMove(state, move >>> 7, move & MOVE_TO_MASK);
   }
 };
 
@@ -5845,7 +5841,7 @@ const getBestMove = (
       const rootToSq = encodedRootMove & MOVE_TO_MASK;
       const moverCode = activeSearchPieceState.squareCodes[rootFromSq];
       const capturedCode = activeSearchPieceState.squareCodes[rootToSq];
-      makeSearchMove(rootFromSq, rootToSq);
+      makeSearchMove(activeSearchPieceState, rootFromSq, rootToSq);
       const childHash = childBoardHash(
         rootHash, rootFromSq, rootToSq, moverCode, capturedCode
       );
@@ -5915,7 +5911,7 @@ const getBestMove = (
         rootSeqs[i] = sequence;
       }
 
-      unmakeSearchMove(rootFromSq, rootToSq);
+      unmakeSearchMove(activeSearchPieceState, rootFromSq, rootToSq);
 
       if (scoreIsExact) {
         rootScores[i] = score;
