@@ -140,10 +140,14 @@ function printSummary(label, run) {
   const evalCacheHitRate = evalCacheAccesses > 0
     ? (evalCacheHits / evalCacheAccesses * 100).toFixed(2)
     : '0.00';
+  const probeMismatch = perf.evalCacheProbeMismatch ?? 0;
+  const evictions = perf.evalCacheEvictions ?? 0;
   console.log('evalCache:');
   console.log(`  hits=${evalCacheHits}`);
   console.log(`  misses=${evalCacheMisses}`);
   console.log(`  hitRate=${evalCacheHitRate}%`);
+  console.log(`  probeMismatch=${probeMismatch} (${evalCacheAccesses ? ((probeMismatch / evalCacheAccesses * 100).toFixed(2)) : '0.00'}% of probes)`);
+  console.log(`  evictions=${evictions}`);
   console.log(`  entries=${perf.evalCacheSize ?? 0}`);
   console.log(`  memoryMiB=${((perf.evalCacheBytes ?? 0) / 1048576).toFixed(2)}`);
 
