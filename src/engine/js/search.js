@@ -18,7 +18,6 @@ import {
 import {
     collectSearchMetrics,
     searchContext,
-    searchEvalCache2Way,
     searchLmrMaxReduction,
     searchLmrMinDepth,
     searchLmrMinMove,
@@ -4678,8 +4677,6 @@ let perfStats = {
     quiescenceDeltaPruned: 0,
     staticEvalCacheHits: 0,
     staticEvalCacheMisses: 0,
-    evalCacheProbeMismatch: 0,
-    evalCacheEvictions: 0,
     evaluateBoardMs: 0,
     prepareSearchInfoMs: 0,
     startTime: Date.now()
@@ -4712,8 +4709,6 @@ const resetPerfStats = () => {
     perfStats.quiescenceDeltaPruned = 0;
     perfStats.staticEvalCacheHits = 0;
     perfStats.staticEvalCacheMisses = 0;
-    perfStats.evalCacheProbeMismatch = 0;
-    perfStats.evalCacheEvictions = 0;
     perfStats.evaluateBoardMs = 0;
     perfStats.prepareSearchInfoMs = 0;
     perfStats.startTime = Date.now();
@@ -4772,13 +4767,10 @@ const snapshotPerfStats = () => {
         quiescenceDeltaPruned: perfStats.quiescenceDeltaPruned,
         staticEvalCacheHits: evalHits,
         staticEvalCacheMisses: evalMisses,
-        evalCacheProbeMismatch: collectSearchMetrics ? perfStats.evalCacheProbeMismatch : 0,
-        evalCacheEvictions: collectSearchMetrics ? perfStats.evalCacheEvictions : 0,
         evalCacheSize: EVAL_CACHE_SIZE,
         evalCacheBytes: evalCacheKeys.byteLength +
             evalCacheValues.byteLength +
-            evalCacheGenerations.byteLength +
-            evalCacheLRU.byteLength,
+            evalCacheGenerations.byteLength,
         evaluateBoardMs: perfStats.evaluateBoardMs,
         prepareSearchInfoMs: perfStats.prepareSearchInfoMs,
         tt: transpositionTable.getStats()
@@ -4794,23 +4786,19 @@ const logPerfStats = (currentPlayer) => {
 
 const transpositionTable = new TranspositionTable();
 
-// 叶评估缓存（完整形势分）：2-way set associative，generation O(1) clear。
-// 总槽数保持 1 << 20（同内存），分 1 << 19 组，每组 2 way。
-// LRU 用 1 字节/组：存 MRU way 索引（0 或 1），victim = 1 - LRU[set]。
+// 叶评估缓存（完整形势分）：定长直接映射，完整 key 校验避免槽位冲突误命中。
+// generation 让每次搜索的 clear 保持 O(1)，也避免 Map 满载后的批量 delete。
 const EVAL_CACHE_SIZE = 1 << 20;
-const EVAL_CACHE_SETS = EVAL_CACHE_SIZE >>> 1;  // 1 << 19 = 512K 组
-const EVAL_CACHE_SET_MASK = EVAL_CACHE_SETS - 1;
+const EVAL_CACHE_MASK = EVAL_CACHE_SIZE - 1;
 const evalCacheKeys = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheValues = new Int32Array(EVAL_CACHE_SIZE);
 const evalCacheGenerations = new Uint8Array(EVAL_CACHE_SIZE);
-const evalCacheLRU = new Uint8Array(EVAL_CACHE_SETS);  // 每组 1 字节 MRU 追踪
 let evalCacheGeneration = 1;
 const clearEvalCache = () => {
     evalCacheGeneration = (evalCacheGeneration + 1) & 0xff;
     if (evalCacheGeneration === 0) {
         evalCacheGeneration = 1;
         evalCacheGenerations.fill(0);
-        evalCacheLRU.fill(0);
     }
 };
 
@@ -5004,79 +4992,24 @@ const evaluateLeaf = () => {
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
-// 支持 2-way set associative（LRU 驱逐）或 direct-mapped，由 searchEvalCache2Way 控制。
 const staticSearchEval = (boardHash = 0) => {
     const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash);
     const pieceState = activeSearchPieceState;
     const verificationKey = pieceState.evalVerificationHash;
     const combinedKey = cacheKey ^ verificationKey;
-
-    if (searchEvalCache2Way) {
-        // --- 2-way set associative path ---
-        const setIdx = (cacheKey >>> 1) & EVAL_CACHE_SET_MASK;
-        const baseSlot = setIdx << 1;  // way0 = baseSlot, way1 = baseSlot | 1
-
-        // Probe: check both ways
-        const g0 = evalCacheGenerations[baseSlot];
-        if (g0 === evalCacheGeneration && evalCacheKeys[baseSlot] === combinedKey) {
-            evalCacheLRU[setIdx] = 0;
-            if (collectSearchMetrics) perfStats.staticEvalCacheHits++;
-            leafRelationScratchFresh = false;
-            return evalCacheValues[baseSlot];
-        }
-        const g1 = evalCacheGenerations[baseSlot | 1];
-        if (g1 === evalCacheGeneration && evalCacheKeys[baseSlot | 1] === combinedKey) {
-            evalCacheLRU[setIdx] = 1;
-            if (collectSearchMetrics) perfStats.staticEvalCacheHits++;
-            leafRelationScratchFresh = false;
-            return evalCacheValues[baseSlot | 1];
-        }
-
-        // Miss
-        if (collectSearchMetrics) {
-            perfStats.staticEvalCacheMisses++;
-            if (g0 === evalCacheGeneration || g1 === evalCacheGeneration) {
-                perfStats.evalCacheProbeMismatch++;
-            }
-        }
-
-        // Compute and store
-        const net = evaluateLeaf();
-        let storeSlot;
-        if (g0 !== evalCacheGeneration) {
-            storeSlot = baseSlot;
-        } else if (g1 !== evalCacheGeneration) {
-            storeSlot = baseSlot | 1;
-        } else {
-            const lruWay = evalCacheLRU[setIdx];
-            storeSlot = baseSlot ^ lruWay;
-            if (collectSearchMetrics) perfStats.evalCacheEvictions++;
-        }
-        evalCacheLRU[setIdx] = storeSlot & 1;
-        evalCacheGenerations[storeSlot] = evalCacheGeneration;
-        evalCacheKeys[storeSlot] = combinedKey;
-        evalCacheValues[storeSlot] = net;
-        return net;
-    } else {
-        // --- Direct-mapped path ---
-        const cacheSlot = (cacheKey >>> 0) & (EVAL_CACHE_SIZE - 1);
-        if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
-            evalCacheKeys[cacheSlot] === combinedKey) {
-            if (collectSearchMetrics) perfStats.staticEvalCacheHits++;
-            leafRelationScratchFresh = false;
-            return evalCacheValues[cacheSlot];
-        }
-        if (collectSearchMetrics) {
-            perfStats.staticEvalCacheMisses++;
-            perfStats.evalCacheProbeMismatch++;
-            perfStats.evalCacheEvictions++;
-        }
-        const net = evaluateLeaf();
-        evalCacheGenerations[cacheSlot] = evalCacheGeneration;
-        evalCacheKeys[cacheSlot] = combinedKey;
-        evalCacheValues[cacheSlot] = net;
-        return net;
+    const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
+    if (evalCacheGenerations[cacheSlot] === evalCacheGeneration &&
+        evalCacheKeys[cacheSlot] === combinedKey) {
+        if (collectSearchMetrics) perfStats.staticEvalCacheHits++;
+        leafRelationScratchFresh = false;
+        return evalCacheValues[cacheSlot];
     }
+    if (collectSearchMetrics) perfStats.staticEvalCacheMisses++;
+    const net = evaluateLeaf();
+    evalCacheGenerations[cacheSlot] = evalCacheGeneration;
+    evalCacheKeys[cacheSlot] = combinedKey;
+    evalCacheValues[cacheSlot] = net;
+    return net;
 };
 
 // Generate captures for normal QS nodes, or every pseudo move when the side to
