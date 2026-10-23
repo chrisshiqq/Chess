@@ -567,6 +567,7 @@ const App: React.FC = () => {
     const aiSearchListenerRef = useRef<((e: MessageEvent) => void) | null>(null);
     const aiSearchCleanupRef = useRef<(() => void) | null>(null);
     const aiSearchAbortRef = useRef<{ gameId: number; aborted: boolean } | null>(null);
+    const analysisSearchActiveRef = useRef(false);
 
     const [playDepth, setPlayDepth] = useState<number>(10);
     const [analysisDepth, setAnalysisDepth] = useState<number>(10);
@@ -879,6 +880,34 @@ const App: React.FC = () => {
         terminateWorker();
         return ensureWorker();
     }).current;
+
+    const stopAnalysis = () => {
+        const running = analysisSearchActiveRef.current;
+        analysisSearchActiveRef.current = false;
+        if (running) {
+            recreateWorker();
+        } else if (aiSearchListenerRef.current && workerRef.current) {
+            workerRef.current.removeEventListener('message', aiSearchListenerRef.current);
+            aiSearchListenerRef.current = null;
+        }
+        setIsThinking(false);
+        setIsAnalyzing(false);
+        setAnalysisMoves([]);
+        setSelectedAnalysisMove(null);
+        setIsPreviewing(false);
+        setOriginalBoardForPreview(null);
+        setIsAnalysisMode(false);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
+        const stoppedDebug = {
+            ...aiSearchDebugRef.current,
+            active: false,
+            lastEvent: running ? 'SEARCH aborted' : aiSearchDebugRef.current.lastEvent,
+            lastProgressAt: Date.now()
+        };
+        aiSearchDebugRef.current = stoppedDebug;
+        setAiSearchDebug(stoppedDebug);
+    };
 
     // The lobby does not need the 64 MiB TT and 17 MiB eval cache. Keep the
     // worker absent until a game starts, and release it when App unmounts.
@@ -4652,13 +4681,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button
                                     onClick={() => {
                                         if (isAnalysisMode) {
-                                            setAnalysisMoves([]);
-                                            setSelectedAnalysisMove(null);
-                                            setIsPreviewing(false);
-                                            setOriginalBoardForPreview(null);
-                                            setIsAnalysisMode(false);
-                                            setAnalysisBestMove(null);
-                                            setAnalysisSecondBestMove(null);
+                                            stopAnalysis();
                                             return;
                                         }
                                         // 进入Analysis模式，触发分析
@@ -4689,7 +4712,13 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         };
                                         aiSearchDebugRef.current = postedDebug;
                                         setAiSearchDebug(postedDebug);
+                                        analysisSearchActiveRef.current = true;
                                         if (workerRef.current) {
+                                            const prevListener = aiSearchListenerRef.current;
+                                            if (prevListener) {
+                                                workerRef.current.removeEventListener('message', prevListener);
+                                                aiSearchListenerRef.current = null;
+                                            }
                                             const handleAnalysisMessage = (e: MessageEvent) => {
                                                 const { type, payload } = e.data;
                                                 if (payload?.gameId !== newGameId) return;
@@ -4719,7 +4748,11 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     return;
                                                 }
                                                 if (type === 'SEARCH_COMPLETE') {
+                                                    analysisSearchActiveRef.current = false;
                                                     workerRef.current?.removeEventListener('message', handleAnalysisMessage);
+                                                    if (aiSearchListenerRef.current === handleAnalysisMessage) {
+                                                        aiSearchListenerRef.current = null;
+                                                    }
                                                     const prevDbg = flushAiSearchProgress();
                                                     const bestPreview = previewMove(payload.bestMove) || prevDbg.bestPreview;
                                                     const completedDepth = payload.completedDepth ?? prevDbg.completedDepth;
@@ -4757,6 +4790,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     setIsThinking(false);
                                                 }
                                             };
+                                            aiSearchListenerRef.current = handleAnalysisMessage;
                                             workerRef.current.addEventListener('message', handleAnalysisMessage);
                                             workerRef.current.postMessage({
                                                 type: 'SEARCH',
@@ -4774,12 +4808,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             });
                                         }
                                     }}
-                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
+                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || (!isAnalysisMode && isThinking) || !!gameOver}
                                     style={getButtonStyle()}
                                     className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-blue-500 ring-2 ring-blue-500/30' : ''}`}
                                 >
                                     <BarChartIcon className="w-4 h-4" />
-                                    <span className="text-xs">Analysis</span>
+                                    <span className="text-xs">{isAnalysisMode && isThinking ? 'Stop' : 'Analysis'}</span>
                                 </button>
                                 
                                 {/* 第2排：Undo, Switch */}

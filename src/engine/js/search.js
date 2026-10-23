@@ -5568,6 +5568,7 @@ const alphaBeta = (
 
 // 从子节点沿 TT bestMove 追加 PV；直接复用根 PV 数组，并用追加段逆序还原走子。
 const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
+  const state = activeSearchPieceState;
   const undoStart = sequence.length;
   let currentTurn = turn;
   let hash = boardHash;
@@ -5576,7 +5577,6 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const entry = transpositionTable.retrieve(zobristHasher.ttKeyFromHash(hash, currentTurn));
     const move = entry && entry.bestMove;
     if (!move) break;
-    const state = activeSearchPieceState;
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
     const moverCode = state.squareCodes[from];
