@@ -102,9 +102,9 @@ export const SKINS: Record<Skin, {
         texture: "paper"
     },
     'glass-board': {
-        boardBg: "#70DBDB",
-        containerBg: "#70DBDB",
-        border: "#70DBDB",
+        boardBg: "#B5D4F0",
+        containerBg: "#B5D4F0",
+        border: "#B5D4F0",
         grid: "#589362",
         coord: "#589362",
         river: "#589362",

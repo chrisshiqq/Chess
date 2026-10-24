@@ -4205,7 +4205,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     
 
 
-                    {checkAlert && !gameOver && !isReplaying && !isSetupMode && (
+                    {checkAlert && !gameOver && !isReplaying && !isSetupMode && !isPreviewing && (
                         <div
                             className="absolute pointer-events-none z-20 animate-pulse"
                             style={{
@@ -4224,6 +4224,67 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 }}
                             />
                         </div>
+                    )}
+
+                    {isPreviewing && !isReplaying && (
+                        <button
+                            type="button"
+                            aria-label="Resume"
+                            title="Resume"
+                            onClick={async () => {
+                                if (originalBoardForPreview) {
+                                    setBoard(originalBoardForPreview);
+                                    setOriginalBoardForPreview(null);
+                                    setIsPreviewing(false);
+
+                                    try {
+                                        const currentTurn = turn;
+                                        const evaluation = await workerGetDetailedEval(originalBoardForPreview, currentTurn, false);
+                                        const formattedEvaluation = {
+                                            pre: evaluation,
+                                            post: evaluation,
+                                            diff: {
+                                                red: {
+                                                    total: 0,
+                                                    material: 0,
+                                                    position: 0,
+                                                    safety: 0,
+                                                    mobility: 0,
+                                                    threat: 0
+                                                },
+                                                black: {
+                                                    total: 0,
+                                                    material: 0,
+                                                    position: 0,
+                                                    safety: 0,
+                                                    mobility: 0,
+                                                    threat: 0
+                                                }
+                                            }
+                                        };
+                                        setMoveEvaluation(formattedEvaluation);
+                                    } catch (evalError) {
+                                        console.error('获取局面评估失败:', evalError);
+                                    }
+                                }
+                            }}
+                            className="absolute z-30 flex items-center justify-center bg-transparent p-0 hover:opacity-80 active:scale-95"
+                            style={{
+                                top: '50%',
+                                left: '50%',
+                                transform: 'translate(-50%, -50%)'
+                            }}
+                        >
+                            <ArrowPathIcon
+                                className="text-red-500"
+                                style={{
+                                    width: '48px',
+                                    height: '48px',
+                                    opacity: 0.85,
+                                    filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.5))'
+                                }}
+                            />
+                        </button>
                     )}
 
                     {repetitionWarning && !isReplaying && !isSetupMode && (
@@ -4334,7 +4395,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                 }}
                                             >
                                                 <div className="w-full h-full flex items-center justify-center">
-                                                    <span className={`text-xs font-bold ${SKINS[s].boardBg === '#f0e6d2' ? 'text-stone-800' : 'text-white'}`}>
+                                                    <span className={`text-xs font-bold ${SKINS[s].boardBg === '#5B4B00' ? 'text-white' : 'text-stone-800'}`}>
                                                         {getSkinDisplayName(s)}
                                                     </span>
                                                 </div>
@@ -5002,55 +5063,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
 
                                 {/* Try confirmation UI removed */}
                                 
-                                {/* 退出预览模式按钮 - 放在着法序列下方 */}
-                                {isPreviewing && (
-                                    <button
-                                        onClick={async () => {
-                                            if (originalBoardForPreview) {
-                                                // 恢复到原始棋盘状态
-                                                setBoard(originalBoardForPreview);
-                                                setOriginalBoardForPreview(null);
-                                                setIsPreviewing(false);
-                                                
-                                                // 恢复到原始局面后更新EVALUATION面板
-                                                try {
-                                                    const currentTurn = turn;
-                                                    const evaluation = await workerGetDetailedEval(originalBoardForPreview, currentTurn, false);
-                                                    // 将评估结果转换为moveEvaluation期望的格式
-                                                    const formattedEvaluation = {
-                                                        pre: evaluation,
-                                                        post: evaluation,
-                                                        diff: {
-                                                            red: {
-                                                                total: 0,
-                                                                material: 0,
-                                                                position: 0,
-                                                                safety: 0,
-                                                                mobility: 0,
-                                                                threat: 0
-                                                            },
-                                                            black: {
-                                                                total: 0,
-                                                                material: 0,
-                                                                position: 0,
-                                                                safety: 0,
-                                                                mobility: 0,
-                                                                threat: 0
-                                                            }
-                                                        }
-                                                    };
-                                                    setMoveEvaluation(formattedEvaluation);
-                                                } catch (evalError) {
-                                                    console.error('获取局面评估失败:', evalError);
-                                                }
-                                            }
-                                        }}
-                                        className="col-span-2 px-3 py-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 mt-1 bg-red-600 hover:bg-red-700 text-white"
-                                    >
-                                        <ArrowPathIcon className="w-5 h-5" />
-                                        <span>Resume</span>
-                                    </button>
-                                )}
                             </div>
                         )}
 

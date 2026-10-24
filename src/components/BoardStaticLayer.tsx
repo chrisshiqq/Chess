@@ -301,9 +301,9 @@ export const BoardStaticLayer = React.memo(({
                 )}
                 {texture === 'glass' && (
                     <filter id="glassTexture" x="-50%" y="-50%" width="200%" height="200%">
-                        <feFlood floodColor="#70DBDB" floodOpacity="0.7" result="glassBase" />
+                        <feFlood floodColor="#B5D4F0" floodOpacity="0.7" result="glassBase" />
                         <feTurbulence type="fractalNoise" baseFrequency="0.03125 0.01875" numOctaves="1" seed="300" result="glassNoise" />
-                        <feColorMatrix in="glassNoise" type="matrix" values="0.655 0.2 0.1 0 0 0.25 0.424 0.1 0 0 0.35 0.15 0.616 0 0 0 0 0 1 0" result="glassTint" />
+                        <feColorMatrix in="glassNoise" type="matrix" values="0.45 0.15 0.2 0 0.12 0.2 0.32 0.15 0 0.22 0.25 0.2 0.72 0 0.28 0 0 0 1 0" result="glassTint" />
                         <feComponentTransfer in="glassTint" result="glassContrast">
                             <feFuncR type="linear" slope="1.2" intercept="0.05" />
                             <feFuncG type="linear" slope="1.2" intercept="0.05" />
@@ -321,7 +321,7 @@ export const BoardStaticLayer = React.memo(({
 
             {texture === 'glass' && (
                 <>
-                    <rect x="0" y="0" width={WIDTH} height={HEIGHT} fill="none" stroke="#70DBDB" strokeWidth="15" opacity="0.4" filter="url(#glassTexture)" />
+                    <rect x="0" y="0" width={WIDTH} height={HEIGHT} fill="none" stroke="#B5D4F0" strokeWidth="15" opacity="0.4" filter="url(#glassTexture)" />
                     <ellipse cx={WIDTH * 0.3} cy={HEIGHT * 0.4} rx={WIDTH * 0.4} ry={HEIGHT * 0.3} fill="rgba(255, 255, 255, 0.1)" opacity="0.2" />
                     <path
                         d={`M 0 0 Q ${WIDTH * 0.2} ${HEIGHT * 0.1}, ${WIDTH * 0.5} 0 T ${WIDTH} 0 L ${WIDTH} ${HEIGHT * 0.1} Q ${WIDTH * 0.8} ${HEIGHT * 0.2}, ${WIDTH * 0.5} ${HEIGHT * 0.1} T 0 ${HEIGHT * 0.1} Z`}
