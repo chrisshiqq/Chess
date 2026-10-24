@@ -2174,15 +2174,50 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
     }
 };
 
-const containsEncodedMoveBefore = (moves, end, move) => {
-    for (let i = 0; i < end; i++) {
-        if (moves[i] === move) return true;
+const matchesStagedPrefix = (moves, start, move) =>
+    (start > 0 && moves[0] === move) ||
+    (start > 1 && moves[1] === move) ||
+    (start > 2 && moves[2] === move);
+
+const appendGeneratedStagedMoves = (
+    moves, start, currentPlayer, pieceState, capturesOnly, quietsOnly
+) => {
+    const pieceCodes = pieceState.pieceCodes;
+    const pieceSquares = pieceState.pieceSquares;
+    const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
+    if (start === 0) {
+        for (let i = 0; i < n; i++) {
+            const slot = scratchOwnScanSlots[i];
+            appendSearchPseudoMovesForPiece(
+                moves, pieceSquares[slot], pieceCodes[slot], pieceState,
+                capturesOnly, null, quietsOnly
+            );
+        }
+        return;
     }
-    return false;
+    const special0 = moves[0];
+    const special1 = start > 1 ? moves[1] : -1;
+    const special2 = start > 2 ? moves[2] : -1;
+    for (let i = 0; i < n; i++) {
+        const slot = scratchOwnScanSlots[i];
+        const pieceStart = moves.length;
+        appendSearchPseudoMovesForPiece(
+            moves, pieceSquares[slot], pieceCodes[slot], pieceState,
+            capturesOnly, null, quietsOnly
+        );
+        let write = pieceStart;
+        for (let read = pieceStart; read < moves.length; read++) {
+            const move = moves[read];
+            if (move !== special0 && move !== special1 && move !== special2) {
+                moves[write++] = move;
+            }
+        }
+        moves.length = write;
+    }
 };
 
 const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, quietOnly) => {
-    if (!isEncodedMove(move) || containsEncodedMoveBefore(moves, moves.length, move)) return false;
+    if (!isEncodedMove(move) || matchesStagedPrefix(moves, moves.length, move)) return false;
     const fromSq = move >>> 7;
     const toSq = move & MOVE_TO_MASK;
     const slot = pieceState.squareToSlot[fromSq];
@@ -2214,39 +2249,9 @@ const appendTrueStagedMoves = (
         appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
         appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
     } else if (stage === 2) {
-        const pieceCodes = pieceState.pieceCodes;
-        const pieceSquares = pieceState.pieceSquares;
-        const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
-        for (let i = 0; i < n; i++) {
-            const slot = scratchOwnScanSlots[i];
-            const sq = pieceSquares[slot];
-            const pieceStart = moves.length;
-            appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, true);
-            let write = pieceStart;
-            for (let read = pieceStart; read < moves.length; read++) {
-                const move = moves[read];
-                if (!containsEncodedMoveBefore(moves, start, move)) moves[write++] = move;
-            }
-            moves.length = write;
-        }
+        appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, true, false);
     } else if (stage === 3) {
-        const pieceCodes = pieceState.pieceCodes;
-        const pieceSquares = pieceState.pieceSquares;
-        const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
-        for (let i = 0; i < n; i++) {
-            const slot = scratchOwnScanSlots[i];
-            const sq = pieceSquares[slot];
-            const pieceStart = moves.length;
-            appendSearchPseudoMovesForPiece(
-                moves, sq, pieceCodes[slot], pieceState, false, null, true
-            );
-            let write = pieceStart;
-            for (let read = pieceStart; read < moves.length; read++) {
-                const move = moves[read];
-                if (!containsEncodedMoveBefore(moves, start, move)) moves[write++] = move;
-            }
-            moves.length = write;
-        }
+        appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
     sortStagedMoveRange(moves, start, moves.length, killers);
@@ -4622,6 +4627,7 @@ let perfStats = {
     quiescenceCalls: 0,
     quiescenceCaptureMoves: 0,
     quiescenceDeltaPruned: 0,
+    quiescenceDeltaLayers: 0,
     staticEvalCacheHits: 0,
     staticEvalCacheMisses: 0,
     evaluateBoardMs: 0,
@@ -4654,6 +4660,7 @@ const resetPerfStats = () => {
     perfStats.quiescenceCalls = 0;
     perfStats.quiescenceCaptureMoves = 0;
     perfStats.quiescenceDeltaPruned = 0;
+    perfStats.quiescenceDeltaLayers = 0;
     perfStats.staticEvalCacheHits = 0;
     perfStats.staticEvalCacheMisses = 0;
     perfStats.evaluateBoardMs = 0;
@@ -4712,6 +4719,7 @@ const snapshotPerfStats = () => {
         quiescenceCalls: perfStats.quiescenceCalls,
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         quiescenceDeltaPruned: perfStats.quiescenceDeltaPruned,
+        quiescenceDeltaLayers: perfStats.quiescenceDeltaLayers,
         staticEvalCacheHits: evalHits,
         staticEvalCacheMisses: evalMisses,
         evalCacheSize: EVAL_CACHE_SIZE,
@@ -5185,6 +5193,24 @@ const quiescenceMateValue = (currentPlayer) =>
 // 取一个兵/卒/炮/士的价值（200）——棋子价值表里最弱档，对应 chess 引擎常用的 1 兵边界。
 const QUIESCENCE_DELTA_MARGIN = 200;
 
+const maxQuiescenceVictimValue = (state, currentPlayer) => {
+    if (!leafRelationScratchFresh) return state.materialValues[1];
+    const ownIsRed = currentPlayer === SIDE_RED;
+    const pieceCodes = state.pieceCodes;
+    const materialValues = state.materialValues;
+    let maxVictim = 0;
+    let attacked = scratchLeafAttackedTargetMask >>> 0;
+    while (attacked !== 0) {
+        const bit = attacked & -attacked;
+        attacked ^= bit;
+        const code = pieceCodes[31 - Math.clz32(bit)];
+        if ((code < 8) === ownIsRed) continue;
+        const value = materialValues[code & 7];
+        if (value > maxVictim) maxVictim = value;
+    }
+    return maxVictim;
+};
+
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const sortCaptures = (captures) => {
     const captureCount = captures.length;
@@ -5224,6 +5250,16 @@ const quiescence = (
         } else {
             if (standPat <= alpha) return standPat;
             if (standPat < beta) beta = standPat;
+        }
+        const maxVictim = maxQuiescenceVictimValue(state, currentPlayer);
+        if (maximizing) {
+            if (standPat + maxVictim + QUIESCENCE_DELTA_MARGIN < alpha) {
+                if (collectSearchMetrics) perfStats.quiescenceDeltaLayers++;
+                return standPat;
+            }
+        } else if (standPat - maxVictim - QUIESCENCE_DELTA_MARGIN > beta) {
+            if (collectSearchMetrics) perfStats.quiescenceDeltaLayers++;
+            return standPat;
         }
     }
 
