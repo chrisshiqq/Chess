@@ -423,6 +423,7 @@ const App: React.FC = () => {
     const [board, setBoard] = useState<Board>(createInitialBoard());
     const [turn, setTurn] = useState<Color>('red');
     const [playerColor, setPlayerColor] = useState<Color>('red');
+    const localPlaySideRef = useRef<Color>('red');
     const [coordinateStyle, setCoordinateStyle] = useState<'chinese' | 'western'>('chinese');
     
     const [selectedPos, setSelectedPos] = useState<Position | null>(null);
@@ -2193,7 +2194,6 @@ const App: React.FC = () => {
                 });
         }
 
-        // 关系/单子评估：立即走 forUiInspect（不再防抖、不用 startTransition，避免手机上 defer 感很强）
         if (selectInspectTimerRef.current) {
             clearTimeout(selectInspectTimerRef.current);
             selectInspectTimerRef.current = null;
@@ -2202,12 +2202,10 @@ const App: React.FC = () => {
             .then((result) => {
                 if (String(selectInspectIdRef.current) !== requestId) return;
                 setPieceRelations(result.relations || emptyPieceRelations);
-                setSelectedPieceEval(piece ? (result.evaluation || null) : null);
             })
             .catch(() => {
                 if (String(selectInspectIdRef.current) !== requestId) return;
                 setPieceRelations(emptyPieceRelations);
-                setSelectedPieceEval(null);
             });
     }, [selectedPos, isReplaying, boardHistory, replayIndex, board, isSetupMode, turn, onlineInfo]);
 
@@ -2352,19 +2350,28 @@ const App: React.FC = () => {
         resetGameStateRef.current();
     };
 
-    const prepareFreshGame = (mode: 'ai' | 'local' | 'online') => {
+    const applyLocalSide = (side: 'red' | 'black') => {
+        localPlaySideRef.current = side;
+        if (side === 'red') {
+            setRedIsAuto(false);
+            setBlackIsAuto(true);
+            setPlayerColor('red');
+        } else {
+            setRedIsAuto(true);
+            setBlackIsAuto(false);
+            setPlayerColor('black');
+        }
+    };
+
+    const prepareFreshGame = (mode: LocalPlayMode | 'online') => {
         // Entering from the lobby creates one worker. Do not recreate an
         // already-fresh worker and temporarily overlap two large backing stores.
         if (mode !== 'online') ensureWorker();
         resetGameStateRef.current();
-        if (mode === 'ai') {
-            setRedIsAuto(false);
-            setBlackIsAuto(true);
-            setPlayerColor('red');
-        } else if (mode === 'local') {
-            setRedIsAuto(false);
-            setBlackIsAuto(false);
-            setPlayerColor('red');
+        if (mode === 'ai' || mode === 'red') {
+            applyLocalSide('red');
+        } else if (mode === 'black') {
+            applyLocalSide('black');
         } else {
             setRedIsAuto(false);
             setBlackIsAuto(false);
@@ -2499,11 +2506,17 @@ const App: React.FC = () => {
         const initialBoard = createInitialBoard();
         setBoard(initialBoard);
         setTurn('red');
-        setRedIsAuto(false);
-        setBlackIsAuto(true); // 恢复黑方默认 AI
+        if (localPlaySideRef.current === 'black') {
+            setRedIsAuto(true);
+            setBlackIsAuto(false);
+            setPlayerColor('black');
+        } else {
+            setRedIsAuto(false);
+            setBlackIsAuto(true);
+            setPlayerColor('red');
+        }
         setRedStepCount(0);
         setBlackStepCount(0);
-        setPlayerColor('red');
         setGameOver(null);
         setBoardHistory([initialBoard]);
         setMoveHistory([]);

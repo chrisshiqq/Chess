@@ -3,7 +3,7 @@ import type { AppScreen, ConnectionStatus } from '../net/types';
 
 const NICK_KEY = 'cxchess-nick';
 
-export type LocalPlayMode = 'ai' | 'local';
+export type LocalPlayMode = 'ai' | 'red' | 'black';
 
 interface LobbyScreenProps {
   screen: Extract<AppScreen, 'lobby' | 'waiting'>;
@@ -33,6 +33,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [nick, setNick] = useState(() => localStorage.getItem(NICK_KEY) || '');
   const [joinCode, setJoinCode] = useState('');
   const [copied, setCopied] = useState(false);
+  const [playAs, setPlayAs] = useState<'red' | 'black'>('red');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -141,19 +142,36 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <p className="text-xs text-stone-500 mb-1 ml-1">Local</p>
 
         <div className="space-y-3 mb-8">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setPlayAs('red')}
+              className={`w-full py-3.5 rounded-xl font-bold text-base transition-colors ${
+                playAs === 'red'
+                  ? 'bg-amber-600 hover:bg-amber-500 text-stone-950'
+                  : 'bg-stone-700 hover:bg-stone-600'
+              }`}
+            >
+              Red
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlayAs('black')}
+              className={`w-full py-3.5 rounded-xl font-bold text-base transition-colors ${
+                playAs === 'black'
+                  ? 'bg-amber-600 hover:bg-amber-500 text-stone-950'
+                  : 'bg-stone-700 hover:bg-stone-600'
+              }`}
+            >
+              Black
+            </button>
+          </div>
           <button
             type="button"
-            onClick={() => onStartLocal('ai')}
+            onClick={() => onStartLocal(playAs)}
             className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
           >
             Player vs Computer
-          </button>
-          <button
-            type="button"
-            onClick={() => onStartLocal('local')}
-            className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
-          >
-            Player vs Player
           </button>
         </div>
 
