@@ -1355,7 +1355,7 @@ const App: React.FC = () => {
         gameOverTimerRef.current = setTimeout(() => {
             handleGameOver(state.status, state.winner);
             setPendingGameOver(null);
-        }, 5000);
+        }, 2000);
     };
 
     // 切换音乐开关
@@ -2608,11 +2608,16 @@ const App: React.FC = () => {
         setSelectedPieceEval(null);
     };
 
-    const handleUndo = async () => {
+    const handleUndo = async (
+        autoOverride?: { redIsAuto: boolean; blackIsAuto: boolean }
+    ) => {
         if (isThinking) return;
 
         // 检查是否有足够的历史记录可以悔棋
         if (boardHistory.length < 2) return;
+
+        const undoRedIsAuto = autoOverride?.redIsAuto ?? redIsAuto;
+        const undoBlackIsAuto = autoOverride?.blackIsAuto ?? blackIsAuto;
 
         // 清除游戏结束定时器
         if (gameOverTimerRef.current) {
@@ -2626,7 +2631,7 @@ const App: React.FC = () => {
         let prevBoard;
 
         // 检查是否有Manual方
-        const hasManualPlayer = !redIsAuto || !blackIsAuto;
+        const hasManualPlayer = !undoRedIsAuto || !undoBlackIsAuto;
         
         if (hasManualPlayer) {
             // 回退到上一次Manual方操作前的状态
@@ -2638,7 +2643,7 @@ const App: React.FC = () => {
                 const moveColor = i % 2 === 0 ? 'red' : 'black';
                 
                 // 检查当前move是否是Manual方的操作
-                const isManualMove = (moveColor === 'red' && !redIsAuto) || (moveColor === 'black' && !blackIsAuto);
+                const isManualMove = (moveColor === 'red' && !undoRedIsAuto) || (moveColor === 'black' && !undoBlackIsAuto);
                 
                 if (isManualMove) {
                     manualMoveIndex = i;
@@ -2708,6 +2713,17 @@ const App: React.FC = () => {
             setAnalysisBestMove(null);
             setAnalysisSecondBestMove(null);
         }
+    };
+
+    const handleRetry = () => {
+        const humanIsRed = playerColor === 'red';
+        const override = {
+            redIsAuto: !humanIsRed,
+            blackIsAuto: humanIsRed
+        };
+        setRedIsAuto(override.redIsAuto);
+        setBlackIsAuto(override.blackIsAuto);
+        void handleUndo(override);
     };
 
     // handleAuto function is now replaced with direct setRedIsAuto and setBlackIsAuto calls in the UI
@@ -4314,40 +4330,31 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <div className="text-center mb-2 text-yellow-600">
                                     {pendingGameOver.status === 'checkmate' ? '🏁 Checkmate!' : '🏁 Stalemate!'}
                                 </div>
-                                <div className="text-sm text-amber-100 text-center">
-                                    Game ending in 5s.
-                                </div>
                             </div>
                         </div>
                     )}
 
                     {gameOver && gameOver.status !== 'setup' && !isReplaying && (
-                        <>
-                            <div
-                                className="absolute z-50 pointer-events-none animate-scaleUp text-4xl font-extrabold tracking-wide drop-shadow-md text-red-500/90"
-                                style={{
-                                    top: '50%',
-                                    left: '50%',
-                                    transform: 'translate(-50%, -50%)'
-                                }}
-                            >
-                                {gameOver.status === 'draw' ? 'DRAW' : (gameOver.winner === playerColor ? 'VICTORY' : 'DEFEAT')}
-                            </div>
-                            <div
-                                className="absolute z-50 flex gap-3 pointer-events-auto"
-                                style={{
-                                    top: 'calc(50% + 28px)',
-                                    left: '50%',
-                                    transform: 'translateX(-50%)'
-                                }}
-                            >
+                        <div
+                            className="absolute inset-x-0 z-50 flex items-center pointer-events-none"
+                            style={{
+                                top: '50%',
+                                transform: 'translateY(-50%)'
+                            }}
+                        >
+                            <div className="flex flex-1 justify-end pr-2">
                                 <button
                                     type="button"
                                     onClick={startReplay}
-                                    className="px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
+                                    className="pointer-events-auto px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
                                 >
                                     Replay
                                 </button>
+                            </div>
+                            <div className="animate-scaleUp px-1 text-4xl font-extrabold tracking-wide drop-shadow-md text-red-500/90 whitespace-nowrap">
+                                {gameOver.status === 'draw' ? 'DRAW' : (gameOver.winner === playerColor ? 'WIN' : 'LOST')}
+                            </div>
+                            <div className="flex flex-1 justify-start pl-2">
                                 <button
                                     type="button"
                                     onClick={() => {
@@ -4356,14 +4363,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             leaveToLobby();
                                             return;
                                         }
-                                        handleRestart();
+                                        handleRetry();
                                     }}
-                                    className="px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors"
+                                    disabled={!onlineInfo && boardHistory.length < 2}
+                                    className="pointer-events-auto px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors disabled:opacity-40"
                                 >
-                                    {onlineInfo ? 'Back to Lobby' : 'Restart'}
+                                    {onlineInfo ? 'Back to Lobby' : 'Retry'}
                                 </button>
                             </div>
-                        </>
+                        </div>
                     )}
                 </div>
                 

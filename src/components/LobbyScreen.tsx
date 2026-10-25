@@ -142,6 +142,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <p className="text-xs text-stone-500 mb-1 ml-1">Local</p>
 
         <div className="space-y-3 mb-8">
+          <button
+            type="button"
+            onClick={() => onStartLocal(playAs)}
+            className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
+          >
+            Player vs Computer
+          </button>
           <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
@@ -166,13 +173,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               Black
             </button>
           </div>
-          <button
-            type="button"
-            onClick={() => onStartLocal(playAs)}
-            className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
-          >
-            Player vs Computer
-          </button>
         </div>
 
         <div className="h-px bg-stone-700 mb-6" />
