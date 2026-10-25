@@ -163,22 +163,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <button
               type="button"
               onClick={() => setPlayAs('red')}
-              style={{
-                ...panelControlStyle(),
-                borderColor: playAs === 'red' ? '#57534e' : 'transparent',
-              }}
-              className={`w-full py-3.5 text-base ${panelControlClass}`}
+              style={panelControlStyle()}
+              className={`w-full py-3.5 text-base ${panelControlClass} ${
+                playAs === 'red' ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
+              }`}
             >
               Red
             </button>
             <button
               type="button"
               onClick={() => setPlayAs('black')}
-              style={{
-                ...panelControlStyle(),
-                borderColor: playAs === 'black' ? '#57534e' : 'transparent',
-              }}
-              className={`w-full py-3.5 text-base ${panelControlClass}`}
+              style={panelControlStyle()}
+              className={`w-full py-3.5 text-base ${panelControlClass} ${
+                playAs === 'black' ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
+              }`}
             >
               Black
             </button>

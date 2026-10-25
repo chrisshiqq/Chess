@@ -10,7 +10,6 @@ import {
     GearIcon, 
     LightBulbIcon, 
     PlayIcon, 
-    StopIcon, 
     UndoIcon, 
     SparklesIcon,
     SpeakerWaveIcon,
@@ -3899,8 +3898,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const currentTurn = useMemo(() => {
         return isReplaying ? (replayIndex % 2 === 0 ? 'red' : 'black') : turn;
     }, [isReplaying, replayIndex, turn]);
-    const isAutoTurn = (isReplaying ? currentTurn : turn) === 'red' ? redIsAuto : blackIsAuto;
-    
     const displayLastMove = isReplaying 
         ? (replayIndex > 0 ? moveHistory[replayIndex - 1] : null)
         : (moveHistory.length > 0 ? moveHistory[moveHistory.length - 1] : null);
@@ -4929,7 +4926,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 
                                 {/* 第2排：Undo, Switch */}
                                 <button 
-                                    onClick={handleUndo} 
+                                    onClick={() => { void handleUndo(); }} 
                                     disabled={!!onlineInfo || boardHistory.length < 1 || (!!gameOver && !pendingGameOver) || isThinking} 
                                     style={getButtonStyle()}
                                     className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"

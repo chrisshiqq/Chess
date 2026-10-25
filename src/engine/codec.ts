@@ -13,12 +13,11 @@ export const decodeBoard = (board: WireBoard): Board => {
   if (!Array.isArray(board) || board.length !== 10 || board.some((row) => !Array.isArray(row) || row.length !== 9)) {
     throw new TypeError('Invalid board shape');
   }
-  if (!isCompactBoard(board)) return board;
+  if (!isCompactBoard(board)) return board as Board;
 
-  return board.map((row) => row.map((code) => {
-    if (typeof code !== 'number') return code as Piece | null;
-    return searchCodeToPiece(cellToSearchCode(code)) as Piece | null;
-  }));
+  return (board as CompactBoard).map((row) => row.map((code) =>
+    searchCodeToPiece(cellToSearchCode(code)) as Piece | null
+  ));
 };
 
 const MOVE_TO_MASK = 0x7f;

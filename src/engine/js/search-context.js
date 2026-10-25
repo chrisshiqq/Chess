@@ -6,6 +6,9 @@ export let searchLmrMaxReduction = 2;
 export let searchNmpMinDepth = 3;
 export let searchNmpReduction = 2;
 
+/** @type {(info: Record<string, unknown>) => void} */
+export const noopSearchProgress = () => {};
+
 export const searchContext = {
   profile: searchProfile,
   collectMetrics: collectSearchMetrics,
@@ -23,8 +26,7 @@ export const searchContext = {
   ttSearchPly: 0,
   // 分析最后一层精确回搜的根着法数量；0=不限制
   exactRootLimit: 0,
-  /** @type {null | ((info: Record<string, unknown>) => void)} */
-  reportSearchProgress: null
+  reportSearchProgress: noopSearchProgress
 };
 
 export const configureSearch = ({

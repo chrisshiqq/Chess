@@ -500,6 +500,7 @@ const updatePieceStateAfterUnmake = (state, fromSq, toSq, fromR, fromC, toR, toC
 const lowestSetBitIndex = (mask) => 31 - Math.clz32(mask & -mask);
 
 // 主评估函数：局面评估面板。点棋关系请用 evaluatePiece。
+/** @param {string | null} [currentPlayer] */
 const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
     runWithPieceState(board, () => {
     const __t0 = searchProfile ? performance.now() : 0;
@@ -618,6 +619,7 @@ const evaluateBoard = (board, currentPlayer = null, gameStage = 'mid') =>
     });
 
 // 点棋：关系 + 单子分。不跑终局扫着，也不改 evaluateBoard。
+/** @param {string | null} [currentPlayer] */
 const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     runWithPieceState(board, () => {
     const piecesInfo = [];
@@ -3143,7 +3145,6 @@ class ZobristHasher {
     }
 
     pieceIndex(code) {
-        if (typeof code !== 'number') return undefined;
         const idx = SEARCH_CODE_TO_ZOBRIST[code];
         return idx >= 0 ? idx : undefined;
     }
@@ -3334,21 +3335,7 @@ class OpeningBook {
         }
         if (!entry || entry.moves.length === 0) return null;
         const selectedMove = this.selectWeightedMove(entry.moves);
-        if (selectedMove && mirroredMove) {
-            const mirroredMoveConverted = this.hasher.mirrorMove(selectedMove);
-            if (mirroredMoveConverted && mirroredMoveConverted.from && mirroredMoveConverted.to &&
-                typeof mirroredMoveConverted.from.r === 'number' && typeof mirroredMoveConverted.from.c === 'number' &&
-                typeof mirroredMoveConverted.to.r === 'number' && typeof mirroredMoveConverted.to.c === 'number') {
-                return mirroredMoveConverted;
-            }
-            return null;
-        }
-        if (selectedMove && selectedMove.from && selectedMove.to &&
-            typeof selectedMove.from.r === 'number' && typeof selectedMove.from.c === 'number' &&
-            typeof selectedMove.to.r === 'number' && typeof selectedMove.to.c === 'number') {
-            return selectedMove;
-        }
-        return null;
+        return mirroredMove ? this.hasher.mirrorMove(selectedMove) : selectedMove;
     }
 
     getBookMove(board, ply){
@@ -3400,34 +3387,8 @@ class OpeningBook {
         const selectedMove = this.selectWeightedMove(entry.moves);
         console.log('Opening book move selected:', selectedMove);
         
-        // If we used mirrored position, mirror the move back
-        if (selectedMove && mirroredMove) {
-            // console.log('Selected mirror move before conversion:', JSON.stringify(selectedMove));
-            const mirroredMoveConverted = this.hasher.mirrorMove(selectedMove);
-            // console.log('Converted mirror move:', JSON.stringify(mirroredMoveConverted));
-            
-            // Check if the mirrored move has valid structure
-            if (mirroredMoveConverted && mirroredMoveConverted.from && mirroredMoveConverted.to &&
-                typeof mirroredMoveConverted.from.r === 'number' && typeof mirroredMoveConverted.from.c === 'number' &&
-                typeof mirroredMoveConverted.to.r === 'number' && typeof mirroredMoveConverted.to.c === 'number') {
-                return mirroredMoveConverted;
-            } else {
-                console.log('Mirrored move has invalid structure, returning null');
-                return null;
-            }
-        } else if (selectedMove) {
-            // Check if the selected move has valid structure
-            if (selectedMove.from && selectedMove.to &&
-                typeof selectedMove.from.r === 'number' && typeof selectedMove.from.c === 'number' &&
-                typeof selectedMove.to.r === 'number' && typeof selectedMove.to.c === 'number') {
-                return selectedMove;
-            } else {
-                console.log('Selected move has invalid structure, returning null');
-                return null;
-            }
-        }
-        
-        return null;
+        if (mirroredMove) return this.hasher.mirrorMove(selectedMove);
+        return selectedMove;
     }
 
     /**
@@ -3672,6 +3633,7 @@ class OpeningBook {
      * @param notation Array of move strings in traditional notation
      * @returns Array of moves in coordinate format
      */
+    /** @param {unknown} [initialBoard] */
     notationToMoves(notation, initialBoard = null) {
         // 确保notation是数组且不为空
         if (!notation || !Array.isArray(notation) || notation.length === 0) {
@@ -4373,6 +4335,7 @@ const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
 
 
 
+/** @returns {'early' | 'mid' | 'late'} */
 const getGameStage = () => 'early';
 
 // 实例化ZobristHasher
@@ -5230,8 +5193,6 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
 };
 
-// generateCapturesForSearch removed (unused alias)
-
 const quiescenceMateValue = (currentPlayer) =>
     currentPlayer === activeSearchInitiator ? -100000 : 100000;
 
@@ -5290,7 +5251,6 @@ const quiescence = (
     let standPat;
     if (!knownInCheck) {
         standPat = staticSearchEval(boardHash, state);
-        if (qsDepth <= 0) return standPat;
         if (maximizing) {
             if (standPat >= beta) return standPat;
             if (standPat > alpha) alpha = standPat;
@@ -5703,7 +5663,7 @@ const scratchRootCheckInfo = createCheckInfo();
 const getBestMove = (
   board,
   turn,
-  depth = 8,
+  depth = 10,
   ply = 0,
   exactRootScores = false,
   excludedRootMoves = []
@@ -5720,9 +5680,7 @@ const getBestMove = (
   const rootPieceState = activeSearchPieceState;
   try {
   const bookMove = openingBook.getBookMoveFromState(rootPieceState, ply);
-  if (bookMove && bookMove.from && bookMove.to &&
-      typeof bookMove.from.r === 'number' && typeof bookMove.from.c === 'number' &&
-      typeof bookMove.to.r === 'number' && typeof bookMove.to.c === 'number') {
+  if (bookMove) {
     const fromSq = bookMove.from.r * 9 + bookMove.from.c;
     const toSq = bookMove.to.r * 9 + bookMove.to.c;
     const moverCode = rootPieceState.squareCodes[fromSq];
@@ -5752,17 +5710,13 @@ const getBestMove = (
   resetPerfStats();
   snapshotLeafWeights();
   const startTime = Date.now();
-  if (typeof searchContext.reportSearchProgress === 'function') {
-    try {
-      searchContext.reportSearchProgress({
-        phase: 'root-eval',
-        turn,
-        maxDepth: Math.max(1, depth | 0),
-        completedDepth: -1,
-        elapsedMs: 0
-      });
-    } catch (_) { /* ignore */ }
-  }
+  searchContext.reportSearchProgress({
+    phase: 'root-eval',
+    turn,
+    maxDepth: Math.max(1, depth | 0),
+    completedDepth: -1,
+    elapsedMs: 0
+  });
   transpositionTable.resetStats();
   const ttReuseScope = searchContext.ttReuseScope == null
     ? null
@@ -5838,14 +5792,15 @@ const getBestMove = (
       secondMoveSequence: [],
       bestMoveScore: 0,
       secondBestMoveScore: 0,
-      allMovesWithScores: []
+      allMovesWithScores: [],
+      completedDepth: 0,
+      fromBook: false,
+      thinkingTime: 0
     };
   }
 
   const emitSearchProgress = (info) => {
-    const report = searchContext.reportSearchProgress;
-    if (typeof report !== 'function') return;
-    report({
+    searchContext.reportSearchProgress({
       turn,
       maxDepth,
       rootMoves: rootMoves.length,

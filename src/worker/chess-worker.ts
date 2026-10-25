@@ -16,7 +16,7 @@ import {
   isCheck,
   isValidPlacement
 } from '../engine/js/rules.js';
-import { configureSearch, searchContext } from '../engine/js/search-context.js';
+import { configureSearch, noopSearchProgress, searchContext } from '../engine/js/search-context.js';
 import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
 
 type Emit = (message: WorkerResponse) => void;
@@ -105,7 +105,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
           }
         });
 
-        searchContext.reportSearchProgress = (info) => {
+        searchContext.reportSearchProgress = (info: Record<string, unknown>) => {
           emit({
             type: 'SEARCH_PROGRESS',
             payload: {
@@ -133,7 +133,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
             payload.excludedRootMoves ?? []
           );
         } finally {
-          searchContext.reportSearchProgress = null;
+          searchContext.reportSearchProgress = noopSearchProgress;
         }
         const fromBook = !!result.fromBook;
         const thinkingTime = fromBook ? 0 : (result.thinkingTime ?? 0);
