@@ -55,17 +55,20 @@ const FlyingPiece: React.FC<{
     startPos: Position, 
     targetPos: {x: number, y: number},
     isFlipped: boolean,
-    material?: PieceMaterial
-}> = ({ piece, startPos, targetPos, isFlipped, material = 'wood' }) => {
+    material?: PieceMaterial,
+    scale?: number
+}> = ({ piece, startPos, targetPos, isFlipped, material = 'wood', scale = 1 }) => {
     const materialIdPrefix = `flying-${useId().replace(/:/g, '')}`;
     // 使用与ChessBoard组件相同的坐标计算逻辑
     const CELL_SIZE = 50;
     const BOARD_OFFSET = 50;
+    const startTop = ((isFlipped ? startPos.r : (9 - startPos.r)) * CELL_SIZE + BOARD_OFFSET) * scale;
+    const startLeft = ((isFlipped ? (8 - startPos.c) : startPos.c) * CELL_SIZE + BOARD_OFFSET) * scale;
     
     // 计算正确的起点坐标，与ChessBoard的toSVG函数逻辑一致
     const [style, setStyle] = useState<React.CSSProperties>({
-        top: (isFlipped ? startPos.r : (9 - startPos.r)) * CELL_SIZE + BOARD_OFFSET,
-        left: (isFlipped ? (8 - startPos.c) : startPos.c) * CELL_SIZE + BOARD_OFFSET,
+        top: startTop,
+        left: startLeft,
         transform: 'scale(1)',
         opacity: 1,
     });

@@ -502,6 +502,32 @@ const App: React.FC = () => {
     const [setupSupply, setSetupSupply] = useState(INITIAL_SUPPLY);
 
     const [flyingPiece, setFlyingPiece] = useState<{ piece: Piece, from: Position, target: {x: number, y: number}, id: number } | null>(null);
+    const boardFlyLayerRef = useRef<HTMLDivElement>(null);
+    const oppCapturedPanelRef = useRef<HTMLDivElement>(null);
+    const ownCapturedPanelRef = useRef<HTMLDivElement>(null);
+    const getCaptureFlyTarget = (isAlly: boolean) => {
+        const layer = boardFlyLayerRef.current;
+        const panel = isAlly ? ownCapturedPanelRef.current : oppCapturedPanelRef.current;
+        if (layer && panel) {
+            const layerRect = layer.getBoundingClientRect();
+            const panelRect = panel.getBoundingClientRect();
+            return {
+                x: panelRect.left + panelRect.width / 2 - layerRect.left,
+                y: panelRect.top + panelRect.height / 2 - layerRect.top,
+            };
+        }
+        const portrait = typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches;
+        if (portrait) {
+            return {
+                x: (layer?.clientWidth ?? 500) / 2,
+                y: isAlly ? BOARD_HEIGHT_PX + 50 : -40,
+            };
+        }
+        return {
+            x: -160,
+            y: isAlly ? BOARD_HEIGHT_PX - 60 : 40,
+        };
+    };
     // 行棋动画状态
     const [moveAnimation, setMoveAnimation] = useState<{ from: Position, to: Position, id: number, piece: Piece } | null>(null);
 
@@ -1915,13 +1941,12 @@ const App: React.FC = () => {
         if (targetPiece) {
             //console.log('executeMove: showing capture animation');
             const isAlly = targetPiece.color === playerColor;
-            const targetX = -160; 
-            const targetY = isAlly ? (BOARD_HEIGHT_PX - 60) : 40;
+            const target = getCaptureFlyTarget(isAlly);
 
             setFlyingPiece({ 
                 piece: targetPiece, 
                 from: move.to, 
-                target: { x: targetX, y: targetY },
+                target,
                 id: Date.now() 
             });
             setTimeout(() => setFlyingPiece(null), 2000);
@@ -3457,13 +3482,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 // 显示吃子动画
                 if (targetPiece) {
                     const isAlly = targetPiece.color === playerColor;
-                    const targetX = -160; 
-                    const targetY = isAlly ? (BOARD_HEIGHT_PX - 60) : 40;
+                    const target = getCaptureFlyTarget(isAlly);
 
                     setFlyingPiece({ 
                         piece: targetPiece, 
                         from: currentMove.to, 
-                        target: { x: targetX, y: targetY },
+                        target,
                         id: Date.now() 
                     });
                     setTimeout(() => setFlyingPiece(null), 2000);
@@ -4041,6 +4065,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         </div>
                         
                         {!isSetupMode && (
+                            <div ref={oppCapturedPanelRef} className="w-full">
                             <SidePanel 
                                 color={playerColor === 'red' ? 'black' : 'red'} 
                                 playerColor={playerColor}
@@ -4051,6 +4076,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 onDrop={(e) => handleDropOnPanel(e, playerColor === 'red' ? 'black' : 'red')}
                                 recentlyCaptured={recentlyCaptured}
                             />
+                            </div>
                         )}
 
                         {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
@@ -4088,6 +4114,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         </div>
                         
                         {!isSetupMode && (
+                            <div ref={ownCapturedPanelRef} className="w-full">
                             <SidePanel 
                                 color={playerColor} 
                                 playerColor={playerColor}
@@ -4098,6 +4125,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
                                 onDrop={(e) => handleDropOnPanel(e, playerColor)}
                             />
+                            </div>
                         )}
 
                         {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
@@ -4128,7 +4156,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     </div>
                 </div>
 
-                <div className="relative order-2 lg:order-2 w-full max-w-[500px] flex justify-center">
+                <div ref={boardFlyLayerRef} className="relative order-2 lg:order-2 w-full max-w-[500px] flex justify-center overflow-visible">
                     <ChessBoard 
                         board={displayBoard} 
                         onSelect={handlePieceSelect} 
@@ -4229,6 +4257,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                              targetPos={flyingPiece.target}
                              isFlipped={isFlipped}
                              material={material}
+                             scale={Math.min(1, (boardFlyLayerRef.current?.clientWidth ?? 500) / 500)}
                          />
                     )}
                     
@@ -4892,7 +4921,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     }}
                                     disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || (!isAnalysisMode && isThinking) || !!gameOver}
                                     style={getButtonStyle()}
-                                    className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-blue-500 ring-2 ring-blue-500/30' : ''}`}
+                                    className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-stone-600' : ''}`}
                                 >
                                     <BarChartIcon className="w-4 h-4" />
                                     <span className="text-xs">{isAnalysisMode && isThinking ? 'Stop' : 'Analysis'}</span>

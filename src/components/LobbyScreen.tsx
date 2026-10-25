@@ -48,6 +48,14 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
   const trimmedNick = nick.trim() || 'Player';
 
+  const panelControlStyle = (disabled = false): React.CSSProperties => ({
+    backgroundColor: disabled ? 'rgba(28, 25, 23, 0.3)' : 'rgba(28, 25, 23, 0.5)',
+    borderColor: disabled ? '#3f3d3a' : '#57534e',
+    color: disabled ? '#927659' : '#d6d3d1',
+  });
+  const panelControlClass =
+    'rounded-lg font-bold transition-all border shadow-sm hover:opacity-80 active:scale-95';
+
   if (screen === 'waiting') {
     const waitingLabel =
       connectionStatus === 'connecting'
@@ -134,7 +142,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           onChange={(e) => persistNick(e.target.value)}
           placeholder="Player"
           maxLength={16}
-          className="w-full mb-6 px-4 py-3 rounded-xl bg-stone-800 border border-stone-600 focus:border-amber-500 outline-none text-stone-100"
+          style={panelControlStyle()}
+          className={`w-full mb-6 px-4 py-3 outline-none placeholder:text-stone-500 ${panelControlClass}`}
         />
 
         <div className="h-px bg-stone-700 mb-6" />
@@ -145,7 +154,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           <button
             type="button"
             onClick={() => onStartLocal(playAs)}
-            className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors"
+            style={panelControlStyle()}
+            className={`w-full py-3.5 text-base ${panelControlClass}`}
           >
             Player vs Computer
           </button>
@@ -153,18 +163,22 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <button
               type="button"
               onClick={() => setPlayAs('red')}
-              className={`w-full py-3.5 rounded-xl border-2 bg-stone-700 font-bold text-base transition-colors hover:bg-stone-600 ${
-                playAs === 'red' ? 'border-blue-500' : 'border-transparent'
-              }`}
+              style={{
+                ...panelControlStyle(),
+                borderColor: playAs === 'red' ? '#57534e' : 'transparent',
+              }}
+              className={`w-full py-3.5 text-base ${panelControlClass}`}
             >
               Red
             </button>
             <button
               type="button"
               onClick={() => setPlayAs('black')}
-              className={`w-full py-3.5 rounded-xl border-2 bg-stone-700 font-bold text-base transition-colors hover:bg-stone-600 ${
-                playAs === 'black' ? 'border-blue-500' : 'border-transparent'
-              }`}
+              style={{
+                ...panelControlStyle(),
+                borderColor: playAs === 'black' ? '#57534e' : 'transparent',
+              }}
+              className={`w-full py-3.5 text-base ${panelControlClass}`}
             >
               Black
             </button>
@@ -177,7 +191,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <button
           type="button"
           onClick={() => onCreateRoom(trimmedNick)}
-          className="w-full py-3.5 rounded-xl bg-stone-700 hover:bg-stone-600 font-bold text-base transition-colors mb-3"
+          style={panelControlStyle()}
+          className={`w-full py-3.5 text-base mb-3 ${panelControlClass}`}
         >
           Create Room
         </button>
@@ -188,13 +203,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             onChange={(e) => setJoinCode(e.target.value.trim().toLowerCase())}
             placeholder="Enter room code"
             maxLength={8}
-            className="flex-1 px-4 py-3 rounded-xl bg-stone-800 border border-stone-600 focus:border-amber-500 outline-none font-mono tracking-wider uppercase"
+            style={panelControlStyle()}
+            className={`flex-1 px-4 py-3 outline-none font-mono tracking-wider uppercase placeholder:text-stone-500 ${panelControlClass}`}
           />
           <button
             type="button"
             disabled={joinCode.length < 4}
             onClick={() => onJoinRoom(trimmedNick, joinCode)}
-            className="px-5 py-3 rounded-xl bg-stone-100 text-stone-900 font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white transition-colors"
+            style={panelControlStyle(joinCode.length < 4)}
+            className={`px-5 py-3 disabled:opacity-50 disabled:cursor-not-allowed ${panelControlClass}`}
           >
             Join
           </button>

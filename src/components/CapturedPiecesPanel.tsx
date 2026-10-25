@@ -102,8 +102,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                         </div>
                     );
                 })}
-                {pieces.length === 0 && (
-                    <div className={`${isSetupMode ? 'col-span-8 lg:col-span-4' : 'col-span-8'} text-xs text-center italic py-2 opacity-50 ${styles.text}`}>
+                {isSetupMode && pieces.length === 0 && (
+                    <div className={`col-span-8 lg:col-span-4 text-xs text-center italic py-2 opacity-50 ${styles.text}`}>
                         Empty
                     </div>
                 )}
