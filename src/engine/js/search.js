@@ -2492,13 +2492,14 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
         switch (pieceType) {
             case 1: {
                 const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = generalDestOff[destBase], n = generalDestOff[destBase + 1]; i < n; i++) {
+                const destStart = generalDestOff[destBase];
+                const destEnd = generalDestOff[destBase + 1];
+                let occupied = 0;
+                for (let i = destStart; i < destEnd; i++) {
                     const sq = generalDestData[i];
                     const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        // 将只走己方九宫，空步永远不是对方将安全点
-                        mobilityValue += 1;
-                    } else {
+                    if (targetCode !== 0) {
+                        occupied++;
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
@@ -2507,19 +2508,22 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                mobilityValue = destEnd - destStart - occupied;
+                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
             }
             case 5: {
                 const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
-                for (let i = advisorDestOff[destBase], n = advisorDestOff[destBase + 1]; i < n; i++) {
+                const destStart = advisorDestOff[destBase];
+                const destEnd = advisorDestOff[destBase + 1];
+                let occupied = 0;
+                for (let i = destStart; i < destEnd; i++) {
                     const sq = advisorDestData[i];
                     const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        // 仕只走己方九宫，空步永远不是对方将安全点
-                        mobilityValue += 1;
-                    } else {
+                    if (targetCode !== 0) {
+                        occupied++;
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
@@ -2528,6 +2532,8 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                mobilityValue = destEnd - destStart - occupied;
+                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2557,15 +2563,16 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             }
             case 4: {
                 const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
+                let openCount = 0;
+                let occupied = 0;
                 for (let i = elephantDestOff[destBase], n = elephantDestOff[destBase + 1]; i < n; i++) {
                     const packed = elephantDestData[i];
                     if (squareCodes[packed >>> 7] !== 0) continue;
+                    openCount++;
                     const sq = packed & 127;
                     const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        // 相不过河，空步到不了对方九宫
-                        mobilityValue += 1;
-                    } else {
+                    if (targetCode !== 0) {
+                        occupied++;
                         const targetSlot = squareToSlot[sq];
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
@@ -2574,6 +2581,8 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
+                mobilityValue = openCount - occupied;
+                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -4628,6 +4637,11 @@ let perfStats = {
     quiescenceCaptureMoves: 0,
     quiescenceDeltaPruned: 0,
     quiescenceDeltaLayers: 0,
+    qsCaptureSortSkipped: 0,
+    qsCaptureSortRan: 0,
+    palaceMobilityAddsSaved: 0,
+    safetyWordSkips: 0,
+    safetyDestsSkipped: 0,
     staticEvalCacheHits: 0,
     staticEvalCacheMisses: 0,
     evaluateBoardMs: 0,
@@ -4661,6 +4675,11 @@ const resetPerfStats = () => {
     perfStats.quiescenceCaptureMoves = 0;
     perfStats.quiescenceDeltaPruned = 0;
     perfStats.quiescenceDeltaLayers = 0;
+    perfStats.qsCaptureSortSkipped = 0;
+    perfStats.qsCaptureSortRan = 0;
+    perfStats.palaceMobilityAddsSaved = 0;
+    perfStats.safetyWordSkips = 0;
+    perfStats.safetyDestsSkipped = 0;
     perfStats.staticEvalCacheHits = 0;
     perfStats.staticEvalCacheMisses = 0;
     perfStats.evaluateBoardMs = 0;
@@ -4720,6 +4739,13 @@ const snapshotPerfStats = () => {
         quiescenceCaptureMoves: perfStats.quiescenceCaptureMoves,
         quiescenceDeltaPruned: perfStats.quiescenceDeltaPruned,
         quiescenceDeltaLayers: perfStats.quiescenceDeltaLayers,
+        workSaved: collectSearchMetrics ? {
+            qsCaptureSortSkipped: perfStats.qsCaptureSortSkipped,
+            qsCaptureSortRan: perfStats.qsCaptureSortRan,
+            palaceMobilityAddsSaved: perfStats.palaceMobilityAddsSaved,
+            safetyWordSkips: perfStats.safetyWordSkips,
+            safetyDestsSkipped: perfStats.safetyDestsSkipped
+        } : null,
         staticEvalCacheHits: evalHits,
         staticEvalCacheMisses: evalMisses,
         evalCacheSize: EVAL_CACHE_SIZE,
@@ -4891,20 +4917,40 @@ const evaluateLeaf = (pieceState) => {
     let blackSafety = 0;
     const redGeneralSq = pieceState.redGeneralSq;
     if (redGeneralSq >= 0) {
-        for (let i = SEARCH_GENERAL_DEST_OFF[redGeneralSq], n = SEARCH_GENERAL_DEST_OFF[redGeneralSq + 1]; i < n; i++) {
-            const sq = SEARCH_GENERAL_DEST_DATA[i];
-            if (squareCodes[sq] === 0 && (blackAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
-                redSafety -= 50;
+        const destStart = SEARCH_GENERAL_DEST_OFF[redGeneralSq];
+        const destEnd = SEARCH_GENERAL_DEST_OFF[redGeneralSq + 1];
+        // 红九宫全在 attack word 0；开局常整字为 0，可跳过 4 个空落点
+        if (blackAttack[0] === 0) {
+            if (collectSearchMetrics) {
+                perfStats.safetyWordSkips++;
+                perfStats.safetyDestsSkipped += destEnd - destStart;
+            }
+        } else {
+            for (let i = destStart; i < destEnd; i++) {
+                const sq = SEARCH_GENERAL_DEST_DATA[i];
+                if (squareCodes[sq] === 0 && (blackAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
+                    redSafety -= 50;
+                }
             }
         }
     }
     const blackGeneralSq = pieceState.blackGeneralSq;
     if (blackGeneralSq >= 0) {
         const blackDestBase = DEST_OFF_STRIDE + blackGeneralSq;
-        for (let i = SEARCH_GENERAL_DEST_OFF[blackDestBase], n = SEARCH_GENERAL_DEST_OFF[blackDestBase + 1]; i < n; i++) {
-            const sq = SEARCH_GENERAL_DEST_DATA[i];
-            if (squareCodes[sq] === 0 && (redAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
-                blackSafety -= 50;
+        const destStart = SEARCH_GENERAL_DEST_OFF[blackDestBase];
+        const destEnd = SEARCH_GENERAL_DEST_OFF[blackDestBase + 1];
+        // 黑九宫全在 attack word 2
+        if (redAttack[2] === 0) {
+            if (collectSearchMetrics) {
+                perfStats.safetyWordSkips++;
+                perfStats.safetyDestsSkipped += destEnd - destStart;
+            }
+        } else {
+            for (let i = destStart; i < destEnd; i++) {
+                const sq = SEARCH_GENERAL_DEST_DATA[i];
+                if (squareCodes[sq] === 0 && (redAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
+                    blackSafety -= 50;
+                }
             }
         }
     }
@@ -5214,6 +5260,7 @@ const maxQuiescenceVictimValue = (state, currentPlayer) => {
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
 const sortCaptures = (captures) => {
     const captureCount = captures.length;
+    if (captureCount <= 1) return;
 
     // Stable insertion ordering exactly matches the previous numeric comparator.
     for (let i = 1; i < captureCount; i++) {
@@ -5285,8 +5332,11 @@ const quiescence = (
 
     if (knownInCheck) {
         sortSearchMoves(moves, null, null, false);
-    } else {
+    } else if (moveCount > 1) {
         sortCaptures(moves);
+        if (collectSearchMetrics) perfStats.qsCaptureSortRan++;
+    } else if (collectSearchMetrics) {
+        perfStats.qsCaptureSortSkipped++;
     }
 
     const nextPlayer = currentPlayer ^ 1;

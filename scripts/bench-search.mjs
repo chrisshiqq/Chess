@@ -176,6 +176,16 @@ function printSummary(label, run) {
     console.log(`  quietSkipRate=${staged.quietSkipRate}%`);
   }
 
+  const workSaved = perf.workSaved;
+  if (workSaved) {
+    const sortTried = workSaved.qsCaptureSortSkipped + workSaved.qsCaptureSortRan;
+    console.log('workSaved:');
+    console.log(`  qsCaptureSort skipped=${workSaved.qsCaptureSortSkipped} ran=${workSaved.qsCaptureSortRan} skipRate=${sortTried ? ((workSaved.qsCaptureSortSkipped / sortTried) * 100).toFixed(2) : 0}%`);
+    console.log(`  palaceMobilityAddsSaved=${workSaved.palaceMobilityAddsSaved}`);
+    console.log(`  safetyWordSkips=${workSaved.safetyWordSkips}`);
+    console.log(`  safetyDestsSkipped=${workSaved.safetyDestsSkipped}`);
+  }
+
   if (ks) {
     console.log('kingSafety:');
     console.log(`  fullChecks=${ks.fullChecks}`);

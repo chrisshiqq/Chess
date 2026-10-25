@@ -153,10 +153,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <button
               type="button"
               onClick={() => setPlayAs('red')}
-              className={`w-full py-3.5 rounded-xl font-bold text-base transition-colors ${
-                playAs === 'red'
-                  ? 'bg-amber-600 hover:bg-amber-500 text-stone-950'
-                  : 'bg-stone-700 hover:bg-stone-600'
+              className={`w-full py-3.5 rounded-xl border-2 bg-stone-700 font-bold text-base transition-colors hover:bg-stone-600 ${
+                playAs === 'red' ? 'border-red-500' : 'border-transparent'
               }`}
             >
               Red
@@ -164,10 +162,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <button
               type="button"
               onClick={() => setPlayAs('black')}
-              className={`w-full py-3.5 rounded-xl font-bold text-base transition-colors ${
-                playAs === 'black'
-                  ? 'bg-amber-600 hover:bg-amber-500 text-stone-950'
-                  : 'bg-stone-700 hover:bg-stone-600'
+              className={`w-full py-3.5 rounded-xl border-2 bg-stone-700 font-bold text-base transition-colors hover:bg-stone-600 ${
+                playAs === 'black' ? 'border-red-500' : 'border-transparent'
               }`}
             >
               Black
