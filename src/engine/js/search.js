@@ -1145,6 +1145,14 @@ const HORSE_DIRS = [
     { dr: -1, dc: 2, legDr: 0, legDc: 1 },
     { dr: -1, dc: -2, legDr: 0, legDc: -1 }
 ];
+// 4 条马腿，每腿最多两个日字落点。搜索表按腿打包，热路径只判一次占格。
+const HORSE_LEG_GROUPS = [
+    { legDr: 1, legDc: 0, dests: [[2, 1], [2, -1]] },
+    { legDr: -1, legDc: 0, dests: [[-2, 1], [-2, -1]] },
+    { legDr: 0, legDc: 1, dests: [[1, 2], [-1, 2]] },
+    { legDr: 0, legDc: -1, dests: [[1, -2], [-1, -2]] }
+];
+const HORSE_NO_DEST = 127;
 
 // 短步子预表：与原 switch 方向顺序/宫河过滤一致；马象带 br,bc（腿/眼）
 const GENERAL_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
@@ -1259,11 +1267,40 @@ const packSquareBlockedDests = (src) => {
     offsets[REL_SQUARES] = words.length;
     return { offsets, data: new Uint16Array(words) };
 };
+const packHorseLegDests = () => {
+    const offsets = new Uint16Array(DEST_OFF_STRIDE);
+    const words = [];
+    for (let sq = 0; sq < REL_SQUARES; sq++) {
+        offsets[sq] = words.length;
+        const r = SQ_ROW[sq];
+        const c = SQ_COL[sq];
+        for (let g = 0; g < HORSE_LEG_GROUPS.length; g++) {
+            const group = HORSE_LEG_GROUPS[g];
+            const legR = r + group.legDr;
+            const legC = c + group.legDc;
+            if (legR < 0 || legR >= ROWS || legC < 0 || legC >= COLS) continue;
+            let d0 = HORSE_NO_DEST;
+            let d1 = HORSE_NO_DEST;
+            const a = group.dests[0];
+            const ar = r + a[0];
+            const ac = c + a[1];
+            if (ar >= 0 && ar < ROWS && ac >= 0 && ac < COLS) d0 = ar * 9 + ac;
+            const b = group.dests[1];
+            const br = r + b[0];
+            const bc = c + b[1];
+            if (br >= 0 && br < ROWS && bc >= 0 && bc < COLS) d1 = br * 9 + bc;
+            if (d0 === HORSE_NO_DEST && d1 === HORSE_NO_DEST) continue;
+            words.push((legR * 9 + legC) | (d0 << 7) | (d1 << 14));
+        }
+    }
+    offsets[REL_SQUARES] = words.length;
+    return { offsets, data: new Uint32Array(words) };
+};
 const packedGeneralDest = packColorShortDests(GENERAL_DEST);
 const packedAdvisorDest = packColorShortDests(ADVISOR_DEST);
 const packedSoldierDest = packColorShortDests(SOLDIER_DEST);
 const packedElephantDest = packColorBlockedDests(ELEPHANT_DEST);
-const packedHorseDest = packSquareBlockedDests(HORSE_DEST);
+const packedHorseDest = packHorseLegDests();
 const SEARCH_GENERAL_DEST_OFF = packedGeneralDest.offsets;
 const SEARCH_GENERAL_DEST_DATA = packedGeneralDest.data;
 const SEARCH_ADVISOR_DEST_OFF = packedAdvisorDest.offsets;
@@ -1792,6 +1829,77 @@ const appendSearchShortMoves = (
     appendUnblockedMoves(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask);
 };
 
+const appendHorseCaptures = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed & 127] !== 0) continue;
+        const d0 = (packed >>> 7) & 127;
+        if (d0 !== HORSE_NO_DEST) {
+            const targetCode = squareCodes[d0];
+            if (targetCode !== 0 && (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | d0);
+            }
+        }
+        const d1 = (packed >>> 14) & 127;
+        if (d1 !== HORSE_NO_DEST) {
+            const targetCode = squareCodes[d1];
+            if (targetCode !== 0 && (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | d1);
+            }
+        }
+    }
+};
+
+const appendHorseQuiets = (moves, fromSq, destData, destStart, destEnd, squareCodes) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed & 127] !== 0) continue;
+        const d0 = (packed >>> 7) & 127;
+        if (d0 !== HORSE_NO_DEST && squareCodes[d0] === 0) {
+            moves.push((fromSq << 7) | d0);
+        }
+        const d1 = (packed >>> 14) & 127;
+        if (d1 !== HORSE_NO_DEST && squareCodes[d1] === 0) {
+            moves.push((fromSq << 7) | d1);
+        }
+    }
+};
+
+const appendHorseMoves = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed & 127] !== 0) continue;
+        const d0 = (packed >>> 7) & 127;
+        if (d0 !== HORSE_NO_DEST && (!targetMask || targetMask[d0])) {
+            const targetCode = squareCodes[d0];
+            if (targetCode === 0 || (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | d0);
+            }
+        }
+        const d1 = (packed >>> 14) & 127;
+        if (d1 !== HORSE_NO_DEST && (!targetMask || targetMask[d1])) {
+            const targetCode = squareCodes[d1];
+            if (targetCode === 0 || (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | d1);
+            }
+        }
+    }
+};
+
+const appendHorsePseudoMoves = (
+    moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, targetMask, quietsOnly
+) => {
+    if (capturesOnly) {
+        appendHorseCaptures(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed);
+        return;
+    }
+    if (quietsOnly) {
+        appendHorseQuiets(moves, fromSq, destData, destStart, destEnd, squareCodes);
+        return;
+    }
+    appendHorseMoves(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask);
+};
+
 const appendLineEmpties = (moves, fromSq, firstSq, lastSq, stride, targetMask) => {
     if (stride > 0) {
         for (let sq = firstSq; sq <= lastSq; sq += stride) {
@@ -2048,10 +2156,10 @@ const appendSearchPseudoMovesForPiece = (
             break;
         }
         case 3:
-            appendSearchShortMoves(
+            appendHorsePseudoMoves(
                 moves, fromSq, SEARCH_HORSE_DEST_DATA,
                 SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
-                squareCodes, isRed, capturesOnly, true, targetMask, quietsOnly
+                squareCodes, isRed, capturesOnly, targetMask, quietsOnly
             );
             break;
         case 7: {
@@ -2093,6 +2201,18 @@ const blockedDestHas = (destData, destStart, destEnd, toSq, squareCodes) => {
     return false;
 };
 
+const horseLegDestHas = (destData, destStart, destEnd, toSq, squareCodes) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (
+            ((packed >>> 7) & 127) !== toSq &&
+            ((packed >>> 14) & 127) !== toSq
+        ) continue;
+        return squareCodes[packed & 127] === 0;
+    }
+    return false;
+};
+
 // 与 appendSearchPseudoMovesForPiece 同一套几何，只判单步，不生成整表。
 const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
     const squareCodes = pieceState.squareCodes;
@@ -2126,7 +2246,7 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
             );
         }
         case 3:
-            return blockedDestHas(
+            return horseLegDestHas(
                 SEARCH_HORSE_DEST_DATA,
                 SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1],
                 toSq, squareCodes
@@ -2689,21 +2809,40 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             case 3: {
                 for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
                     const packed = horseDestData[i];
-                    if (squareCodes[packed >>> 7] !== 0) continue;
-                    const sq = packed & 127;
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
-                        if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                    if (squareCodes[packed & 127] !== 0) continue;
+                    const d0 = (packed >>> 7) & 127;
+                    if (d0 !== HORSE_NO_DEST) {
+                        const targetCode = squareCodes[d0];
+                        if (targetCode === 0) {
+                            if (attackTarget[d0] & attackTargetBit) {
+                                attackBits[d0 >>> 5] |= 1 << (d0 & 31);
+                            }
+                            mobilityValue += 1;
+                        } else {
+                            const targetSlot = squareToSlot[d0];
+                            if ((targetCode < 8) !== isRed) {
+                                attackedTargetMask |= 1 << targetSlot;
+                                attackBySlot[targetSlot] |= bit;
+                            }
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                         }
-                        mobilityValue += 1;
-                    } else {
-                        const targetSlot = squareToSlot[sq];
-                        if ((targetCode < 8) !== isRed) {
-                            attackedTargetMask |= 1 << targetSlot;
-                            attackBySlot[targetSlot] |= bit;
+                    }
+                    const d1 = (packed >>> 14) & 127;
+                    if (d1 !== HORSE_NO_DEST) {
+                        const targetCode = squareCodes[d1];
+                        if (targetCode === 0) {
+                            if (attackTarget[d1] & attackTargetBit) {
+                                attackBits[d1 >>> 5] |= 1 << (d1 & 31);
+                            }
+                            mobilityValue += 1;
+                        } else {
+                            const targetSlot = squareToSlot[d1];
+                            if ((targetCode < 8) !== isRed) {
+                                attackedTargetMask |= 1 << targetSlot;
+                                attackBySlot[targetSlot] |= bit;
+                            }
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                         }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 if (isRed) redMobility += mobilityValue;
@@ -5101,6 +5240,25 @@ const appendScoredQuiescenceShortCaptures = (
     }
 };
 
+const appendScoredQuiescenceHorseCaptures = (
+    moves, fromSq, pieceState, isRed, moverValue
+) => {
+    const squareCodes = pieceState.squareCodes;
+    const destData = SEARCH_HORSE_DEST_DATA;
+    for (let i = SEARCH_HORSE_DEST_OFF[fromSq], n = SEARCH_HORSE_DEST_OFF[fromSq + 1]; i < n; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed & 127] !== 0) continue;
+        const d0 = (packed >>> 7) & 127;
+        if (d0 !== HORSE_NO_DEST) {
+            appendScoredQuiescenceCapture(moves, fromSq, d0, isRed, moverValue, pieceState);
+        }
+        const d1 = (packed >>> 14) & 127;
+        if (d1 !== HORSE_NO_DEST) {
+            appendScoredQuiescenceCapture(moves, fromSq, d1, isRed, moverValue, pieceState);
+        }
+    }
+};
+
 // 静搜专用吃子生成：只生成吃子，并在 push 时同步写同索引的 MVV-LVA 分数。
 const appendScoredQuiescenceCapturesForPiece = (
     moves, fromSq, pieceCode, pieceState
@@ -5137,10 +5295,8 @@ const appendScoredQuiescenceCapturesForPiece = (
             );
             break;
         case 3:
-            appendScoredQuiescenceShortCaptures(
-                moves, fromSq, pieceState, isRed, moverValue,
-                SEARCH_HORSE_DEST_DATA,
-                SEARCH_HORSE_DEST_OFF[fromSq], SEARCH_HORSE_DEST_OFF[fromSq + 1], true
+            appendScoredQuiescenceHorseCaptures(
+                moves, fromSq, pieceState, isRed, moverValue
             );
             break;
         case 7:
