@@ -157,7 +157,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             style={panelControlStyle()}
             className={`w-full py-3.5 text-base ${panelControlClass}`}
           >
-            Player vs Computer
+            Play
           </button>
           <div className="grid grid-cols-2 gap-3">
             <button

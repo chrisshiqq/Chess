@@ -1678,24 +1678,118 @@ const applyOccupiedSliderHit = (
     return 0;
 };
 
-const appendSearchShortMoves = (
-    moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
-) => {
+const appendBlockedCaptures = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed) => {
     for (let i = destStart; i < destEnd; i++) {
-        let toSq = destData[i];
-        if (blocked) {
-            if (squareCodes[toSq >>> 7] !== 0) continue;
-            toSq &= 127;
-        }
-        if (targetMask && !targetMask[toSq]) continue;
+        const packed = destData[i];
+        if (squareCodes[packed >>> 7] !== 0) continue;
+        const toSq = packed & 127;
         const targetCode = squareCodes[toSq];
-        if (targetCode === 0) {
-            if (capturesOnly) continue;
-            moves.push((fromSq << 7) | toSq);
-        } else if (!quietsOnly && (targetCode < 8) !== isRed) {
+        if (targetCode !== 0 && (targetCode < 8) !== isRed) {
             moves.push((fromSq << 7) | toSq);
         }
     }
+};
+
+const appendBlockedQuiets = (moves, fromSq, destData, destStart, destEnd, squareCodes) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed >>> 7] !== 0) continue;
+        const toSq = packed & 127;
+        if (squareCodes[toSq] === 0) {
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
+const appendBlockedMoves = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask) => {
+    if (targetMask) {
+        for (let i = destStart; i < destEnd; i++) {
+            const packed = destData[i];
+            if (squareCodes[packed >>> 7] !== 0) continue;
+            const toSq = packed & 127;
+            if (!targetMask[toSq]) continue;
+            const targetCode = squareCodes[toSq];
+            if (targetCode === 0 || (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | toSq);
+            }
+        }
+        return;
+    }
+    for (let i = destStart; i < destEnd; i++) {
+        const packed = destData[i];
+        if (squareCodes[packed >>> 7] !== 0) continue;
+        const toSq = packed & 127;
+        const targetCode = squareCodes[toSq];
+        if (targetCode === 0 || (targetCode < 8) !== isRed) {
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
+const appendUnblockedCaptures = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const toSq = destData[i];
+        const targetCode = squareCodes[toSq];
+        if (targetCode !== 0 && (targetCode < 8) !== isRed) {
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
+const appendUnblockedQuiets = (moves, fromSq, destData, destStart, destEnd, squareCodes) => {
+    for (let i = destStart; i < destEnd; i++) {
+        const toSq = destData[i];
+        if (squareCodes[toSq] === 0) {
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
+const appendUnblockedMoves = (moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask) => {
+    if (targetMask) {
+        for (let i = destStart; i < destEnd; i++) {
+            const toSq = destData[i];
+            if (!targetMask[toSq]) continue;
+            const targetCode = squareCodes[toSq];
+            if (targetCode === 0 || (targetCode < 8) !== isRed) {
+                moves.push((fromSq << 7) | toSq);
+            }
+        }
+        return;
+    }
+    for (let i = destStart; i < destEnd; i++) {
+        const toSq = destData[i];
+        const targetCode = squareCodes[toSq];
+        if (targetCode === 0 || (targetCode < 8) !== isRed) {
+            moves.push((fromSq << 7) | toSq);
+        }
+    }
+};
+
+const appendSearchShortMoves = (
+    moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, capturesOnly, blocked, targetMask = null, quietsOnly = false
+) => {
+    if (blocked) {
+        if (capturesOnly) {
+            appendBlockedCaptures(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed);
+            return;
+        }
+        if (quietsOnly) {
+            appendBlockedQuiets(moves, fromSq, destData, destStart, destEnd, squareCodes);
+            return;
+        }
+        appendBlockedMoves(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask);
+        return;
+    }
+    if (capturesOnly) {
+        appendUnblockedCaptures(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed);
+        return;
+    }
+    if (quietsOnly) {
+        appendUnblockedQuiets(moves, fromSq, destData, destStart, destEnd, squareCodes);
+        return;
+    }
+    appendUnblockedMoves(moves, fromSq, destData, destStart, destEnd, squareCodes, isRed, targetMask);
 };
 
 const appendLineEmpties = (moves, fromSq, firstSq, lastSq, stride, targetMask) => {
