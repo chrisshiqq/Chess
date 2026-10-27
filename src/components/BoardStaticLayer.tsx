@@ -146,7 +146,6 @@ export const BoardStaticLayer = React.memo(({
     const paperShadow = texture === 'paper'
         ? { textShadow: '2px 2px 3px rgba(0,0,0,0.2)', stroke: riverColor, strokeWidth: '0.5' }
         : { textShadow: 'none' };
-
     const gridElements = [];
     const lineWidth = "2";
     const borderWidth = "3";

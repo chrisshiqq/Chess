@@ -3973,7 +3973,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         type="button"
                         onClick={() => leaveToLobby()}
                         className="text-rose-300 hover:text-rose-200 font-semibold"
-                    >Back to Lobby</button>
+                    >Leave</button>
                 </div>
                 <div className="flex gap-1">
                     <button 
@@ -4394,7 +4394,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     disabled={!onlineInfo && boardHistory.length < 2}
                                     className="pointer-events-auto px-5 py-2 rounded-full font-bold text-base bg-transparent text-red-600 border border-red-600/40 hover:bg-red-600/10 transition-colors disabled:opacity-40"
                                 >
-                                    {onlineInfo ? 'Back to Lobby' : 'Retry'}
+                                    {onlineInfo ? 'Leave' : 'Retry'}
                                 </button>
                             </div>
                         </div>

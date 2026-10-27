@@ -102,7 +102,7 @@ export const SKINS: Record<Skin, {
         texture: "paper"
     },
     'glass-board': {
-        boardBg: "#B5D4F0",
+        boardBg: "#FFE8CC",
         containerBg: "#B5D4F0",
         border: "#B5D4F0",
         grid: "#589362",
