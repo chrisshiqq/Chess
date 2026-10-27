@@ -3348,16 +3348,17 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
 };
 
 // --- Zobrist Hashing for Opening Book ---
-// Each piece type/color/position gets a unique random 53-bit integer
-// Uses seeded RNG for deterministic hashing
+// Seeded LCG still draws from 53-bit ints; Int32Array stores ToInt32 of those
+// values, matching what `^` already did on the old Float64 table.
 class ZobristHasher {
     hashTableFlat;
+    evalInitiatorKeys;
 
     constructor() {
-        // Initialize random hash values using seeded RNG (53-bit integers to avoid precision issues)
-        this.hashTableFlat = new Float64Array(90 * 14);
+        this.hashTableFlat = new Int32Array(90 * 14);
+        this.evalInitiatorKeys = new Int32Array(2);
         const MAX_SAFE = 0x1FFFFFFFFFFFFF; // 2^53 - 1
-        
+
         // Simple seeded RNG (LCG - Linear Congruential Generator)
         let seed = 123456789; // Fixed seed for deterministic hashing
         const seededRandom = () => {
@@ -3371,10 +3372,8 @@ class ZobristHasher {
             }
         }
 
-        this.evalInitiatorKeys = [
-            Math.floor(seededRandom() * MAX_SAFE),
-            Math.floor(seededRandom() * MAX_SAFE)
-        ];
+        this.evalInitiatorKeys[0] = Math.floor(seededRandom() * MAX_SAFE);
+        this.evalInitiatorKeys[1] = Math.floor(seededRandom() * MAX_SAFE);
     }
 
     pieceIndex(code) {
