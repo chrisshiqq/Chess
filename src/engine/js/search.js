@@ -284,17 +284,12 @@ const createEmptySearchPieceState = () => ({
     blackAliveMask: 0,
     nullMoveMaterialMask: 0,
     materialValues: searchMaterialTable('mid'),
-    redMaterial: 0,
-    redPosition: 0,
-    blackMaterial: 0,
-    blackPosition: 0,
+    netMaterial: 0,
+    netPosition: 0,
     redGeneralSq: -1,
     blackGeneralSq: -1,
     evalVerificationHash: 0,
-    slotCount: 0,
-    moverStack: new Int8Array(32),
-    capturedStack: new Int8Array(32),
-    stackDepth: 0
+    slotCount: 0
 });
 
 const loadSearchPieceState = (state, board, gameStage = 'mid') => {
@@ -311,15 +306,10 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     colOccupancy.fill(0);
     pieceCodes.fill(0);
     pieceSquares.fill(0);
-    state.moverStack.fill(0);
-    state.capturedStack.fill(0);
-    state.stackDepth = 0;
     state.materialValues = materialValues;
     let slotCount = 0;
-    let redMaterial = 0;
-    let redPosition = 0;
-    let blackMaterial = 0;
-    let blackPosition = 0;
+    let netMaterial = 0;
+    let netPosition = 0;
     let redGeneralSq = -1;
     let blackGeneralSq = -1;
     let evalVerificationHash = 0;
@@ -352,11 +342,11 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
             const materialValue = materialValues[code & 7];
             const positionValue = SEARCH_POSITION_VALUES[code][r * 9 + c];
             if (code < 8) {
-                redMaterial += materialValue;
-                redPosition += positionValue;
+                netMaterial += materialValue;
+                netPosition += positionValue;
             } else {
-                blackMaterial += materialValue;
-                blackPosition += positionValue;
+                netMaterial -= materialValue;
+                netPosition -= positionValue;
             }
         }
     }
@@ -364,10 +354,8 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     state.redAliveMask = redAliveMask;
     state.blackAliveMask = blackAliveMask;
     state.nullMoveMaterialMask = nullMoveMaterialMask;
-    state.redMaterial = redMaterial;
-    state.redPosition = redPosition;
-    state.blackMaterial = blackMaterial;
-    state.blackPosition = blackPosition;
+    state.netMaterial = netMaterial;
+    state.netPosition = netPosition;
     state.redGeneralSq = redGeneralSq;
     state.blackGeneralSq = blackGeneralSq;
     state.evalVerificationHash = evalVerificationHash;
@@ -404,17 +392,14 @@ const runWithPieceState = (board, fn) => {
 const updatePieceStateAfterMake = (
     state, fromSq, toSq, moverSlot, moverCode, capturedSlot, capturedCode, fromR, fromC, toR, toC
 ) => {
-    const stackIndex = state.stackDepth++;
-    state.moverStack[stackIndex] = moverSlot;
-    state.capturedStack[stackIndex] = capturedSlot;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
         EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
     const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][toSq] -
         SEARCH_POSITION_VALUES[moverCode][fromSq];
-    if (moverCode < 8) state.redPosition += moverPositionDelta;
-    else state.blackPosition += moverPositionDelta;
+    if (moverCode < 8) state.netPosition += moverPositionDelta;
+    else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
         const capturedBit = 1 << capturedSlot;
         if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
@@ -423,11 +408,11 @@ const updatePieceStateAfterMake = (
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
         if (capturedCode < 8) {
-            state.redMaterial -= capturedMaterial;
-            state.redPosition -= capturedPosition;
+            state.netMaterial -= capturedMaterial;
+            state.netPosition -= capturedPosition;
         } else {
-            state.blackMaterial -= capturedMaterial;
-            state.blackPosition -= capturedPosition;
+            state.netMaterial += capturedMaterial;
+            state.netPosition += capturedPosition;
         }
         if ((capturedCode & 7) === 1) {
             if (capturedCode < 8) state.redGeneralSq = -1;
@@ -448,10 +433,7 @@ const updatePieceStateAfterMake = (
     }
 };
 
-const updatePieceStateAfterUnmake = (state, fromSq, toSq, fromR, fromC, toR, toC) => {
-    const stackIndex = --state.stackDepth;
-    const moverSlot = state.moverStack[stackIndex];
-    const capturedSlot = state.capturedStack[stackIndex];
+const updatePieceStateAfterUnmake = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
     const moverCode = state.pieceCodes[moverSlot];
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
@@ -459,8 +441,8 @@ const updatePieceStateAfterUnmake = (state, fromSq, toSq, fromR, fromC, toR, toC
         EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
     const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][fromSq] -
         SEARCH_POSITION_VALUES[moverCode][toSq];
-    if (moverCode < 8) state.redPosition += moverPositionDelta;
-    else state.blackPosition += moverPositionDelta;
+    if (moverCode < 8) state.netPosition += moverPositionDelta;
+    else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
         const capturedCode = state.pieceCodes[capturedSlot];
         const capturedBit = 1 << capturedSlot;
@@ -470,11 +452,11 @@ const updatePieceStateAfterUnmake = (state, fromSq, toSq, fromR, fromC, toR, toC
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
         if (capturedCode < 8) {
-            state.redMaterial += capturedMaterial;
-            state.redPosition += capturedPosition;
+            state.netMaterial += capturedMaterial;
+            state.netPosition += capturedPosition;
         } else {
-            state.blackMaterial += capturedMaterial;
-            state.blackPosition += capturedPosition;
+            state.netMaterial -= capturedMaterial;
+            state.netPosition -= capturedPosition;
         }
         state.squareToSlot[toSq] = capturedSlot;
         state.squareCodes[toSq] = capturedCode;
@@ -915,11 +897,11 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const capturedCode = state.squareCodes[toSq];
-        makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const { moverSlot, capturedSlot } = makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const illegal = moveReceivesCheck(
             state, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC
         );
-        unmakeSearchMove(state, fromSq, toSq, fromR, fromC, toR, toC);
+        unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
         if (!illegal) validMoves.push(toSq);
     }
     return validMoves;
@@ -931,10 +913,11 @@ const makeSearchMove = (state, from, to, moverCode, capturedCode, fromR, fromC, 
     updatePieceStateAfterMake(
         state, from, to, moverSlot, moverCode, capturedSlot, capturedCode, fromR, fromC, toR, toC
     );
+    return { moverSlot, capturedSlot };
 };
 
-const unmakeSearchMove = (state, from, to, fromR, fromC, toR, toC) => {
-    updatePieceStateAfterUnmake(state, from, to, fromR, fromC, toR, toC);
+const unmakeSearchMove = (state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
+    updatePieceStateAfterUnmake(state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
 };
 
 const sortMovePriorityScratch = [];
@@ -2384,11 +2367,11 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         const toC = SQ_COL[toSq];
         const moverCode = pieceState.squareCodes[fromSq];
         const capturedCode = pieceState.squareCodes[toSq];
-        makeSearchMove(pieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const { moverSlot, capturedSlot } = makeSearchMove(pieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const unsafe = moveReceivesCheck(
             pieceState, color, fromSq, toSq, true, checkInfo, fromR, fromC, toR, toC
         );
-        unmakeSearchMove(pieceState, fromSq, toSq, fromR, fromC, toR, toC);
+        unmakeSearchMove(pieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
         if (!unsafe) out.push(move);
     }
 };
@@ -5150,31 +5133,18 @@ const evaluateLeaf = (pieceState) => {
         }
     }
 
-    let redTotal;
-    let blackTotal;
+    let netTotal;
     if (leafUnityWeights) {
-        redTotal = pieceState.redMaterial + pieceState.redPosition +
-            redThreat + redSafety + scratchLeafTotals[2];
-        blackTotal = pieceState.blackMaterial + pieceState.blackPosition +
-            blackThreat + blackSafety + scratchLeafTotals[5];
+        netTotal = pieceState.netMaterial + pieceState.netPosition +
+            (redThreat - blackThreat) + (redSafety - blackSafety) +
+            (scratchLeafTotals[2] - scratchLeafTotals[5]);
     } else {
-        const wMaterial = leafWMaterial;
-        const wPosition = leafWPosition;
-        const wThreat = leafWThreat;
-        const wSafety = leafWSafety;
-        const wMobility = leafWMobility;
-        redTotal =
-            pieceState.redMaterial * wMaterial +
-            pieceState.redPosition * wPosition +
-            redThreat * wThreat +
-            redSafety * wSafety +
-            scratchLeafTotals[2] * wMobility;
-        blackTotal =
-            pieceState.blackMaterial * wMaterial +
-            pieceState.blackPosition * wPosition +
-            blackThreat * wThreat +
-            blackSafety * wSafety +
-            scratchLeafTotals[5] * wMobility;
+        netTotal =
+            pieceState.netMaterial * leafWMaterial +
+            pieceState.netPosition * leafWPosition +
+            (redThreat - blackThreat) * leafWThreat +
+            (redSafety - blackSafety) * leafWSafety +
+            (scratchLeafTotals[2] - scratchLeafTotals[5]) * leafWMobility;
     }
 
     if (searchProfile) {
@@ -5183,7 +5153,7 @@ const evaluateLeaf = (pieceState) => {
     } else if (collectSearchMetrics) {
         perfStats.fastLeafEvalCount++;
     }
-    return activeSearchInitiator === SIDE_RED ? redTotal - blackTotal : blackTotal - redTotal;
+    return activeSearchInitiator === SIDE_RED ? netTotal : -netTotal;
 };
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
@@ -5580,9 +5550,9 @@ const quiescence = (
                 }
             }
         }
-        makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const { moverSlot, capturedSlot } = makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(state, fromSq, toSq, fromR, fromC, toR, toC);
+            unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5601,7 +5571,7 @@ const quiescence = (
                 alpha, beta, !maximizing, nextPlayer, state,
                 qsDepth - 1, nextHash, qsPly + 1, childInCheck
             );
-        unmakeSearchMove(state, fromSq, toSq, fromR, fromC, toR, toC);
+        unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
 
         if (maximizing) {
             if (value > bestEval) bestEval = value;
@@ -5743,9 +5713,9 @@ const alphaBeta = (
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const isCapture = capturedCode !== 0;
-        makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const { moverSlot, capturedSlot } = makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(stagedPieceState, fromSq, toSq, fromR, fromC, toR, toC);
+            unmakeSearchMove(stagedPieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5829,7 +5799,7 @@ const alphaBeta = (
                 );
             }
         }
-        unmakeSearchMove(stagedPieceState, fromSq, toSq, fromR, fromC, toR, toC);
+        unmakeSearchMove(stagedPieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
 
         if (maximizing) {
             if (value > bestEval) {
@@ -5891,18 +5861,18 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const fromC = SQ_COL[from];
     const toR = SQ_ROW[to];
     const toC = SQ_COL[to];
-    makeSearchMove(state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC);
+    const { moverSlot, capturedSlot } = makeSearchMove(state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC);
     if (moveReceivesCheck(state, currentTurn, from, to, true, null, fromR, fromC, toR, toC)) {
-      unmakeSearchMove(state, from, to, fromR, fromC, toR, toC);
+      unmakeSearchMove(state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
       break;
     }
     sequence.push(move);
-    undo.push(from, to, fromR, fromC, toR, toC);
+    undo.push(from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
     hash = childBoardHash(hash, from, to, moverCode, capturedCode);
     currentTurn ^= 1;
   }
-  for (let i = undo.length - 6; i >= 0; i -= 6) {
-    unmakeSearchMove(state, undo[i], undo[i + 1], undo[i + 2], undo[i + 3], undo[i + 4], undo[i + 5]);
+  for (let i = undo.length - 8; i >= 0; i -= 8) {
+    unmakeSearchMove(state, undo[i], undo[i + 1], undo[i + 2], undo[i + 3], undo[i + 4], undo[i + 5], undo[i + 6], undo[i + 7]);
   }
 };
 
@@ -6149,7 +6119,7 @@ const getBestMove = (
       const rootFromC = SQ_COL[rootFromSq];
       const rootToR = SQ_ROW[rootToSq];
       const rootToC = SQ_COL[rootToSq];
-      makeSearchMove(
+      const { moverSlot, capturedSlot } = makeSearchMove(
         activeSearchPieceState, rootFromSq, rootToSq,
         moverCode, capturedCode, rootFromR, rootFromC, rootToR, rootToC
       );
@@ -6225,7 +6195,7 @@ const getBestMove = (
 
       unmakeSearchMove(
         activeSearchPieceState, rootFromSq, rootToSq,
-        rootFromR, rootFromC, rootToR, rootToC
+        moverSlot, capturedSlot, rootFromR, rootFromC, rootToR, rootToC
       );
 
       if (scoreIsExact) {
