@@ -245,6 +245,9 @@ const scratchOwnScanSlots = new Uint8Array(32);
 
 let activeSearchPieceState = null;
 let activeSearchInitiator = SIDE_RED;
+/** 最近一次 makeSearchMove 的槽位；搜索单线程。递归层在 make 后立刻拷到局部再 unmake。 */
+let scratchSearchUndoMoverSlot = 0;
+let scratchSearchUndoCapturedSlot = -1;
 
 const SEARCH_MATERIAL_VALUES = {
     early: new Int16Array([0, 10000, 900, 400, 200, 200, 450, 100]),
@@ -897,23 +900,27 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const capturedCode = state.squareCodes[toSq];
-        const { moverSlot, capturedSlot } = makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const illegal = moveReceivesCheck(
             state, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC
         );
-        unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(
+            state, fromSq, toSq, scratchSearchUndoMoverSlot, scratchSearchUndoCapturedSlot,
+            fromR, fromC, toR, toC
+        );
         if (!illegal) validMoves.push(toSq);
     }
     return validMoves;
 };
 
 const makeSearchMove = (state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC) => {
-    const capturedSlot = state.squareToSlot[to];
     const moverSlot = state.squareToSlot[from];
+    const capturedSlot = state.squareToSlot[to];
+    scratchSearchUndoMoverSlot = moverSlot;
+    scratchSearchUndoCapturedSlot = capturedSlot;
     updatePieceStateAfterMake(
         state, from, to, moverSlot, moverCode, capturedSlot, capturedCode, fromR, fromC, toR, toC
     );
-    return { moverSlot, capturedSlot };
 };
 
 const unmakeSearchMove = (state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
@@ -2367,11 +2374,14 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         const toC = SQ_COL[toSq];
         const moverCode = pieceState.squareCodes[fromSq];
         const capturedCode = pieceState.squareCodes[toSq];
-        const { moverSlot, capturedSlot } = makeSearchMove(pieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        makeSearchMove(pieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const unsafe = moveReceivesCheck(
             pieceState, color, fromSq, toSq, true, checkInfo, fromR, fromC, toR, toC
         );
-        unmakeSearchMove(pieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(
+            pieceState, fromSq, toSq, scratchSearchUndoMoverSlot, scratchSearchUndoCapturedSlot,
+            fromR, fromC, toR, toC
+        );
         if (!unsafe) out.push(move);
     }
 };
@@ -5550,9 +5560,11 @@ const quiescence = (
                 }
             }
         }
-        const { moverSlot, capturedSlot } = makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const undoMoverSlot = scratchSearchUndoMoverSlot;
+        const undoCapturedSlot = scratchSearchUndoCapturedSlot;
         if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+            unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5571,7 +5583,7 @@ const quiescence = (
                 alpha, beta, !maximizing, nextPlayer, state,
                 qsDepth - 1, nextHash, qsPly + 1, childInCheck
             );
-        unmakeSearchMove(state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
 
         if (maximizing) {
             if (value > bestEval) bestEval = value;
@@ -5713,9 +5725,11 @@ const alphaBeta = (
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const isCapture = capturedCode !== 0;
-        const { moverSlot, capturedSlot } = makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
+        const undoMoverSlot = scratchSearchUndoMoverSlot;
+        const undoCapturedSlot = scratchSearchUndoCapturedSlot;
         if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(stagedPieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+            unmakeSearchMove(stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
             continue;
         }
         const nextHash = childBoardHash(
@@ -5799,7 +5813,7 @@ const alphaBeta = (
                 );
             }
         }
-        unmakeSearchMove(stagedPieceState, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
 
         if (maximizing) {
             if (value > bestEval) {
@@ -5861,13 +5875,15 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const fromC = SQ_COL[from];
     const toR = SQ_ROW[to];
     const toC = SQ_COL[to];
-    const { moverSlot, capturedSlot } = makeSearchMove(state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC);
+    makeSearchMove(state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC);
+    const undoMoverSlot = scratchSearchUndoMoverSlot;
+    const undoCapturedSlot = scratchSearchUndoCapturedSlot;
     if (moveReceivesCheck(state, currentTurn, from, to, true, null, fromR, fromC, toR, toC)) {
-      unmakeSearchMove(state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+      unmakeSearchMove(state, from, to, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
       break;
     }
     sequence.push(move);
-    undo.push(from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
+    undo.push(from, to, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
     hash = childBoardHash(hash, from, to, moverCode, capturedCode);
     currentTurn ^= 1;
   }
@@ -6119,10 +6135,12 @@ const getBestMove = (
       const rootFromC = SQ_COL[rootFromSq];
       const rootToR = SQ_ROW[rootToSq];
       const rootToC = SQ_COL[rootToSq];
-      const { moverSlot, capturedSlot } = makeSearchMove(
+      makeSearchMove(
         activeSearchPieceState, rootFromSq, rootToSq,
         moverCode, capturedCode, rootFromR, rootFromC, rootToR, rootToC
       );
+      const rootUndoMoverSlot = scratchSearchUndoMoverSlot;
+      const rootUndoCapturedSlot = scratchSearchUndoCapturedSlot;
       const childHash = childBoardHash(
         rootHash, rootFromSq, rootToSq, moverCode, capturedCode
       );
@@ -6195,7 +6213,7 @@ const getBestMove = (
 
       unmakeSearchMove(
         activeSearchPieceState, rootFromSq, rootToSq,
-        moverSlot, capturedSlot, rootFromR, rootFromC, rootToR, rootToC
+        rootUndoMoverSlot, rootUndoCapturedSlot, rootFromR, rootFromC, rootToR, rootToC
       );
 
       if (scoreIsExact) {
