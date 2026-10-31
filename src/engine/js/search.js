@@ -649,7 +649,7 @@ const evaluatePiece = (board, currentPlayer = null, gameStage = 'mid') =>
     });
 
 // 将未动：只看 from/to 是否改变将的横竖线（车/将/炮，含落点成炮架）或腾出马腿。
-const moveCreatesLineOrUnblockedHorseCheck = (
+const moveTouchesLineOrUnblockedHorseCheck = (
     state, attackerIsRed, generalSq, gr, gc,
     fromR, fromC, toR, toC
 ) => {
@@ -832,8 +832,6 @@ const squareResolvesChecker = (fromSq, toSq, generalSq, checkerSq, kind, extra) 
 
 const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
     const count = checkInfo.count;
-    if (count <= 0) return true;
-    if (count > CHECK_INFO_CAP) return false;
     for (let i = 0; i < count; i++) {
         if (!squareResolvesChecker(
             fromSq, toSq, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i]
@@ -862,7 +860,7 @@ const moveReceivesCheck = (
                 return false;
             }
         }
-        return moveCreatesLineOrUnblockedHorseCheck(
+        return moveTouchesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq, gr, gc,
             fromR, fromC, toR, toC
         );
@@ -874,7 +872,7 @@ const moveReceivesCheck = (
     ) {
         if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
         if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
-        return generalSq < 0 || moveCreatesLineOrUnblockedHorseCheck(
+        return generalSq < 0 || moveTouchesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
             fromR, fromC, toR, toC
@@ -4467,7 +4465,7 @@ const moveGivesCheck = (state, checkedColor, fromSq, toSq, fromR, fromC, toR, to
             return false;
         }
     }
-    return moveCreatesLineOrUnblockedHorseCheck(
+    return moveTouchesLineOrUnblockedHorseCheck(
         state, !checkedIsRed, generalSq, gr, gc,
         fromR, fromC, toR, toC
     ) || movedHorseOrSoldierChecksKing(state, !checkedIsRed, generalSq, toSq);
