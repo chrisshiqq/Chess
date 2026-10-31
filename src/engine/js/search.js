@@ -798,6 +798,11 @@ const abCheckInfoPool = [];
 const qsCheckInfoPool = [];
 const evasionResolveMask = new Uint8Array(REL_SQUARES);
 const evasionResolveScratch = new Uint8Array(REL_SQUARES);
+// generateCheckEvasions 刚写过 mask 时为 true；回退全量生成时为 false，避免脏 mask。
+let evasionResolveMaskFresh = false;
+
+const evasionMoveAlreadyResolves = (toSq) =>
+    evasionResolveMaskFresh && evasionResolveMask[toSq] !== 0;
 
 const isStrictlyBetweenOnRay = (sq, a, b) => {
     const sr = SQ_ROW[sq];
@@ -830,10 +835,8 @@ const squareResolvesChecker = (fromSq, toSq, generalSq, checkerSq, kind, extra) 
     return generalSq >= 0 && checkerSq >= 0 && isStrictlyBetweenOnRay(toSq, generalSq, checkerSq);
 };
 
-const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
+const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => { 
     const count = checkInfo.count;
-    if (count <= 0) return true;
-    if (count > CHECK_INFO_CAP) return false;
     for (let i = 0; i < count; i++) {
         if (!squareResolvesChecker(
             fromSq, toSq, generalSq, checkInfo.sq[i], checkInfo.kind[i], checkInfo.leg[i]
@@ -845,8 +848,10 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 };
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeSearchMove。
+// knownResolvesChecks：mask 解将着已保证吃将/垫将/蹩马，跳过重复的 moveResolvesKnownChecks。
 const moveReceivesCheck = (
-    pieceState, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC
+    pieceState, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC,
+    knownResolvesChecks = false
 ) => {
     const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
@@ -873,7 +878,9 @@ const moveReceivesCheck = (
         checkInfo.count <= CHECK_INFO_CAP
     ) {
         if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
-        if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
+        if (!knownResolvesChecks && !moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
+            return true;
+        }
         return generalSq < 0 || moveCreatesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
@@ -2342,6 +2349,7 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
     const fallback = checkInfo.count > CHECK_INFO_CAP || generalSq < 0;
+    evasionResolveMaskFresh = !fallback;
     const resolveCount = fallback
         ? 0
         : fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
@@ -2376,7 +2384,8 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         const capturedCode = pieceState.squareCodes[toSq];
         makeSearchMove(pieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const unsafe = moveReceivesCheck(
-            pieceState, color, fromSq, toSq, true, checkInfo, fromR, fromC, toR, toC
+            pieceState, color, fromSq, toSq, true, checkInfo, fromR, fromC, toR, toC,
+            evasionMoveAlreadyResolves(toSq)
         );
         unmakeSearchMove(
             pieceState, fromSq, toSq, scratchSearchUndoMoverSlot, scratchSearchUndoCapturedSlot,
@@ -5563,7 +5572,10 @@ const quiescence = (
         makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
+        if (moveReceivesCheck(
+            state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC,
+            knownInCheck && evasionMoveAlreadyResolves(toSq)
+        )) {
             unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
             continue;
         }
@@ -5728,7 +5740,10 @@ const alphaBeta = (
         makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
+        if (moveReceivesCheck(
+            stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC,
+            knownInCheck && evasionMoveAlreadyResolves(toSq)
+        )) {
             unmakeSearchMove(stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
             continue;
         }
