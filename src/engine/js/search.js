@@ -241,6 +241,8 @@ const scratchPinnedGuardTargets = new Uint8Array(32);
 let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Float64Array(6);
 let scratchLeafAttackedTargetMask = 0;
+let scratchLeafMaxVictimForRed = 0;
+let scratchLeafMaxVictimForBlack = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
 
 let activeSearchPieceState = null;
@@ -279,6 +281,7 @@ const createEmptySearchPieceState = () => ({
     board: null,
     squareToSlot: new Int8Array(REL_SQUARES),
     squareCodes: new Uint8Array(REL_SQUARES),
+    squarePieceInfo: new Uint16Array(REL_SQUARES),
     rowOccupancy: new Uint16Array(ROWS),
     colOccupancy: new Uint16Array(COLS),
     pieceCodes: new Uint8Array(32),
@@ -298,6 +301,7 @@ const createEmptySearchPieceState = () => ({
 const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const squareToSlot = state.squareToSlot;
     const squareCodes = state.squareCodes;
+    const squarePieceInfo = state.squarePieceInfo;
     const rowOccupancy = state.rowOccupancy;
     const colOccupancy = state.colOccupancy;
     const pieceCodes = state.pieceCodes;
@@ -305,6 +309,7 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const materialValues = searchMaterialTable(gameStage);
     squareToSlot.fill(-1);
     squareCodes.fill(0);
+    squarePieceInfo.fill(0);
     rowOccupancy.fill(0);
     colOccupancy.fill(0);
     pieceCodes.fill(0);
@@ -339,6 +344,7 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
             }
             squareToSlot[r * 9 + c] = slot;
             squareCodes[r * 9 + c] = code;
+            squarePieceInfo[r * 9 + c] = ((slot + 1) << 4) | code;
             rowOccupancy[r] |= 1 << c;
             colOccupancy[c] |= 1 << r;
             evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[code][r * 9 + c];
@@ -430,6 +436,8 @@ const updatePieceStateAfterMake = (
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
     state.squareCodes[toSq] = moverCode;
+    state.squarePieceInfo[fromSq] = 0;
+    state.squarePieceInfo[toSq] = ((moverSlot + 1) << 4) | moverCode;
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = toSq;
         else state.blackGeneralSq = toSq;
@@ -463,6 +471,7 @@ const updatePieceStateAfterUnmake = (state, fromSq, toSq, moverSlot, capturedSlo
         }
         state.squareToSlot[toSq] = capturedSlot;
         state.squareCodes[toSq] = capturedCode;
+        state.squarePieceInfo[toSq] = ((capturedSlot + 1) << 4) | capturedCode;
         if ((capturedCode & 7) === 1) {
             if (capturedCode < 8) state.redGeneralSq = toSq;
             else state.blackGeneralSq = toSq;
@@ -472,10 +481,12 @@ const updatePieceStateAfterUnmake = (state, fromSq, toSq, moverSlot, capturedSlo
         state.colOccupancy[toC] ^= 1 << toR;
         state.squareToSlot[toSq] = -1;
         state.squareCodes[toSq] = 0;
+        state.squarePieceInfo[toSq] = 0;
     }
     state.pieceSquares[moverSlot] = fromSq;
     state.squareToSlot[fromSq] = moverSlot;
     state.squareCodes[fromSq] = moverCode;
+    state.squarePieceInfo[fromSq] = ((moverSlot + 1) << 4) | moverCode;
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = fromSq;
         else state.blackGeneralSq = fromSq;
@@ -1691,10 +1702,11 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
 };
 
 const applyOccupiedSliderHit = (
-    sq, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+    sq, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
 ) => {
-    const targetCode = squareCodes[sq];
-    const targetSlot = squareToSlot[sq];
+    const targetInfo = squarePieceInfo[sq];
+    const targetCode = targetInfo & 15;
+    const targetSlot = (targetInfo >>> 4) - 1;
     if ((targetCode < 8) !== isRed) {
         attackBySlot[targetSlot] |= bit;
         return 1 << targetSlot;
@@ -2653,11 +2665,10 @@ const fillCannonRelations = (squareCodes, info, pieceAtSq, relCtx) => {
 
 // SoA 关系构建。占位目标关系按目标索引，攻击关系用稳定的 piece-state 槽（最多 32）。
 // 跳过空槽以保持初始槽的攻击方顺序。
-const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
+const calculatePackedSearchLeafRelations = (pieceState) => {
     const profileRelations = searchProfile;
     const relationStart = profileRelations ? performance.now() : 0;
-    const squareCodes = pieceState.squareCodes;
-    const squareToSlot = pieceState.squareToSlot;
+    const squarePieceInfo = pieceState.squarePieceInfo;
     const pieceCodes = pieceState.pieceCodes;
     const pieceSquares = pieceState.pieceSquares;
     const rowOccupancy = pieceState.rowOccupancy;
@@ -2686,10 +2697,11 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     let blackMobility = 0;
     let attackedTargetMask = 0;
 
-    const slotCount = pieceState.slotCount;
-    for (let slot = 0; slot < slotCount; slot++) {
-        const bit = 1 << slot;
-        if ((aliveMask & bit) === 0) continue;
+    let remainingSlots = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
+    while (remainingSlots !== 0) {
+        const bit = remainingSlots & -remainingSlots;
+        remainingSlots ^= bit;
+        const slot = 31 - Math.clz32(bit);
         const fromSq = pieceSquares[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
@@ -2707,10 +2719,11 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 let occupied = 0;
                 for (let i = destStart; i < destEnd; i++) {
                     const sq = generalDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode !== 0) {
+                    const targetInfo = squarePieceInfo[sq];
+                    if (targetInfo !== 0) {
                         occupied++;
-                        const targetSlot = squareToSlot[sq];
+                        const targetCode = targetInfo & 15;
+                        const targetSlot = (targetInfo >>> 4) - 1;
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
@@ -2731,10 +2744,11 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 let occupied = 0;
                 for (let i = destStart; i < destEnd; i++) {
                     const sq = advisorDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode !== 0) {
+                    const targetInfo = squarePieceInfo[sq];
+                    if (targetInfo !== 0) {
                         occupied++;
-                        const targetSlot = squareToSlot[sq];
+                        const targetCode = targetInfo & 15;
+                        const targetSlot = (targetInfo >>> 4) - 1;
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
@@ -2752,14 +2766,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 const destBase = colorIdx * DEST_OFF_STRIDE + fromSq;
                 for (let i = soldierDestOff[destBase], n = soldierDestOff[destBase + 1]; i < n; i++) {
                     const sq = soldierDestData[i];
-                    const targetCode = squareCodes[sq];
-                    if (targetCode === 0) {
+                    const targetInfo = squarePieceInfo[sq];
+                    if (targetInfo === 0) {
                         if (attackTarget[sq] & attackTargetBit) {
                             attackBits[sq >>> 5] |= 1 << (sq & 31);
                         }
                         mobilityValue += 1;
                     } else {
-                        const targetSlot = squareToSlot[sq];
+                        const targetCode = targetInfo & 15;
+                        const targetSlot = (targetInfo >>> 4) - 1;
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
@@ -2777,13 +2792,14 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 let occupied = 0;
                 for (let i = elephantDestOff[destBase], n = elephantDestOff[destBase + 1]; i < n; i++) {
                     const packed = elephantDestData[i];
-                    if (squareCodes[packed >>> 7] !== 0) continue;
+                    if (squarePieceInfo[packed >>> 7] !== 0) continue;
                     openCount++;
                     const sq = packed & 127;
-                    const targetCode = squareCodes[sq];
-                    if (targetCode !== 0) {
+                    const targetInfo = squarePieceInfo[sq];
+                    if (targetInfo !== 0) {
                         occupied++;
-                        const targetSlot = squareToSlot[sq];
+                        const targetCode = targetInfo & 15;
+                        const targetSlot = (targetInfo >>> 4) - 1;
                         if ((targetCode < 8) !== isRed) {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
@@ -2800,17 +2816,18 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             case 3: {
                 for (let i = horseDestOff[fromSq], n = horseDestOff[fromSq + 1]; i < n; i++) {
                     const packed = horseDestData[i];
-                    if (squareCodes[packed & 127] !== 0) continue;
+                    if (squarePieceInfo[packed & 127] !== 0) continue;
                     const d0 = (packed >>> 7) & 127;
                     if (d0 !== HORSE_NO_DEST) {
-                        const targetCode = squareCodes[d0];
-                        if (targetCode === 0) {
+                        const targetInfo = squarePieceInfo[d0];
+                        if (targetInfo === 0) {
                             if (attackTarget[d0] & attackTargetBit) {
                                 attackBits[d0 >>> 5] |= 1 << (d0 & 31);
                             }
                             mobilityValue += 1;
                         } else {
-                            const targetSlot = squareToSlot[d0];
+                            const targetCode = targetInfo & 15;
+                            const targetSlot = (targetInfo >>> 4) - 1;
                             if ((targetCode < 8) !== isRed) {
                                 attackedTargetMask |= 1 << targetSlot;
                                 attackBySlot[targetSlot] |= bit;
@@ -2820,14 +2837,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                     const d1 = (packed >>> 14) & 127;
                     if (d1 !== HORSE_NO_DEST) {
-                        const targetCode = squareCodes[d1];
-                        if (targetCode === 0) {
+                        const targetInfo = squarePieceInfo[d1];
+                        if (targetInfo === 0) {
                             if (attackTarget[d1] & attackTargetBit) {
                                 attackBits[d1 >>> 5] |= 1 << (d1 & 31);
                             }
                             mobilityValue += 1;
                         } else {
-                            const targetSlot = squareToSlot[d1];
+                            const targetCode = targetInfo & 15;
+                            const targetSlot = (targetInfo >>> 4) - 1;
                             if ((targetCode < 8) !== isRed) {
                                 attackedTargetMask |= 1 << targetSlot;
                                 attackBySlot[targetSlot] |= bit;
@@ -2849,25 +2867,25 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t0, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_FIRST_LOW[rankKey];
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t1, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_FIRST_HIGH[fileKey];
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        t2 * 9 + c, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t3 = FILE_FIRST_LOW[fileKey];
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        t3 * 9 + c, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
@@ -2919,25 +2937,25 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t0, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_SECOND_LOW[rankKey];
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t1, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_SECOND_HIGH[fileKey];
                 if (t2 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        t2 * 9 + c, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 const t3 = FILE_SECOND_LOW[fileKey];
                 if (t3 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        t3 * 9 + c, isRed, bit, squarePieceInfo, attackBySlot, guardBySlot
                     );
                 }
                 if (isRed ? r >= 7 : r <= 2) {
@@ -5055,9 +5073,7 @@ const evaluateLeaf = (pieceState) => {
     const stateCodes = pieceState.pieceCodes;
     const materialValues = pieceState.materialValues;
     const squareCodes = pieceState.squareCodes;
-    const aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
-
-    calculatePackedSearchLeafRelations(pieceState, aliveMask);
+    calculatePackedSearchLeafRelations(pieceState);
 
     const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
@@ -5066,6 +5082,8 @@ const evaluateLeaf = (pieceState) => {
     const redAttack = scratchRedAttack;
     let redThreat = 0;
     let blackThreat = 0;
+    let maxVictimForRed = 0;
+    let maxVictimForBlack = 0;
     const tacticalStart = searchProfile ? performance.now() : 0;
     let attackedTargets = scratchLeafAttackedTargetMask >>> 0;
     while (attackedTargets !== 0) {
@@ -5076,11 +5094,16 @@ const evaluateLeaf = (pieceState) => {
         const firstBit = attackers & -attackers;
         const attackerIndex = 31 - Math.clz32(firstBit);
         const targetCode = stateCodes[targetSlot];
+        const targetValue = materialValues[targetCode & 7];
+        if (targetCode < 8) {
+            if (targetValue > maxVictimForBlack) maxVictimForBlack = targetValue;
+        } else if (targetValue > maxVictimForRed) {
+            maxVictimForRed = targetValue;
+        }
         let threatValue = 0;
         if ((targetCode & 7) === 1) {
             threatValue = checkBonus;
         } else {
-            const targetValue = materialValues[targetCode & 7];
             const guards = guardBySlot[targetSlot] >>> 0;
             if (guards === 0) {
                 threatValue = targetValue;
@@ -5097,6 +5120,8 @@ const evaluateLeaf = (pieceState) => {
         if (stateCodes[attackerIndex] < 8) redThreat += threatValue;
         else blackThreat += threatValue;
     }
+    scratchLeafMaxVictimForRed = maxVictimForRed;
+    scratchLeafMaxVictimForBlack = maxVictimForBlack;
     if (searchProfile) perfStats.leafTacticalMs += performance.now() - tacticalStart;
 
     let redSafety = 0;
@@ -5423,26 +5448,15 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
 const quiescenceMateValue = (currentPlayer) =>
     currentPlayer === activeSearchInitiator ? -100000 : 100000;
 
-// B6: delta pruning 安全边界。被吃子价值加此边界仍达不到 alpha/beta 时跳过该捕获。
+// delta pruning 安全边界。被吃子价值加此边界仍达不到 alpha/beta 时跳过该捕获。
 // 取一个兵/卒/炮/士的价值（200）——棋子价值表里最弱档，对应 chess 引擎常用的 1 兵边界。
 const QUIESCENCE_DELTA_MARGIN = 200;
 
 const maxQuiescenceVictimValue = (state, currentPlayer) => {
     if (!leafRelationScratchFresh) return state.materialValues[1];
-    const ownIsRed = currentPlayer === SIDE_RED;
-    const pieceCodes = state.pieceCodes;
-    const materialValues = state.materialValues;
-    let maxVictim = 0;
-    let attacked = scratchLeafAttackedTargetMask >>> 0;
-    while (attacked !== 0) {
-        const bit = attacked & -attacked;
-        attacked ^= bit;
-        const code = pieceCodes[31 - Math.clz32(bit)];
-        if ((code < 8) === ownIsRed) continue;
-        const value = materialValues[code & 7];
-        if (value > maxVictim) maxVictim = value;
-    }
-    return maxVictim;
+    return currentPlayer === SIDE_RED
+        ? scratchLeafMaxVictimForRed
+        : scratchLeafMaxVictimForBlack;
 };
 
 // 静默搜索：stand-pat 用完整形势评估；仅对吃子延伸（QS≤3）
