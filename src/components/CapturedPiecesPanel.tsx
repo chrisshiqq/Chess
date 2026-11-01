@@ -1,5 +1,5 @@
 
-import React, { useId } from 'react';
+import React, { memo, useId, useMemo } from 'react';
 import { PieceType, Color } from '../domain/types';
 import { PieceMaterial } from '../ui/types';
 import { ChessPiece, PieceMaterialDefs } from './ChessPiece';
@@ -22,8 +22,8 @@ const sortPieces = (pieces: PieceType[]) => {
     return [...pieces].sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
 };
 
-export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor, isSetupMode = false, material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
-    const sortedPieces = sortPieces(pieces);
+const SidePanelInner: React.FC<SidePanelProps> = ({ pieces, color, playerColor, isSetupMode = false, material = 'stone', onDragStart, onDrop, recentlyCaptured }) => {
+    const sortedPieces = useMemo(() => sortPieces(pieces), [pieces]);
     const materialIdBase = `captured-${useId().replace(/:/g, '')}`;
 
     const handleDragOver = (e: React.DragEvent) => {
@@ -55,9 +55,11 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                     overflow: 'hidden'
                 }}
             >
+                <svg width="0" height="0" className="absolute" aria-hidden="true">
+                    <PieceMaterialDefs idPrefix={materialIdBase} />
+                </svg>
                 <div className={`grid gap-0 w-full justify-items-center items-center ${isSetupMode ? `${setupHeightClass} grid-cols-8 grid-rows-2 lg:grid-cols-4 lg:grid-rows-4 p-0` : `${capturedHeightClass} grid-cols-8`}`}>
                 {sortedPieces.map((type, idx) => {
-                    const materialIdPrefix = `${materialIdBase}-${color}-${type}-${idx}`;
                     // 检查当前棋子是否是最近被吃的棋子，并且是同类型中最后一个出现的（即最新被吃的）
                     const isRecentlyCaptured = !isSetupMode && recentlyCaptured && 
                         recentlyCaptured.color === color && recentlyCaptured.type === type &&
@@ -87,7 +89,6 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                 viewBox={isSetupMode ? "-24 -24 48 48" : "-16 -16 32 32"} 
                                 className={`overflow-visible pointer-events-none ${isSetupMode ? 'w-10 h-10 lg:w-12 lg:h-12' : ''}`}
                             >
-                                <PieceMaterialDefs idPrefix={materialIdPrefix} />
                                 <ChessPiece 
                                     type={type} 
                                     color={color} 
@@ -96,7 +97,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
                                     material={material} 
                                     playerColor={playerColor} 
                                     isRecentlyCaptured={isRecentlyCaptured} 
-                                    materialIdPrefix={materialIdPrefix}
+                                    materialIdPrefix={materialIdBase}
                                 />
                             </svg>
                         </div>
@@ -111,3 +112,18 @@ export const SidePanel: React.FC<SidePanelProps> = ({ pieces, color, playerColor
         </div>
     );
 };
+
+const samePieces = (left: PieceType[], right: PieceType[]) =>
+    left.length === right.length && left.every((piece, index) => piece === right[index]);
+
+export const SidePanel = memo(SidePanelInner, (previous, next) =>
+    samePieces(previous.pieces, next.pieces) &&
+    previous.color === next.color &&
+    previous.playerColor === next.playerColor &&
+    previous.isSetupMode === next.isSetupMode &&
+    previous.material === next.material &&
+    previous.onDragStart === next.onDragStart &&
+    previous.onDrop === next.onDrop &&
+    previous.recentlyCaptured?.color === next.recentlyCaptured?.color &&
+    previous.recentlyCaptured?.type === next.recentlyCaptured?.type
+);

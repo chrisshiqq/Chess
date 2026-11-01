@@ -16,7 +16,7 @@ const ensurePieceAnimationStyles = () => {
             50% { transform: translate(-1px, -1px); }
             75% { transform: translate(1px, -1px); }
         }
-        @keyframes rotate {
+        @keyframes captured-piece-rotate {
             from { transform: rotate(0deg); }
             to { transform: rotate(720deg); }
         }
@@ -207,7 +207,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
     if (isRecentlyCaptured) {
         // 最近被吃的棋子应用旋转动画：4秒转2圈，然后停止
         animationStyle = {
-            animation: 'rotate 4s linear forwards', // 4秒转2圈，forwards保持最终状态
+            animation: 'captured-piece-rotate 4s linear forwards',
             transformOrigin: '50% 50%', // 明确设置旋转中心为元素中心点
             transformBox: 'fill-box' // 确保旋转基于元素自身坐标系
         };

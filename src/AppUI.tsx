@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useId } from 'react';
+import React, { createContext, memo, useContext, useEffect, useId, useMemo, useState } from 'react';
 import { Color, Position, Piece } from './domain/types';
 import { PieceMaterial } from './ui/types';
 import { ChessPiece, PieceMaterialDefs } from './components/ChessPiece';
@@ -41,6 +41,66 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount }: {
     </div>
     );
 };
+
+type GameClockContextValue = {
+    redTime: number;
+    blackTime: number;
+    activeColor: Color;
+    running: boolean;
+};
+
+const GameClockContext = createContext<GameClockContextValue | null>(null);
+
+const GameClockProvider: React.FC<{
+    activeColor: Color;
+    running: boolean;
+    resetKey: number;
+    children: React.ReactNode;
+}> = ({ activeColor, running, resetKey, children }) => {
+    const [times, setTimes] = useState({ red: 0, black: 0 });
+
+    useEffect(() => {
+        setTimes({ red: 0, black: 0 });
+    }, [resetKey]);
+
+    useEffect(() => {
+        if (!running) return;
+        const interval = window.setInterval(() => {
+            setTimes(previous => ({
+                ...previous,
+                [activeColor]: previous[activeColor] + 1,
+            }));
+        }, 1000);
+        return () => window.clearInterval(interval);
+    }, [activeColor, running]);
+
+    const value = useMemo(() => ({
+        redTime: times.red,
+        blackTime: times.black,
+        activeColor,
+        running,
+    }), [times, activeColor, running]);
+
+    return <GameClockContext.Provider value={value}>{children}</GameClockContext.Provider>;
+};
+
+const GameClockDisplay = memo(({ color, redStepCount, blackStepCount }: {
+    color: Color;
+    redStepCount: number;
+    blackStepCount: number;
+}) => {
+    const clock = useContext(GameClockContext);
+    if (!clock) throw new Error('GameClockDisplay must be rendered inside GameClockProvider');
+    return (
+        <ClockDisplay
+            color={color}
+            time={color === 'red' ? clock.redTime : clock.blackTime}
+            isActive={clock.running && clock.activeColor === color}
+            redStepCount={redStepCount}
+            blackStepCount={blackStepCount}
+        />
+    );
+});
 
 // Helper function to format time
 const formatTime = (seconds: number) => {
@@ -117,4 +177,4 @@ const FlyingPiece: React.FC<{
 };
 
 // Export UI components
-export { ClockDisplay, FlyingPiece };
+export { ClockDisplay, FlyingPiece, GameClockDisplay, GameClockProvider };

@@ -24,7 +24,7 @@ import {
     AdjustmentsIcon,
     BoltIcon
 } from './components/Icons';
-import { ClockDisplay, FlyingPiece } from './AppUI';
+import { FlyingPiece, GameClockDisplay, GameClockProvider } from './AppUI';
 import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
 import type { PeerSession } from './net/PeerSession';
 import { generateRoomCode } from './net/roomCode';
@@ -530,8 +530,7 @@ const App: React.FC = () => {
     // 行棋动画状态
     const [moveAnimation, setMoveAnimation] = useState<{ from: Position, to: Position, id: number, piece: Piece } | null>(null);
 
-    const [redTime, setRedTime] = useState(0);
-    const [blackTime, setBlackTime] = useState(0);
+    const [clockResetKey, setClockResetKey] = useState(0);
     const [hasStarted, setHasStarted] = useState(false);
 
     // 长将和长捉检测
@@ -1167,23 +1166,6 @@ const App: React.FC = () => {
             }
         };
     }, [isMusicEnabled, hasStarted, gameOver, musicVariant]); // 依赖游戏状态、音乐开关与曲目变体
-
-    // Timer Logic
-    useEffect(() => {
-        let interval: ReturnType<typeof setInterval> | null = null;
-        
-        if (!gameOver && !isReplaying && !isSetupMode && hasStarted) {
-            interval = setInterval(() => {
-                if (turnRef.current === 'red') {
-                    setRedTime(prev => prev + 1);
-                } else {
-                    setBlackTime(prev => prev + 1);
-                }
-            }, 1000);
-        }
-        
-        return () => { if (interval) clearInterval(interval); };
-    }, [gameOver, isReplaying, isSetupMode, hasStarted]);
 
     // 检测局面是否处于将军状态
     const isBoardInCheck = async (board: Board, color: Color): Promise<boolean> => {
@@ -2563,8 +2545,7 @@ const App: React.FC = () => {
         setAnalysisBestMove(null);
         setAnalysisSecondBestMove(null);
         setIsSetupMode(false);
-        setRedTime(0);
-        setBlackTime(0);
+        setClockResetKey(previous => previous + 1);
         setHasStarted(false);
         setIsThinking(false);
         setGameId(prev => prev + 1);
@@ -2761,8 +2742,7 @@ const App: React.FC = () => {
         setSetupSupply(JSON.parse(JSON.stringify(INITIAL_SUPPLY))); 
         setBoardHistory([]);
         setMoveHistory([]);
-        setRedTime(0);
-        setBlackTime(0);
+        setClockResetKey(previous => previous + 1);
         setHasStarted(false);
         setIsThinking(false);
         setGameId(prev => prev + 1);
@@ -3019,7 +2999,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         playMoveSound();
     }, [isSetupMode, board, setupSupply]);
 
-    const handleDropOnPanel = (e: React.DragEvent, panelColor: Color) => {
+    const handleDropOnPanel = useCallback((e: React.DragEvent, panelColor: Color) => {
         e.preventDefault();
         const dataStr = e.dataTransfer.getData('text/plain');
         if (!dataStr) return;
@@ -3044,7 +3024,17 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             newSupply[color][type]--;
             setSetupSupply(newSupply);
         }
-    };
+    }, [setupSupply]);
+
+    const handlePanelDragStart = useCallback((e: React.DragEvent, type: PieceType, color: Color) => {
+        handleDragStart(e, { type, color });
+    }, [handleDragStart]);
+    const handleDropOnRedPanel = useCallback((e: React.DragEvent) => {
+        handleDropOnPanel(e, 'red');
+    }, [handleDropOnPanel]);
+    const handleDropOnBlackPanel = useCallback((e: React.DragEvent) => {
+        handleDropOnPanel(e, 'black');
+    }, [handleDropOnPanel]);
 
     // Handle loading opening book from file
     const handleLoadOpeningBook = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3540,13 +3530,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setGameOver(null);
         setPendingGameOver(null);
         setHasStarted(false);
-        setRedTime(0);
+        setClockResetKey(previous => previous + 1);
         // 重置指示器
         setHiddenBestMove(null);
         setSuboptimalMove(null);
         setAnalysisBestMove(null);
         setAnalysisSecondBestMove(null);
-        setBlackTime(0);
         setPositionHistory([]);
         setRepetitionWarning(null);
         setSelectedPos(null);
@@ -3941,6 +3930,11 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     }
 
     return (
+        <GameClockProvider
+            activeColor={turn}
+            running={!gameOver && !isReplaying && !isSetupMode && hasStarted}
+            resetKey={clockResetKey}
+        >
         <div className="min-h-dvh bg-stone-900 flex flex-col items-center justify-start lg:justify-center p-2 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:p-4 sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] font-sans text-stone-200 relative overflow-x-hidden select-none">
             <audio ref={sfxRef} src={CLICK_SOUND_URI} />
             
@@ -4052,10 +4046,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     <div className="order-1 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-end">
                         {/* Setup 竖屏隐藏时钟省空间；桌面仍显示 */}
                         <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                            <ClockDisplay 
+                            <GameClockDisplay
                                 color={playerColor === 'red' ? 'black' : 'red'} 
-                                time={playerColor === 'red' ? blackTime : redTime} 
-                                isActive={(playerColor === 'red' ? turn === 'black' : turn === 'red') && !gameOver && !isReplaying && !isSetupMode && hasStarted} 
                                 redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
                             />
@@ -4069,8 +4061,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 pieces={topPanelColor === (playerColor === 'red' ? 'black' : 'red') ? topPanelPieces : bottomPanelPieces}
                                 isSetupMode={isSetupMode}
                                 material={material}
-                                onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                onDrop={(e) => handleDropOnPanel(e, playerColor === 'red' ? 'black' : 'red')}
+                                onDragStart={handlePanelDragStart}
+                                onDrop={playerColor === 'red' ? handleDropOnBlackPanel : handleDropOnRedPanel}
                                 recentlyCaptured={recentlyCaptured}
                             />
                             </div>
@@ -4085,8 +4077,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     pieces={topPanelPieces}
                                     isSetupMode={isSetupMode}
                                     material={material}
-                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                    onDrop={(e) => handleDropOnPanel(e, topPanelColor)}
+                                    onDragStart={handlePanelDragStart}
+                                    onDrop={topPanelColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
                                     recentlyCaptured={recentlyCaptured}
                                 />
                             </div>
@@ -4119,8 +4111,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 isSetupMode={isSetupMode}
                                 material={material}
                                 recentlyCaptured={recentlyCaptured}
-                                onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                onDrop={(e) => handleDropOnPanel(e, playerColor)}
+                                onDragStart={handlePanelDragStart}
+                                onDrop={playerColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
                             />
                             </div>
                         )}
@@ -4135,17 +4127,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     isSetupMode={isSetupMode}
                                     material={material}
                                     recentlyCaptured={recentlyCaptured}
-                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                    onDrop={(e) => handleDropOnPanel(e, bottomPanelColor)}
+                                    onDragStart={handlePanelDragStart}
+                                    onDrop={bottomPanelColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
                                 />
                             </div>
                         )}
                         
                         <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                            <ClockDisplay 
+                            <GameClockDisplay
                                 color={playerColor} 
-                                time={playerColor === 'red' ? redTime : blackTime} 
-                                isActive={(playerColor === 'red' ? turn === 'red' : turn === 'black') && !gameOver && !isReplaying && !isSetupMode && hasStarted} 
                                 redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
                                 blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
                             />
@@ -5131,8 +5121,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     pieces={topPanelColor === 'black' ? topPanelPieces : bottomPanelPieces}
                                     isSetupMode={isSetupMode}
                                     material={material}
-                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                    onDrop={(e) => handleDropOnPanel(e, 'black')}
+                                    onDragStart={handlePanelDragStart}
+                                    onDrop={handleDropOnBlackPanel}
                                     recentlyCaptured={recentlyCaptured}
                                 />
                                 
@@ -5143,8 +5133,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     pieces={topPanelColor === 'red' ? topPanelPieces : bottomPanelPieces}
                                     isSetupMode={isSetupMode}
                                     material={material}
-                                    onDragStart={(e, type, c) => handleDragStart(e, {type, color: c})}
-                                    onDrop={(e) => handleDropOnPanel(e, 'red')}
+                                    onDragStart={handlePanelDragStart}
+                                    onDrop={handleDropOnRedPanel}
                                     recentlyCaptured={recentlyCaptured}
                                 />
                             </div>
@@ -5502,6 +5492,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 </div>
             </div>
         </div>
+        </GameClockProvider>
     );
 };
 
