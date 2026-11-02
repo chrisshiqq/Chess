@@ -476,6 +476,7 @@ const App: React.FC = () => {
     const [analysisMoves, setAnalysisMoves] = useState<Array<{move: Move, score: number, moveSequence: Move[]}>>([]); // 分析结果
     const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false); // 是否正在分析
     const [selectedAnalysisMove, setSelectedAnalysisMove] = useState<number | null>(null); // 选中的分析着法索引
+    const [analysisPreviewIndex, setAnalysisPreviewIndex] = useState<number>(-1);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const isMuted = false;
@@ -3004,6 +3005,29 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         playMoveSound();
     }, [isSetupMode, board, setupSupply]);
 
+    const collectSelectedSetupPiece = useCallback(() => {
+        if (!selectedPos || !board[selectedPos.r]?.[selectedPos.c]) return;
+        handleRightClickOnBoard(selectedPos);
+        setSelectedPos(null);
+        setSelectedPieceEval(null);
+    }, [selectedPos, board, handleRightClickOnBoard]);
+
+    const handleSetupCollectDrop = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        const data = e.dataTransfer.getData('text/plain');
+        if (!data) return;
+        try {
+            const source = JSON.parse(data) as Partial<Position>;
+            if (typeof source.r === 'number' && typeof source.c === 'number') {
+                handleRightClickOnBoard({ r: source.r, c: source.c });
+                setSelectedPos(null);
+                setSelectedPieceEval(null);
+            }
+        } catch {
+            // Ignore non-board drag payloads.
+        }
+    }, [handleRightClickOnBoard]);
+
     const handleDropOnPanel = useCallback((e: React.DragEvent, panelColor: Color) => {
         e.preventDefault();
         const dataStr = e.dataTransfer.getData('text/plain');
@@ -3903,6 +3927,66 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const capturedInfo = useMemo(() => getCapturedPieces(displayBoard), [displayBoard]);
     const isFlipped = playerColor === 'black';
 
+    const updateAnalysisPreview = async (sequenceIndex: number) => {
+        if (selectedAnalysisMove === null) return;
+        const sequence = analysisMoves[selectedAnalysisMove]?.moveSequence;
+        if (!sequence?.length) return;
+
+        const nextIndex = Math.max(0, Math.min(sequenceIndex, sequence.length - 1));
+        let baseBoard = originalBoardForPreview;
+        if (!baseBoard) {
+            baseBoard = board.map(row => [...row]);
+            setOriginalBoardForPreview(baseBoard);
+        }
+
+        const previewBoard = baseBoard.map(row => [...row]);
+        for (let i = 0; i <= nextIndex; i++) {
+            const move = sequence[i];
+            previewBoard[move.to.r][move.to.c] = previewBoard[move.from.r][move.from.c];
+            previewBoard[move.from.r][move.from.c] = null;
+        }
+        setBoard(previewBoard);
+        setIsPreviewing(true);
+        setAnalysisPreviewIndex(nextIndex);
+
+        try {
+            const previewTurn = (nextIndex + 1) % 2 === 0 ? turn : (turn === 'red' ? 'black' : 'red');
+            const evaluation = await workerGetDetailedEval(previewBoard, previewTurn, false);
+            setMoveEvaluation({
+                pre: evaluation,
+                post: evaluation,
+                diff: {
+                    red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                    black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                },
+            });
+        } catch (error) {
+            console.error('获取局面评估失败:', error);
+        }
+    };
+
+    const restoreAnalysisPreview = async () => {
+        if (!originalBoardForPreview) return;
+        const restoredBoard = originalBoardForPreview;
+        setBoard(restoredBoard);
+        setOriginalBoardForPreview(null);
+        setIsPreviewing(false);
+        setAnalysisPreviewIndex(-1);
+        try {
+            const evaluation = await workerGetDetailedEval(restoredBoard, turn, false);
+            setMoveEvaluation({
+                pre: evaluation,
+                post: evaluation,
+                diff: {
+                    red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                    black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                },
+            });
+        } catch (error) {
+            console.error('获取局面评估失败:', error);
+        }
+    };
+
     let topPanelPieces: PieceType[] = [];
     let topPanelColor: Color = playerColor === 'red' ? 'black' : 'red';
 
@@ -4041,6 +4125,21 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         analysisSecondBestMove={isSetupMode ? null : analysisSecondBestMove}
                     />
 
+                    {isSetupMode && (
+                        <button
+                            type="button"
+                            onClick={collectSelectedSetupPiece}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={handleSetupCollectDrop}
+                            disabled={!selectedPos || !board[selectedPos.r]?.[selectedPos.c]}
+                            className="absolute left-1/2 top-1/2 z-30 flex h-10 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-teal-500/70 bg-stone-900/90 px-3 text-xs font-semibold text-teal-200 shadow-md transition-[background-color,border-color,opacity,transform] hover:bg-stone-800 disabled:opacity-40"
+                            aria-label="Collect selected piece"
+                            title="Collect selected piece"
+                        >
+                            <UndoIcon className="h-4 w-4" />
+                        </button>
+                    )}
+
                     {isReplaying && (
                         <div
                             className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-700/30 bg-stone-950/25 p-1 shadow-md"
@@ -4138,65 +4237,28 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         </div>
                     )}
 
-                    {isPreviewing && !isReplaying && (
-                        <button
-                            type="button"
-                            aria-label="Resume"
-                            title="Resume"
-                            onClick={async () => {
-                                if (originalBoardForPreview) {
-                                    setBoard(originalBoardForPreview);
-                                    setOriginalBoardForPreview(null);
-                                    setIsPreviewing(false);
-
-                                    try {
-                                        const currentTurn = turn;
-                                        const evaluation = await workerGetDetailedEval(originalBoardForPreview, currentTurn, false);
-                                        const formattedEvaluation = {
-                                            pre: evaluation,
-                                            post: evaluation,
-                                            diff: {
-                                                red: {
-                                                    total: 0,
-                                                    material: 0,
-                                                    position: 0,
-                                                    safety: 0,
-                                                    mobility: 0,
-                                                    threat: 0
-                                                },
-                                                black: {
-                                                    total: 0,
-                                                    material: 0,
-                                                    position: 0,
-                                                    safety: 0,
-                                                    mobility: 0,
-                                                    threat: 0
-                                                }
-                                            }
-                                        };
-                                        setMoveEvaluation(formattedEvaluation);
-                                    } catch (evalError) {
-                                        console.error('获取局面评估失败:', evalError);
-                                    }
-                                }
-                            }}
-                            className="absolute z-30 flex items-center justify-center bg-transparent p-0 hover:opacity-80 active:scale-95"
-                            style={{
-                                top: '50%',
-                                left: '50%',
-                                transform: 'translate(-50%, -50%)'
-                            }}
+                    {isAnalysisMode && selectedAnalysisMove !== null && analysisMoves[selectedAnalysisMove]?.moveSequence.length > 0 && (
+                        <div
+                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-700/40 bg-stone-950/80 p-1 shadow-md"
+                            role="group"
+                            aria-label="Analysis variation navigation"
                         >
-                            <ArrowPathIcon
-                                className="text-red-500"
-                                style={{
-                                    width: '48px',
-                                    height: '48px',
-                                    opacity: 0.85,
-                                    filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.5))'
-                                }}
-                            />
-                        </button>
+                            <button type="button" onClick={() => void updateAnalysisPreview(0)} className="analysis-nav-button" aria-label="First analysis move" title="First move">
+                                <FirstPageIcon className="h-5 w-5" />
+                            </button>
+                            <button type="button" onClick={() => void updateAnalysisPreview(Math.max(0, analysisPreviewIndex - 1))} disabled={analysisPreviewIndex <= 0} className="analysis-nav-button" aria-label="Previous analysis move" title="Previous move">
+                                <ChevronLeftIcon className="h-5 w-5" />
+                            </button>
+                            <button type="button" onClick={() => void restoreAnalysisPreview()} disabled={!isPreviewing} className="analysis-nav-button text-red-400" aria-label="Restore position" title="Restore">
+                                <ArrowPathIcon className="h-5 w-5" />
+                            </button>
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisPreviewIndex + 1)} disabled={analysisPreviewIndex >= analysisMoves[selectedAnalysisMove].moveSequence.length - 1} className="analysis-nav-button" aria-label="Next analysis move" title="Next move">
+                                <ChevronRightIcon className="h-5 w-5" />
+                            </button>
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisMoves[selectedAnalysisMove].moveSequence.length - 1)} className="analysis-nav-button" aria-label="Last analysis move" title="Last move">
+                                <LastPageIcon className="h-5 w-5" />
+                            </button>
+                        </div>
                     )}
 
                     {repetitionWarning && !isReplaying && !isSetupMode && (
@@ -4842,8 +4904,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                 onClick={() => {
                                                                     if (selectedAnalysisMove === index) {
                                                                         setSelectedAnalysisMove(null);
+                                                                        setAnalysisPreviewIndex(-1);
                                                                     } else {
                                                                         setSelectedAnalysisMove(index);
+                                                                        setAnalysisPreviewIndex(-1);
                                                                     }
                                                                 }}
                                                                 className={`p-1 border rounded cursor-pointer ${selectedAnalysisMove === index ? 'bg-stone-700 border-stone-500' : 'bg-stone-800/50 border-stone-700'}`}
@@ -4886,6 +4950,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                         
                                                                                         // 更新棋盘状态
                                                                                         setBoard(tempBoard);
+                                                                                        setAnalysisPreviewIndex(seqIndex);
                                                                                         
                                                                                         // 重新评估局面并更新 EVALUATION 面板
                                                                                         try {
@@ -5121,8 +5186,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         onClick={() => {
                                                             if (selectedAnalysisMove === index) {
                                                                 setSelectedAnalysisMove(null);
+                                                                setAnalysisPreviewIndex(-1);
                                                             } else {
                                                                 setSelectedAnalysisMove(index);
+                                                                setAnalysisPreviewIndex(-1);
                                                             }
                                                         }}
                                                         className={`p-1 border rounded cursor-pointer ${selectedAnalysisMove === index ? 'bg-stone-700 border-stone-500' : 'bg-stone-800/50 border-stone-700'}`}
@@ -5165,6 +5232,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                 
                                                                                 // 更新棋盘状态
                                                                                 setBoard(tempBoard);
+                                                                                setAnalysisPreviewIndex(seqIndex);
                                                                                 
                                                                                 // 重新评估局面并更新 EVALUATION 面板
                                                                                 try {

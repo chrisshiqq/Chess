@@ -43,3 +43,23 @@ code {
   position: relative;
   z-index: 10;
 }
+
+.analysis-nav-button {
+  display: flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  color: rgb(255 255 255 / 0.9);
+  transition: color 150ms, background-color 150ms, opacity 150ms;
+}
+
+.analysis-nav-button:hover:not(:disabled) {
+  background-color: rgb(41 37 36 / 0.9);
+  color: white;
+}
+
+.analysis-nav-button:disabled {
+  opacity: 0.3;
+}
