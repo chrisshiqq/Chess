@@ -1005,7 +1005,8 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
     return moves;
 };
 
-const scoreStagedMoveRange = (moves, scores, start, end, killers) => {
+const sortStagedMoveRange = (moves, start, end, killers) => {
+    if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
@@ -1026,32 +1027,20 @@ const scoreStagedMoveRange = (moves, scores, start, end, killers) => {
         } else if (killers && move === killers[1]) {
             score += 7000;
         }
-        scores[index] = score;
+        sortMoveScoreScratch[index] = score;
     }
-    if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
-};
 
-// 稳定地取当前最高分着法。区间右移保留同分着法原顺序，与稳定插入排序一致。
-const promoteBestStagedMove = (moves, scores, start, end) => {
-    if (end - start <= 1) return;
-    const __t0 = searchProfile ? performance.now() : 0;
-    let best = start;
-    let bestScore = scores[start];
     for (let i = start + 1; i < end; i++) {
-        const score = scores[i];
-        if (score > bestScore) {
-            best = i;
-            bestScore = score;
+        const move = moves[i];
+        const score = sortMoveScoreScratch[i];
+        let j = i - 1;
+        while (j >= start && sortMoveScoreScratch[j] < score) {
+            moves[j + 1] = moves[j];
+            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
+            j--;
         }
-    }
-    if (best !== start) {
-        const bestMove = moves[best];
-        for (let i = best; i > start; i--) {
-            moves[i] = moves[i - 1];
-            scores[i] = scores[i - 1];
-        }
-        moves[start] = bestMove;
-        scores[start] = bestScore;
+        moves[j + 1] = move;
+        sortMoveScoreScratch[j + 1] = score;
     }
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
 };
@@ -2448,7 +2437,7 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
 // Appends exactly one stage: TT, quiet killers, captures, then quiets.
 // Later stages exclude only specials that were actually validated and appended.
 const appendTrueStagedMoves = (
-    moves, scores, stage, currentPlayer, pieceState, ttMove, killers
+    moves, stage, currentPlayer, pieceState, ttMove, killers
 ) => {
     const start = moves.length;
     if (stage === 0) {
@@ -2466,18 +2455,18 @@ const appendTrueStagedMoves = (
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    scoreStagedMoveRange(moves, scores, start, moves.length, killers);
+    sortStagedMoveRange(moves, start, moves.length, killers);
     return moves.length - start;
 };
 
 const advanceTrueStagedMoves = (
-    moves, scores, nextStage, currentPlayer, pieceState, ttMove, killers
+    moves, nextStage, currentPlayer, pieceState, ttMove, killers
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
         const started = searchProfile ? performance.now() : 0;
         const added = appendTrueStagedMoves(
-            moves, scores, stage, currentPlayer, pieceState, ttMove, killers
+            moves, stage, currentPlayer, pieceState, ttMove, killers
         );
         if (searchProfile) perfStats.prepareMoveGenMs += performance.now() - started;
         if (added > 0) break;
@@ -4220,7 +4209,6 @@ for (let depth = 1; depth <= LMR_TABLE_DEPTH_MAX; depth++) {
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
 const playStagedMoveBuffers = [];
-const playStagedScoreBuffers = [];
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -4886,13 +4874,6 @@ const alphaBeta = (
     } else {
         moves.length = 0;
     }
-    let moveScores = playStagedScoreBuffers[plyFromRoot];
-    if (!moveScores) {
-        moveScores = [];
-        playStagedScoreBuffers[plyFromRoot] = moveScores;
-    } else {
-        moveScores.length = 0;
-    }
     if (knownInCheck) {
         const genStarted = searchProfile ? performance.now() : 0;
         generateCheckEvasions(
@@ -4939,7 +4920,7 @@ const alphaBeta = (
     let nextTrueStagedStage = 0;
     if (!knownInCheck) {
         nextTrueStagedStage = advanceTrueStagedMoves(
-            moves, moveScores, nextTrueStagedStage, currentPlayer, stagedPieceState,
+            moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth
         );
     } else {
@@ -4955,13 +4936,10 @@ const alphaBeta = (
             if (knownInCheck) break;
             const before = moves.length;
             nextTrueStagedStage = advanceTrueStagedMoves(
-                moves, moveScores, nextTrueStagedStage, currentPlayer, stagedPieceState,
+                moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
                 ttMove, killersAtDepth
             );
             if (moves.length === before) break;
-        }
-        if (!knownInCheck) {
-            promoteBestStagedMove(moves, moveScores, moveIndex, moves.length);
         }
         const move = moves[moveIndex];
         const fromSq = move >>> 7;
