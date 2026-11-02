@@ -4672,16 +4672,17 @@ const QUIESCENCE_DELTA_MARGIN = 200;
 
 const maxQuiescenceVictimValue = (state, currentPlayer) => {
     if (!leafRelationScratchFresh) return state.materialValues[1];
-    const ownIsRed = currentPlayer === SIDE_RED;
     const pieceCodes = state.pieceCodes;
     const materialValues = state.materialValues;
     let maxVictim = 0;
-    let attacked = scratchLeafAttackedTargetMask >>> 0;
+    const enemyAliveMask = currentPlayer === SIDE_RED
+        ? state.blackAliveMask
+        : state.redAliveMask;
+    let attacked = (scratchLeafAttackedTargetMask & enemyAliveMask) >>> 0;
     while (attacked !== 0) {
         const bit = attacked & -attacked;
         attacked ^= bit;
         const code = pieceCodes[31 - Math.clz32(bit)];
-        if ((code < 8) === ownIsRed) continue;
         const value = materialValues[code & 7];
         if (value > maxVictim) maxVictim = value;
     }
