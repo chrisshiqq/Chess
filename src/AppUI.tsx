@@ -14,7 +14,7 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount }: {
     const materialIdPrefix = `clock-${useId().replace(/:/g, '')}`;
     return (
     <div className={`
-        flex items-center justify-between px-4 py-2 rounded-lg border-2 shadow-lg transition-all duration-300 w-full
+        flex items-center justify-between px-4 py-2 rounded-lg border-2 shadow-lg transition-[color,background-color,border-color,box-shadow,transform,opacity,filter] duration-300 w-full
         ${isActive ? 'bg-stone-800 border-amber-500 ring-2 ring-amber-500/30 transform scale-105 z-10' : 'bg-stone-900/60 border-stone-700 opacity-70 grayscale'}
     `}>
         <div className="flex items-center gap-3">

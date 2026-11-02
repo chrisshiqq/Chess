@@ -54,7 +54,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     color: disabled ? '#927659' : '#d6d3d1',
   });
   const panelControlClass =
-    'rounded-lg font-bold transition-all border shadow-sm hover:opacity-80 active:scale-95';
+    'rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] border shadow-sm hover:opacity-80 active:scale-95';
 
   if (screen === 'waiting') {
     const waitingLabel =

@@ -43,7 +43,7 @@ const SidePanelInner: React.FC<SidePanelProps> = ({ pieces, color, playerColor, 
     const capturedHeightClass = 'min-h-[70px] max-h-[70px]';
 
     return (
-            <div className={`flex flex-col gap-0 p-0 pt-0 rounded-lg border w-full transition-all duration-500
+            <div className={`flex flex-col gap-0 p-0 pt-0 rounded-lg border w-full transition-[background-color,border-color,height] duration-500
                     ${styles.bg} ${styles.border}
                     ${isSetupMode ? setupHeightClass : capturedHeightClass}
                 `}
@@ -61,9 +61,9 @@ const SidePanelInner: React.FC<SidePanelProps> = ({ pieces, color, playerColor, 
                 <div className={`grid gap-0 w-full justify-items-center items-center ${isSetupMode ? `${setupHeightClass} grid-cols-8 grid-rows-2 lg:grid-cols-4 lg:grid-rows-4 p-0` : `${capturedHeightClass} grid-cols-8`}`}>
                 {sortedPieces.map((type, idx) => {
                     // 检查当前棋子是否是最近被吃的棋子，并且是同类型中最后一个出现的（即最新被吃的）
-                    const isRecentlyCaptured = !isSetupMode && recentlyCaptured && 
+                    const isRecentlyCaptured = !!(!isSetupMode && recentlyCaptured &&
                         recentlyCaptured.color === color && recentlyCaptured.type === type &&
-                        idx === sortedPieces.lastIndexOf(type);
+                        idx === sortedPieces.lastIndexOf(type));
                     
                     return (
                         <div 

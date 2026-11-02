@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { ChessBoard, SKINS } from './components/ChessBoard';
-import { SidePanel } from './components/CapturedPiecesPanel';
-import { EvaluationPanel } from './components/EvaluationPanel';
+import { DesktopSetupSupply, GameModeNav, PlayerSidebar, type GameTab } from './components/GameChrome';
 import { 
     ArrowPathIcon,
     ArrowsLeftRightIcon, 
@@ -24,7 +23,7 @@ import {
     AdjustmentsIcon,
     BoltIcon
 } from './components/Icons';
-import { FlyingPiece, GameClockDisplay, GameClockProvider } from './AppUI';
+import { FlyingPiece, GameClockProvider } from './AppUI';
 import { LobbyScreen, type LocalPlayMode } from './components/LobbyScreen';
 import type { PeerSession } from './net/PeerSession';
 import { generateRoomCode } from './net/roomCode';
@@ -212,7 +211,7 @@ const generateTone = (frequency: number, duration: number, type: OscillatorType 
     wav.set(new Uint8Array(wavHeader), 0);
     wav.set(new Uint8Array(intBuffer.buffer), wavHeader.byteLength);
     
-    const base64 = btoa(String.fromCharCode.apply(null, wav));
+    const base64 = btoa(String.fromCharCode.apply(null, Array.from(wav)));
     return `data:audio/wav;base64,${base64}`;
 };
 
@@ -283,7 +282,7 @@ const generateDropSound = (): string => {
     wav.set(new Uint8Array(wavHeader), 0);
     wav.set(new Uint8Array(intBuffer.buffer), wavHeader.byteLength);
     
-    const base64 = btoa(String.fromCharCode.apply(null, wav));
+    const base64 = btoa(String.fromCharCode.apply(null, Array.from(wav)));
     return `data:audio/wav;base64,${base64}`;
 };
 
@@ -675,7 +674,7 @@ const App: React.FC = () => {
     } | null>(null);
     
     // Tab navigation for right panel
-    const [activeTab, setActiveTab] = useState<'game' | 'replay' | 'setup' | 'settings' | 'stats'>('game');
+    const [activeTab, setActiveTab] = useState<GameTab>('game');
     
     // 重置所有棋盘指示器的函数
     const resetBoardIndicators = () => {
@@ -1316,7 +1315,7 @@ const App: React.FC = () => {
         }
         
         // 设置游戏结束状态
-        setGameOver({ status, winner });
+        setGameOver({ status, winner: winner ?? undefined });
         
         // 游戏结束时自动将AI模式从Auto改为Manual
         setRedIsAuto(false);
@@ -1518,8 +1517,10 @@ const App: React.FC = () => {
                         currentColorIsAuto = true;
                     } else {
                         // 玩家Auto模式，检查当前颜色的auto状态
-                        currentColorIsAuto = (move.from && currentBoard[move.from.r] && currentBoard[move.from.r][move.from.c]) ? 
-                            (currentBoard[move.from.r][move.from.c].color === 'red' ? redIsAutoRef.current : blackIsAutoRef.current) : false;
+                        const sourcePiece = currentBoard[move.from.r]?.[move.from.c];
+                        currentColorIsAuto = sourcePiece
+                            ? (sourcePiece.color === 'red' ? redIsAutoRef.current : blackIsAutoRef.current)
+                            : false;
                     }
                     
                     if (!isAutoMode || (isAutoMode && currentColorIsAuto)) {
@@ -1543,7 +1544,11 @@ const App: React.FC = () => {
             testBoard[move.from.r][move.from.c] = null;
             const nextTurn = currentTurn === 'red' ? 'black' : 'red';
             const hash = generatePositionHash(testBoard, nextTurn);
-            return await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
+            const result = await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
+            return {
+                violation: result.violation,
+                type: result.type ?? undefined,
+            };
         };
 
         const isSameMove = (left: Move, right: Move): boolean =>
@@ -2883,7 +2888,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         // 检查是否是紧凑格式（二维数字数组）
                         if (Array.isArray(gameData.initialBoard) && 
                             gameData.initialBoard.length === ROWS && 
-                            gameData.initialBoard.every(row => Array.isArray(row) && row.length === COLS && row.every(item => typeof item === 'number'))) {
+                            gameData.initialBoard.every((row: unknown) => Array.isArray(row) && row.length === COLS && row.every((item: unknown) => typeof item === 'number'))) {
                             // 是紧凑格式，转换为标准棋盘格式
                             startBoard = compactFormatToBoard(gameData.initialBoard as CompactBoard);
                         } else {
@@ -3269,8 +3274,8 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setAnalysisSecondBestMove(null);
         
         try {
-            let currentBoard;
-            let currentTurn;
+            let currentBoard: Board;
+            let currentTurn: Color;
             
             if (isReplaying && allReplayBoards.length > 0) {
                 // Replay模式
@@ -3483,12 +3488,14 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 }
                 
                 // 设置行棋动画
-                setMoveAnimation({ 
-                    from: currentMove.from, 
-                    to: currentMove.to,
-                    id: Date.now(),
-                    piece: movingPiece
-                });
+                if (movingPiece) {
+                    setMoveAnimation({
+                        from: currentMove.from,
+                        to: currentMove.to,
+                        id: Date.now(),
+                        piece: movingPiece
+                    });
+                }
                 
                 // 0.3秒后清除动画状态
                 if (animationTimeoutRef.current) {
@@ -3763,7 +3770,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     // 检查是否是紧凑格式（二维数字数组）
                     if (Array.isArray(gameData.initialBoard) && 
                         gameData.initialBoard.length === ROWS && 
-                        gameData.initialBoard.every(row => Array.isArray(row) && row.length === COLS && row.every(item => typeof item === 'number'))) {
+                        gameData.initialBoard.every((row: unknown) => Array.isArray(row) && row.length === COLS && row.every((item: unknown) => typeof item === 'number'))) {
                         // 是紧凑格式，转换为标准棋盘格式
                         startBoard = compactFormatToBoard(gameData.initialBoard as CompactBoard);
                     } else {
@@ -3811,10 +3818,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 }
                 
                 // 获取棋谱着法
-                let notationArray = [];
+                let notationArray: string[] = [];
                 try {
                     if (gameData.notation && gameData.notation.trim() !== '') {
-                        notationArray = typeof gameData.notation === 'string' ? gameData.notation.split(' ').filter(move => move.trim() !== '') : gameData.notation;
+                        notationArray = typeof gameData.notation === 'string'
+                            ? gameData.notation.split(' ').filter((move: string) => move.trim() !== '')
+                            : gameData.notation;
                     } else {
                         notationArray = [];
                     }
@@ -3912,6 +3921,28 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         bottomPanelPieces = capturedInfo[playerColor];
     }
 
+    const showGameTab = () => {
+        if (isSetupMode || isReplaying) return;
+        resetBoardIndicators();
+        setActiveTab('game');
+    };
+    const showReplayTab = () => {
+        if (isSetupMode) return;
+        resetBoardIndicators();
+        setActiveTab('replay');
+        if (!isReplaying) void startReplay();
+    };
+    const showSetupTab = () => {
+        if (isReplaying || isThinking) return;
+        if (!isSetupMode) enterSetupMode();
+        resetBoardIndicators();
+        setActiveTab('setup');
+    };
+    const showSettingsTab = () => {
+        resetBoardIndicators();
+        setActiveTab('settings');
+    };
+
     if (appScreen === 'lobby' || appScreen === 'waiting') {
         return (
             <LobbyScreen
@@ -3945,203 +3976,39 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             <audio ref={gameOverSoundRef} src={GAME_OVER_SOUND} />
             <audio ref={victorySoundRef} src={VICTORY_SOUND} />
 
-            {/* 游戏模式选择按钮 - 位于棋盘正上方 */}
-            <div className="w-full mb-3 max-w-[500px] mx-auto">
-                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-stone-400 px-1">
-                    <span>
-                        {onlineInfo ? (
-                            <>
-                                Online · Room{' '}
-                                <span className="font-mono text-amber-400 tracking-wider">
-                                    {onlineInfo.roomCode.toUpperCase()}
-                                </span>
-                                {onlineInfo.peerNick ? ` · vs ${onlineInfo.peerNick}` : ''}
-                                {' · '}
-                                {onlineInfo.myColor === 'red' ? 'Playing Red' : 'Playing Black'}
-                            </>
-                        ) : (
-                            'Local game'
-                        )}
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => leaveToLobby()}
-                        className="text-rose-300 hover:text-rose-200 font-semibold"
-                    >Leave</button>
-                </div>
-                <div className="flex gap-1">
-                    <button 
-                        onClick={() => {
-                            if (isSetupMode || isReplaying) {
-                                // 处于Setup或Replay模式时，点击Game页签无效
-                                return;
-                            }
-                            resetBoardIndicators();
-                            setActiveTab('game');
-                        }}
-                        className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-xs transition-all ${activeTab === 'game' ? 'bg-amber-600 text-white' : 'bg-stone-700 text-stone-400 hover:bg-stone-600'}`}
-                    >
-                        Game
-                    </button>
-                    <button 
-                        onClick={() => {
-                            if (isSetupMode) {
-                                // 处于Setup模式时，点击Replay页签无效
-                                return;
-                            }
-                            // 切换到Replay页签，只有从非Replay页签切换时才需要重置
-                            // 保留当前Replay模式的棋谱数据，不要清空
-                            resetBoardIndicators();
-                            setActiveTab('replay');
-                            if (!isReplaying) {
-                                // 只有在非Replay模式下才需要调用startReplay
-                                startReplay();
-                            }
-                        }}
-                        className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-xs transition-all ${activeTab === 'replay' ? 'bg-amber-600 text-white' : 'bg-stone-700 text-stone-400 hover:bg-stone-600'}`}
-                    >
-                        Replay
-                    </button>
-                    <button 
-                        onClick={() => {
-                            if (isReplaying) {
-                                // 处于Replay模式时，点击Setup页签无效
-                                return;
-                            }
-                            // 只有AI没有在搜索时才能切换到Setup tab
-                            if (!isThinking) {
-                                if (!isSetupMode) {
-                                    // 只有在非Setup模式下才需要调用enterSetupMode()
-                                    enterSetupMode();
-                                }
-                                // 允许从任何非Replay模式切换到Setup页签
-                                resetBoardIndicators();
-                                setActiveTab('setup');
-                            }
-                        }}
-                        disabled={isThinking}
-                        className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-xs transition-all ${activeTab === 'setup' ? 'bg-amber-600 text-white' : 'bg-stone-700 text-stone-400 hover:bg-stone-600'} ${isThinking ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                        Setup
-                    </button>
-                    <button 
-                        onClick={() => {
-                            // 允许在任何模式下点击Settings页签
-                            resetBoardIndicators();
-                            setActiveTab('settings');
-                        }}
-                        className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-xs transition-all ${activeTab === 'settings' ? 'bg-amber-600 text-white' : 'bg-stone-700 text-stone-400 hover:bg-stone-600'}`}
-                    >
-                        Setting
-                    </button>
-
-                </div>
-            </div>
+            <GameModeNav
+                activeTab={activeTab}
+                onlineInfo={onlineInfo}
+                isThinking={isThinking}
+                onGame={showGameTab}
+                onReplay={showReplayTab}
+                onSetup={showSetupTab}
+                onSettings={showSettingsTab}
+                onLeave={leaveToLobby}
+            />
 
             <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 items-center max-w-[1040px] w-full">
                 
-                {/* Mobile: contents 使子项参与父级 flex order；Desktop: 左栏侧边栏 */}
-                <div className="contents lg:flex lg:flex-col lg:h-[550px] lg:w-[300px] lg:order-1">
-                    {/* 对手：mobile order-1（棋盘上方），desktop 左栏上半 */}
-                    <div className="order-1 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-end">
-                        {/* Setup 竖屏隐藏时钟省空间；桌面仍显示 */}
-                        <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                            <GameClockDisplay
-                                color={playerColor === 'red' ? 'black' : 'red'} 
-                                redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
-                                blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
-                            />
-                        </div>
-                        
-                        {!isSetupMode && (
-                            <div ref={oppCapturedPanelRef} className="w-full">
-                            <SidePanel 
-                                color={playerColor === 'red' ? 'black' : 'red'} 
-                                playerColor={playerColor}
-                                pieces={topPanelColor === (playerColor === 'red' ? 'black' : 'red') ? topPanelPieces : bottomPanelPieces}
-                                isSetupMode={isSetupMode}
-                                material={material}
-                                onDragStart={handlePanelDragStart}
-                                onDrop={playerColor === 'red' ? handleDropOnBlackPanel : handleDropOnRedPanel}
-                                recentlyCaptured={recentlyCaptured}
-                            />
-                            </div>
-                        )}
-
-                        {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
-                        {isSetupMode && (
-                            <div className="lg:hidden">
-                                <SidePanel 
-                                    color={topPanelColor} 
-                                    playerColor={playerColor}
-                                    pieces={topPanelPieces}
-                                    isSetupMode={isSetupMode}
-                                    material={material}
-                                    onDragStart={handlePanelDragStart}
-                                    onDrop={topPanelColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
-                                    recentlyCaptured={recentlyCaptured}
-                                />
-                            </div>
-                        )}
-                        
-                        {/* 评估面板仅桌面显示 */}
-                        <div className="hidden lg:block">
-                            <EvaluationPanel 
-                                color={playerColor === 'red' ? 'black' : 'red'} 
-                                evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
-                            />
-                        </div>
-                    </div>
-                    
-                    {/* 己方：mobile order-3（棋盘下方），desktop 左栏下半 */}
-                    <div className="order-3 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-start">
-                        <div className="hidden lg:block">
-                            <EvaluationPanel 
-                                color={playerColor} 
-                                evaluation={isReplaying ? replayEvaluation : moveEvaluation} 
-                            />
-                        </div>
-                        
-                        {!isSetupMode && (
-                            <div ref={ownCapturedPanelRef} className="w-full">
-                            <SidePanel 
-                                color={playerColor} 
-                                playerColor={playerColor}
-                                pieces={topPanelColor === playerColor ? topPanelPieces : bottomPanelPieces}
-                                isSetupMode={isSetupMode}
-                                material={material}
-                                recentlyCaptured={recentlyCaptured}
-                                onDragStart={handlePanelDragStart}
-                                onDrop={playerColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
-                            />
-                            </div>
-                        )}
-
-                        {/* Setup 可摆棋子：仅竖屏（桌面右栏已有，避免重复） */}
-                        {isSetupMode && (
-                            <div className="lg:hidden">
-                                <SidePanel 
-                                    color={bottomPanelColor} 
-                                    playerColor={playerColor}
-                                    pieces={bottomPanelPieces}
-                                    isSetupMode={isSetupMode}
-                                    material={material}
-                                    recentlyCaptured={recentlyCaptured}
-                                    onDragStart={handlePanelDragStart}
-                                    onDrop={bottomPanelColor === 'red' ? handleDropOnRedPanel : handleDropOnBlackPanel}
-                                />
-                            </div>
-                        )}
-                        
-                        <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                            <GameClockDisplay
-                                color={playerColor} 
-                                redStepCount={isReplaying ? Math.ceil(replayIndex / 2) : redStepCount}
-                                blackStepCount={isReplaying ? Math.floor(replayIndex / 2) : blackStepCount}
-                            />
-                        </div>
-                    </div>
-                </div>
+                <PlayerSidebar
+                    playerColor={playerColor}
+                    isSetupMode={isSetupMode}
+                    isReplaying={isReplaying}
+                    replayIndex={replayIndex}
+                    redStepCount={redStepCount}
+                    blackStepCount={blackStepCount}
+                    topPanelColor={topPanelColor}
+                    topPanelPieces={topPanelPieces}
+                    bottomPanelColor={bottomPanelColor}
+                    bottomPanelPieces={bottomPanelPieces}
+                    material={material}
+                    recentlyCaptured={recentlyCaptured}
+                    evaluation={isReplaying ? replayEvaluation : moveEvaluation}
+                    opponentPanelRef={oppCapturedPanelRef}
+                    ownPanelRef={ownCapturedPanelRef}
+                    onDragStart={handlePanelDragStart}
+                    onDropRed={handleDropOnRedPanel}
+                    onDropBlack={handleDropOnBlackPanel}
+                />
 
                 <div ref={boardFlyLayerRef} className="relative order-2 lg:order-2 w-full max-w-[500px] flex justify-center overflow-visible">
                     <ChessBoard 
@@ -4407,7 +4274,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={() => setShowSkinSelector(!showSkinSelector)} 
                                     style={getButtonStyle()}
-                                    className="w-full px-3 py-3 rounded-lg font-bold transition-all flex items-center justify-between gap-1 border border-stone-600 shadow-sm hover:opacity-80 active:scale-95 text-left"
+                                    className="w-full px-3 py-3 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex items-center justify-between gap-1 border border-stone-600 shadow-sm hover:opacity-80 active:scale-95 text-left"
                                 >
                                     <div className="flex items-center gap-2">
                                         <SquareIcon className="w-4 h-4" />
@@ -4425,7 +4292,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     setSkin(s);
                                                     setShowSkinSelector(false);
                                                 }}
-                                                className={`p-3 rounded-lg transition-all border-2 ${skin === s ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-stone-600 hover:border-stone-500'}`}
+                                                className={`p-3 rounded-lg transition-[border-color,box-shadow] border-2 ${skin === s ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-stone-600 hover:border-stone-500'}`}
                                                 style={{
                                                     backgroundColor: SKINS[s].boardBg,
                                                     borderColor: SKINS[s].border,
@@ -4447,7 +4314,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={() => setShowMaterialSelector(!showMaterialSelector)} 
                                     style={getButtonStyle()}
-                                    className="w-full px-3 py-3 rounded-lg font-bold transition-all flex items-center justify-between gap-1 border border-stone-600 shadow-sm hover:opacity-80 active:scale-95 text-left"
+                                    className="w-full px-3 py-3 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex items-center justify-between gap-1 border border-stone-600 shadow-sm hover:opacity-80 active:scale-95 text-left"
                                 >
                                     <div className="flex items-center gap-2">
                                         <AdjustmentsIcon className="w-4 h-4" />
@@ -4465,7 +4332,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     setMaterial(m);
                                                     setShowMaterialSelector(false);
                                                 }}
-                                                className={`p-3 rounded-lg transition-all border-2 ${material === m ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-stone-600 hover:border-stone-500'}`}
+                                                className={`p-3 rounded-lg transition-[border-color,box-shadow] border-2 ${material === m ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-stone-600 hover:border-stone-500'}`}
                                                 style={{
                                                     backgroundColor: m === 'wood' ? '#D2B48C' : 
                                                                       m === 'stone' ? '#808080' : 
@@ -4528,7 +4395,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onChange={(e) => toggleMusic(e.target.checked)}
                                     className="sr-only peer"
                                 />
-                                <div className="w-11 h-6 bg-stone-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-600"></div>
+                                <div className="w-11 h-6 bg-stone-700 peer-focus:outline-none rounded-full peer transition-colors peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-[transform,border-color] peer-checked:bg-amber-600"></div>
                             </label>
                         </div>
                         
@@ -4724,7 +4591,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         onChange={(e) => setEnableCustomColors(e.target.checked)}
                                         className="sr-only peer"
                                     />
-                                    <div className="w-11 h-6 bg-stone-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                                    <div className="w-11 h-6 bg-stone-700 peer-focus:outline-none rounded-full peer transition-colors peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-[transform,border-color] peer-checked:bg-amber-500"></div>
                                 </label>
                             </div>
                             
@@ -4770,7 +4637,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={handleRestart} 
                                     disabled={isThinking || !!onlineInfo} 
                                     style={getButtonStyle()}
-                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
+                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
                                     <ArrowPathIcon className="w-4 h-4" />
                                     <span className="text-xs">Restart</span>
@@ -4908,7 +4775,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     }}
                                     disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || (!isAnalysisMode && isThinking) || !!gameOver}
                                     style={getButtonStyle()}
-                                    className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-stone-600' : ''}`}
+                                    className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-stone-600' : ''}`}
                                 >
                                     <BarChartIcon className="w-4 h-4" />
                                     <span className="text-xs">{isAnalysisMode && isThinking ? 'Stop' : 'Analysis'}</span>
@@ -4919,7 +4786,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={() => { void handleUndo(); }} 
                                     disabled={!!onlineInfo || boardHistory.length < 1 || (!!gameOver && !pendingGameOver) || isThinking} 
                                     style={getButtonStyle()}
-                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
+                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
                                     <UndoIcon className="w-6 h-6" />
                                     <span className="text-xs">Undo</span>
@@ -4928,7 +4795,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={handleSwitchSide} 
                                     disabled={!!onlineInfo || !!gameOver || isThinking} 
                                     style={getButtonStyle()}
-                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
+                                    className="px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95"
                                 >
                                     <ArrowsLeftRightIcon className="w-6 h-6" />
                                     <span className="text-xs">Switch</span>
@@ -4939,7 +4806,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={() => setRedIsAuto(prev => !prev)} 
                                     disabled={!!onlineInfo || !!gameOver || isThinking} 
                                     style={getButtonStyle(!!onlineInfo || !!gameOver || isThinking)}
-                                    className={`px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
+                                    className={`px-3 py-4 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
                                         redIsAuto ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
                                     }`}
                                 >
@@ -4950,7 +4817,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={() => setBlackIsAuto(prev => !prev)}
                                     disabled={!!onlineInfo || !!gameOver || isThinking}
                                     style={getButtonStyle(!!onlineInfo || !!gameOver || isThinking)}
-                                    className={`px-3 py-4 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
+                                    className={`px-3 py-4 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${
                                         blackIsAuto ? 'bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/30' : ''
                                     }`}
                                 >
@@ -5052,7 +4919,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                             console.error('获取局面评估失败:', evalError);
                                                                                         }
                                                                                     }}
-                                                                                    className="hover:bg-amber-600/30 p-1 rounded transition-all cursor-pointer"
+                                                                                    className="hover:bg-amber-600/30 p-1 rounded transition-colors cursor-pointer"
                                                                                 >
                                                                                     ({seqMove.from.r},{seqMove.from.c})→({seqMove.to.r},{seqMove.to.c})
                                                                                 </div>
@@ -5112,32 +4979,17 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         <div className="flex flex-col h-full animate-fadeIn">
 
                             
-                            {/* 桌面右栏 Setup 可摆棋子；竖屏改由左栏 order-1/3 显示 */}
-                            <div className="hidden lg:block">
-                                {/* 黑方棋子面板 */}
-                                <SidePanel 
-                                    color="black" 
-                                    playerColor={playerColor}
-                                    pieces={topPanelColor === 'black' ? topPanelPieces : bottomPanelPieces}
-                                    isSetupMode={isSetupMode}
-                                    material={material}
-                                    onDragStart={handlePanelDragStart}
-                                    onDrop={handleDropOnBlackPanel}
-                                    recentlyCaptured={recentlyCaptured}
-                                />
-                                
-                                {/* 红方棋子面板 */}
-                                <SidePanel 
-                                    color="red" 
-                                    playerColor={playerColor}
-                                    pieces={topPanelColor === 'red' ? topPanelPieces : bottomPanelPieces}
-                                    isSetupMode={isSetupMode}
-                                    material={material}
-                                    onDragStart={handlePanelDragStart}
-                                    onDrop={handleDropOnRedPanel}
-                                    recentlyCaptured={recentlyCaptured}
-                                />
-                            </div>
+                            <DesktopSetupSupply
+                                playerColor={playerColor}
+                                topPanelColor={topPanelColor}
+                                topPanelPieces={topPanelPieces}
+                                bottomPanelPieces={bottomPanelPieces}
+                                material={material}
+                                recentlyCaptured={recentlyCaptured}
+                                onDragStart={handlePanelDragStart}
+                                onDropRed={handleDropOnRedPanel}
+                                onDropBlack={handleDropOnBlackPanel}
+                            />
                             
                             {/* 棋盒和按钮之间的间隔 */}
                             <div className="h-4"></div>
@@ -5150,7 +5002,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         onChange={loadGame} 
                                         className="hidden" 
                                     />
-                                    <span style={getButtonStyle()} className="w-full py-1 px-2 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs">
+                                    <span style={getButtonStyle()} className="w-full py-1 px-2 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs">
                                         <LoadIcon className="w-4 h-4" />
                                         Load
                                     </span>
@@ -5158,7 +5010,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={saveGame} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <SaveIcon className="w-4 h-4" />
                                     Save
@@ -5169,7 +5021,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={handleSwitchSide} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <ArrowPathIcon className="w-4 h-4" />
                                     Switch
@@ -5181,7 +5033,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     }}
                                     disabled={isAnalyzing}
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     {isAnalyzing ? (
                                         <div className="w-4 h-4 border-2 border-stone-300 border-t-transparent rounded-full animate-spin"></div>
@@ -5200,7 +5052,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         setActiveTab('game');
                                     }} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <PlayIcon className="w-4 h-4" />
                                     Play
@@ -5220,7 +5072,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         setHasStarted(false);
                                     }}
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs bg-red-600/80 hover:bg-red-500/80 border-red-500"
+                                    className="w-full py-1 px-2 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs bg-red-600/80 hover:bg-red-500/80 border-red-500"
                                 >
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -5346,7 +5198,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                     console.error('获取局面评估失败:', evalError);
                                                                                 }
                                                                             }}
-                                                                            className="hover:bg-amber-600/30 p-1 rounded transition-all cursor-pointer"
+                                                                            className="hover:bg-amber-600/30 p-1 rounded transition-colors cursor-pointer"
                                                                         >
                                                                             ({seqMove.from.r},{seqMove.from.c})→({seqMove.to.r},{seqMove.to.c})
                                                                         </div>
@@ -5408,7 +5260,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             }
                                         }
                                     }}
-                                    className="w-full p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold transition-all flex items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 mt-2"
+                                    className="w-full p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 mt-2"
                                 >
                                     <ArrowPathIcon className="w-5 h-5" />
                                     <span>Resume</span>
@@ -5424,7 +5276,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         onChange={loadGameRecord} 
                                         className="hidden" 
                                     />
-                                    <span style={getButtonStyle()} className="w-full py-1 px-2 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs">
+                                    <span style={getButtonStyle()} className="w-full py-1 px-2 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs">
                                         <LoadIcon className="w-4 h-4" />
                                         Load
                                     </span>
@@ -5432,7 +5284,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={saveGameRecord} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <SaveIcon className="w-4 h-4" />
                                     Save
@@ -5443,7 +5295,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={handleSwitchSide} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <ArrowPathIcon className="w-4 h-4" />
                                     Switch
@@ -5452,7 +5304,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     onClick={analyzeCurrentPosition}
                                     disabled={isAnalyzing}
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     {isAnalyzing ? (
                                         <div className="w-4 h-4 border-2 border-stone-300 border-t-transparent rounded-full animate-spin"></div>
@@ -5471,7 +5323,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         setActiveTab('game');
                                     }} 
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
+                                    className="w-full py-1 px-2 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs"
                                 >
                                     <PlayIcon className="w-4 h-4" />
                                     Play
@@ -5479,7 +5331,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 <button 
                                     onClick={exitReplay}
                                     style={getButtonStyle()}
-                                    className="w-full py-1 px-2 rounded-lg font-bold transition-all flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs bg-red-600/80 hover:bg-red-500/80 border-red-500"
+                                    className="w-full py-1 px-2 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 text-xs bg-red-600/80 hover:bg-red-500/80 border-red-500"
                                 >
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

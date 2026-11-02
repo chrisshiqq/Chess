@@ -312,7 +312,7 @@ const ChessPieceInner: React.FC<ChessPieceProps> = ({ type, color, size, variant
                         fill={config.fill} 
                         stroke={config.stroke} 
                         strokeWidth={isDark ? 1 : 3} 
-                        className="transition-all duration-300"
+                        className="transition-[fill,stroke,opacity] duration-300"
                     />
                     
                     {/* 玻璃高光效果 */}
