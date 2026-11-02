@@ -7,8 +7,7 @@ import {
 } from './piece-code.js';
 import {
     MOVE_TO_MASK,
-    encodeMove,
-    isEncodedMove
+    encodeMove
 } from './movegen.js';
 import {
     collectSearchMetrics,
@@ -615,10 +614,10 @@ const squareResolvesChecker = (fromSq, toSq, generalSq, checkerSq, kind, extra) 
     if (kind === CHECK_KIND_HORSE) return toSq === extra;
     if (kind === CHECK_KIND_SOLDIER) return false;
     if (kind === CHECK_KIND_CANNON) {
-        if (generalSq >= 0 && isStrictlyBetweenOnRay(toSq, generalSq, checkerSq)) return true;
+        if (isStrictlyBetweenOnRay(toSq, generalSq, checkerSq)) return true;
         return fromSq === extra;
     }
-    return generalSq >= 0 && checkerSq >= 0 && isStrictlyBetweenOnRay(toSq, generalSq, checkerSq);
+    return isStrictlyBetweenOnRay(toSq, generalSq, checkerSq);
 };
 
 const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
@@ -659,7 +658,7 @@ const moveReceivesCheck = (
     if (checkInfo && checkInfo.count > 0) {
         if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
         if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
-        return generalSq < 0 || moveTouchesLineOrUnblockedHorseCheck(
+        return moveTouchesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
             fromR, fromC, toR, toC
@@ -804,9 +803,9 @@ const sortRangeStagedMove = (moves, start, end, killers) => {
         if (targetSlot >= 0) {
             score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
                 materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
-        } else if (killers && move === killers[0]) {
+        } else if (move === killers[0]) {
             score += 8000;
-        } else if (killers && move === killers[1]) {
+        } else if (move === killers[1]) {
             score += 7000;
         }
         sortMoveScoreScratch[index] = score;
@@ -1941,18 +1940,14 @@ const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
 
 const markCheckerResolveSquares = (state, generalSq, checkerSq, kind, legSq, mask) => {
     let marked = 0;
-    if (checkerSq >= 0 && checkerSq < REL_SQUARES) {
-        mask[checkerSq] = 1;
-        marked++;
-    }
+    mask[checkerSq] = 1;
+    marked++;
     if (kind === CHECK_KIND_HORSE) {
-        if (legSq >= 0 && state.squareCodes[legSq] === 0) {
-            mask[legSq] = 1;
-            marked++;
-        }
+        mask[legSq] = 1;
+        marked++;
         return marked;
     }
-    if (kind === CHECK_KIND_SOLDIER || checkerSq < 0 || generalSq < 0) return marked;
+    if (kind === CHECK_KIND_SOLDIER) return marked;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
     const cr = SQ_ROW[checkerSq];
@@ -2104,14 +2099,12 @@ const appendGeneratedStagedMoves = (
 };
 
 const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, quietOnly) => {
-    if (!isEncodedMove(move) || matchesStagedPrefix(moves, moves.length, move)) return false;
+    if (!move || matchesStagedPrefix(moves, moves.length, move)) return false;
     const fromSq = move >>> 7;
     const toSq = move & MOVE_TO_MASK;
     const slot = pieceState.squareToSlot[fromSq];
     if (slot < 0) return false;
     const pieceCode = pieceState.pieceCodes[slot];
-    const ownMask = pieceCode < 8 ? pieceState.redAliveMask : pieceState.blackAliveMask;
-    if ((ownMask & (1 << slot)) === 0) return false;
     if ((pieceCode < 8) !== (currentPlayer === SIDE_RED)) return false;
     const targetCode = pieceState.squareCodes[toSq];
     if (quietOnly && targetCode !== 0) return false;
@@ -2127,12 +2120,11 @@ const appendTrueStagedMoves = (
 ) => {
     const start = moves.length;
     if (stage === 0) {
-        if (!isEncodedMove(ttMove)) return 0;
+        if (!ttMove) return 0;
         appendValidatedStagedSpecial(moves, ttMove, pieceState, currentPlayer, false);
         return moves.length - start;
     }
     if (stage === 1) {
-        if (!killers) return 0;
         appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
         appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
     } else if (stage === 2) {
@@ -2645,11 +2637,6 @@ class ZobristHasher {
         this.evalInitiatorKeys[1] = Math.floor(seededRandom() * MAX_SAFE);
     }
 
-    pieceIndex(code) {
-        const idx = SEARCH_CODE_TO_ZOBRIST[code];
-        return idx >= 0 ? idx : undefined;
-    }
-
     evalCacheKeyFromHash(boardHash) {
         return boardHash ^ this.evalInitiatorKeys[activeSearchInitiator];
     }
@@ -2674,8 +2661,7 @@ class ZobristHasher {
             for (let c = 0; c < 9; c++) {
                 const code = cellToSearchCode(board[r][c]);
                 if (!code) continue;
-                const pieceIdx = SEARCH_CODE_TO_ZOBRIST[code];
-                if (pieceIdx >= 0) h ^= table[(r * 9 + c) * 14 + pieceIdx];
+                h ^= table[(r * 9 + c) * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
             }
         }
         return h;
@@ -2687,8 +2673,7 @@ class ZobristHasher {
         for (let sq = 0; sq < REL_SQUARES; sq++) {
             const code = squareCodes[sq];
             if (!code) continue;
-            const idx = SEARCH_CODE_TO_ZOBRIST[code];
-            if (idx >= 0) h ^= table[sq * 14 + idx];
+            h ^= table[sq * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
         }
         return h;
     }
@@ -2699,10 +2684,8 @@ class ZobristHasher {
         for (let sq = 0; sq < REL_SQUARES; sq++) {
             const code = squareCodes[sq];
             if (!code) continue;
-            const idx = SEARCH_CODE_TO_ZOBRIST[code];
-            if (idx < 0) continue;
             const mirroredSq = ((sq / 9) | 0) * 9 + (8 - (sq % 9));
-            h ^= table[mirroredSq * 14 + idx];
+            h ^= table[mirroredSq * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
         }
         return h;
     }
@@ -2736,16 +2719,11 @@ class ZobristHasher {
      */
     updateHash(currentHash, move, movingPiece, capturedPiece) {
         let newHash = currentHash;
-        const movingIdx = this.pieceIndex(movingPiece);
-        if (movingIdx !== undefined) {
-            newHash ^= this.hashTableFlat[(move.from.r * 9 + move.from.c) * 14 + movingIdx];
-            newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + movingIdx];
-        }
+        const movingIdx = SEARCH_CODE_TO_ZOBRIST[movingPiece];
+        newHash ^= this.hashTableFlat[(move.from.r * 9 + move.from.c) * 14 + movingIdx];
+        newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + movingIdx];
         if (capturedPiece) {
-            const capturedIdx = this.pieceIndex(capturedPiece);
-            if (capturedIdx !== undefined) {
-                newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + capturedIdx];
-            }
+            newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + SEARCH_CODE_TO_ZOBRIST[capturedPiece]];
         }
         return newHash;
     }
@@ -3486,13 +3464,10 @@ const childBoardHash = (boardHash, from, to, moverCode, capturedCode) => {
     let newHash = boardHash;
     const hashTableFlat = zobristHasher.hashTableFlat;
     const movingIdx = SEARCH_CODE_TO_ZOBRIST[moverCode];
-    if (movingIdx >= 0) {
-        newHash ^= hashTableFlat[from * 14 + movingIdx];
-        newHash ^= hashTableFlat[to * 14 + movingIdx];
-    }
+    newHash ^= hashTableFlat[from * 14 + movingIdx];
+    newHash ^= hashTableFlat[to * 14 + movingIdx];
     if (capturedCode) {
-        const capturedIdx = SEARCH_CODE_TO_ZOBRIST[capturedCode];
-        if (capturedIdx >= 0) newHash ^= hashTableFlat[to * 14 + capturedIdx];
+        newHash ^= hashTableFlat[to * 14 + SEARCH_CODE_TO_ZOBRIST[capturedCode]];
     }
     return newHash;
 };
