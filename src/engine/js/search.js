@@ -393,9 +393,13 @@ const runWithPieceState = (board, fn) => {
     }
 };
 
-const updatePieceStateAfterMake = (
-    state, fromSq, toSq, moverSlot, moverCode, capturedSlot, capturedCode, fromR, fromC, toR, toC
+const makeSearchMove = (
+    state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC
 ) => {
+    const moverSlot = state.squareToSlot[fromSq];
+    const capturedSlot = state.squareToSlot[toSq];
+    scratchSearchUndoMoverSlot = moverSlot;
+    scratchSearchUndoCapturedSlot = capturedSlot;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
@@ -437,7 +441,7 @@ const updatePieceStateAfterMake = (
     }
 };
 
-const updatePieceStateAfterUnmake = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
+const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
     const moverCode = state.pieceCodes[moverSlot];
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
@@ -912,20 +916,6 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
     return validMoves;
 };
 
-const makeSearchMove = (state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC) => {
-    const moverSlot = state.squareToSlot[from];
-    const capturedSlot = state.squareToSlot[to];
-    scratchSearchUndoMoverSlot = moverSlot;
-    scratchSearchUndoCapturedSlot = capturedSlot;
-    updatePieceStateAfterMake(
-        state, from, to, moverSlot, moverCode, capturedSlot, capturedCode, fromR, fromC, toR, toC
-    );
-};
-
-const unmakeSearchMove = (state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
-    updatePieceStateAfterUnmake(state, from, to, moverSlot, capturedSlot, fromR, fromC, toR, toC);
-};
-
 const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
@@ -1015,8 +1005,7 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
     return moves;
 };
 
-const sortStagedMoveRange = (moves, start, end, killers) => {
-    if (end - start <= 1) return;
+const scoreStagedMoveRange = (moves, scores, start, end, killers) => {
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
@@ -1037,20 +1026,32 @@ const sortStagedMoveRange = (moves, start, end, killers) => {
         } else if (killers && move === killers[1]) {
             score += 7000;
         }
-        sortMoveScoreScratch[index] = score;
+        scores[index] = score;
     }
+    if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
+};
 
+// 稳定地取当前最高分着法。区间右移保留同分着法原顺序，与稳定插入排序一致。
+const promoteBestStagedMove = (moves, scores, start, end) => {
+    if (end - start <= 1) return;
+    const __t0 = searchProfile ? performance.now() : 0;
+    let best = start;
+    let bestScore = scores[start];
     for (let i = start + 1; i < end; i++) {
-        const move = moves[i];
-        const score = sortMoveScoreScratch[i];
-        let j = i - 1;
-        while (j >= start && sortMoveScoreScratch[j] < score) {
-            moves[j + 1] = moves[j];
-            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
-            j--;
+        const score = scores[i];
+        if (score > bestScore) {
+            best = i;
+            bestScore = score;
         }
-        moves[j + 1] = move;
-        sortMoveScoreScratch[j + 1] = score;
+    }
+    if (best !== start) {
+        const bestMove = moves[best];
+        for (let i = best; i > start; i--) {
+            moves[i] = moves[i - 1];
+            scores[i] = scores[i - 1];
+        }
+        moves[start] = bestMove;
+        scores[start] = bestScore;
     }
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
 };
@@ -2447,7 +2448,7 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
 // Appends exactly one stage: TT, quiet killers, captures, then quiets.
 // Later stages exclude only specials that were actually validated and appended.
 const appendTrueStagedMoves = (
-    moves, stage, currentPlayer, pieceState, ttMove, killers
+    moves, scores, stage, currentPlayer, pieceState, ttMove, killers
 ) => {
     const start = moves.length;
     if (stage === 0) {
@@ -2465,18 +2466,18 @@ const appendTrueStagedMoves = (
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    sortStagedMoveRange(moves, start, moves.length, killers);
+    scoreStagedMoveRange(moves, scores, start, moves.length, killers);
     return moves.length - start;
 };
 
 const advanceTrueStagedMoves = (
-    moves, nextStage, currentPlayer, pieceState, ttMove, killers
+    moves, scores, nextStage, currentPlayer, pieceState, ttMove, killers
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
         const started = searchProfile ? performance.now() : 0;
         const added = appendTrueStagedMoves(
-            moves, stage, currentPlayer, pieceState, ttMove, killers
+            moves, scores, stage, currentPlayer, pieceState, ttMove, killers
         );
         if (searchProfile) perfStats.prepareMoveGenMs += performance.now() - started;
         if (added > 0) break;
@@ -3846,13 +3847,6 @@ class TranspositionTable {
         this.hasher = zobristHasher;
 
         this.data = new Uint32Array(n << 1);
-        // retrieve 复用，避免每次分配；调用方须在下一次 retrieve/递归前读完字段
-        this.entryScratch = {
-            depth: 0,
-            value: 0,
-            flag: TT_FLAG_EXACT,
-            bestMove: null
-        };
 
         this.stats = {
             hits: 0,
@@ -3942,6 +3936,7 @@ class TranspositionTable {
         if (collectSearchMetrics) this.stats.stores++;
     }
 
+    // 返回 packed 槽位基址；miss 为 -1。保持纯数值返回，避免热路径写共享对象。
     retrieve(key) {
         const keyLow = key >>> 0;
         const base = (keyLow & this.mask) << 1;
@@ -3954,7 +3949,7 @@ class TranspositionTable {
             (word0 & TT_W0_KEY_MASK) !== (keyLow >>> 16) ||
             !!(word0 & TT_W0_KEYHIGH) !== (key < 0)) {
             if (collectSearchMetrics) this.stats.misses++;
-            return null;
+            return -1;
         }
         if (collectSearchMetrics) {
             this.stats.hits++;
@@ -3966,13 +3961,7 @@ class TranspositionTable {
             else if (flagCode === 1) this.stats.lowerboundHits++;
             else this.stats.upperboundHits++;
         }
-        const word1 = this.data[base + 1];
-        const e = this.entryScratch;
-        e.depth = word0 >>> TT_W0_DEPTH_SHIFT;
-        e.value = (word1 << 14) >> 14;
-        e.flag = flagCode;
-        e.bestMove = (word1 >>> TT_W1_MOVE_SHIFT) || null;
-        return e;
+        return base;
     }
 
     beginSearch(retainPrevious, maxAge = 1, reuseScope = null, searchPly = 0) {
@@ -4215,6 +4204,7 @@ const clearEvalCache = () => {
 // 剪枝开关：完整评估下若开局出废棋则先关，保棋力再重标定
 const SEARCH_QUIESCENCE_DEPTH = 2;
 const NULL_WINDOW = 1;
+const SEARCH_INF = 0x3fffffff;
 // LMR 减深：复刻 (log(d)*log(m)/ln2)|0，热路径不走 Math.log
 const LMR_TABLE_DEPTH_MAX = 32;
 const LMR_TABLE_MOVE_MAX = 64;
@@ -4230,6 +4220,7 @@ for (let depth = 1; depth <= LMR_TABLE_DEPTH_MAX; depth++) {
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
 const playStagedMoveBuffers = [];
+const playStagedScoreBuffers = [];
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -4710,9 +4701,10 @@ const sortCaptures = (captures) => {
 };
 
 const quiescence = (
-    alpha, beta, maximizing, currentPlayer, state,
-    qsDepth, boardHash = 0, qsPly = 0, knownInCheck
+    alpha, beta, currentPlayer, qsDepth, boardHash, qsPly, knownInCheck
 ) => {
+    const maximizing = currentPlayer === activeSearchInitiator;
+    const state = activeSearchPieceState;
     if (searchProfile) perfStats.quiescenceCalls++;
     let checkInfo = null;
     if (knownInCheck) {
@@ -4771,7 +4763,7 @@ const quiescence = (
     }
 
     const nextPlayer = currentPlayer ^ 1;
-    let bestEval = knownInCheck ? (maximizing ? -Infinity : Infinity) : standPat;
+    let bestEval = knownInCheck ? (maximizing ? -SEARCH_INF : SEARCH_INF) : standPat;
     let legalMovesFound = 0;
     for (let i = 0; i < moveCount; i++) {
         const move = moves[i];
@@ -4822,8 +4814,8 @@ const quiescence = (
         const value = qsDepth <= 1 && !childInCheck
             ? staticSearchEval(nextHash, state)
             : quiescence(
-                alpha, beta, !maximizing, nextPlayer, state,
-                qsDepth - 1, nextHash, qsPly + 1, childInCheck
+                alpha, beta, nextPlayer, qsDepth - 1,
+                nextHash, qsPly + 1, childInCheck
             );
         unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
 
@@ -4843,10 +4835,9 @@ const quiescence = (
 };
 
 const alphaBeta = (
-    d, alpha, beta, maximizing, currentPlayer,
-    searchDepth = 0, boardHash = 0,
-    allowNull = true, knownInCheck
+    d, alpha, beta, currentPlayer, searchDepth, boardHash, allowNull, knownInCheck
 ) => {
+    const maximizing = currentPlayer === activeSearchInitiator;
     const originalAlpha = alpha;
     const originalBeta = beta;
 
@@ -4856,20 +4847,25 @@ const alphaBeta = (
 
     if (d === 0) {
         return quiescence(
-            alpha, beta, maximizing, currentPlayer, stagedPieceState,
-            SEARCH_QUIESCENCE_DEPTH, boardHash, 0, knownInCheck
+            alpha, beta, currentPlayer, SEARCH_QUIESCENCE_DEPTH,
+            boardHash, 0, knownInCheck
         );
     }
 
     const ttKey = makeSearchTTKey(currentPlayer, boardHash);
-    const ttEntry = transpositionTable.retrieve(ttKey);
+    const ttBase = transpositionTable.retrieve(ttKey);
     let ttMove = null;
-    if (ttEntry) {
-        ttMove = ttEntry.bestMove || null;
-        if (ttEntry.depth >= d) {
-            if (ttEntry.flag === TT_FLAG_EXACT) return ttEntry.value;
-            if (ttEntry.flag === TT_FLAG_LOWER && ttEntry.value >= beta) return ttEntry.value;
-            if (ttEntry.flag === TT_FLAG_UPPER && ttEntry.value <= alpha) return ttEntry.value;
+    if (ttBase >= 0) {
+        const ttData = transpositionTable.data;
+        const ttWord0 = ttData[ttBase];
+        const ttWord1 = ttData[ttBase + 1];
+        ttMove = (ttWord1 >>> TT_W1_MOVE_SHIFT) || null;
+        if ((ttWord0 >>> TT_W0_DEPTH_SHIFT) >= d) {
+            const ttFlag = (ttWord0 >>> TT_W0_FLAG_SHIFT) & 3;
+            const ttValue = (ttWord1 << 14) >> 14;
+            if (ttFlag === TT_FLAG_EXACT) return ttValue;
+            if (ttFlag === TT_FLAG_LOWER && ttValue >= beta) return ttValue;
+            if (ttFlag === TT_FLAG_UPPER && ttValue <= alpha) return ttValue;
         }
     }
 
@@ -4889,6 +4885,13 @@ const alphaBeta = (
         playStagedMoveBuffers[plyFromRoot] = moves;
     } else {
         moves.length = 0;
+    }
+    let moveScores = playStagedScoreBuffers[plyFromRoot];
+    if (!moveScores) {
+        moveScores = [];
+        playStagedScoreBuffers[plyFromRoot] = moveScores;
+    } else {
+        moveScores.length = 0;
     }
     if (knownInCheck) {
         const genStarted = searchProfile ? performance.now() : 0;
@@ -4919,11 +4922,11 @@ const alphaBeta = (
         if (collectSearchMetrics) perfStats.nmpAttempts++;
         const nullValue = maximizing
             ? alphaBeta(
-                nullDepth, beta - NULL_WINDOW, beta, !maximizing, nextPlayer,
+                nullDepth, beta - NULL_WINDOW, beta, nextPlayer,
                 searchDepth, boardHash, false, false
             )
             : alphaBeta(
-                nullDepth, alpha, alpha + NULL_WINDOW, !maximizing, nextPlayer,
+                nullDepth, alpha, alpha + NULL_WINDOW, nextPlayer,
                 searchDepth, boardHash, false, false
             );
         if ((maximizing && nullValue >= beta) || (!maximizing && nullValue <= alpha)) {
@@ -4936,14 +4939,14 @@ const alphaBeta = (
     let nextTrueStagedStage = 0;
     if (!knownInCheck) {
         nextTrueStagedStage = advanceTrueStagedMoves(
-            moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
+            moves, moveScores, nextTrueStagedStage, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth
         );
     } else {
         moves = sortSearchMoves(moves, ttMove, killersAtDepth, knownInCheck);
     }
 
-    let bestEval = maximizing ? -Infinity : Infinity;
+    let bestEval = maximizing ? -SEARCH_INF : SEARCH_INF;
     let bestMove = null;
     let legalMovesFound = 0;
 
@@ -4952,10 +4955,13 @@ const alphaBeta = (
             if (knownInCheck) break;
             const before = moves.length;
             nextTrueStagedStage = advanceTrueStagedMoves(
-                moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
+                moves, moveScores, nextTrueStagedStage, currentPlayer, stagedPieceState,
                 ttMove, killersAtDepth
             );
             if (moves.length === before) break;
+        }
+        if (!knownInCheck) {
+            promoteBestStagedMove(moves, moveScores, moveIndex, moves.length);
         }
         const move = moves[moveIndex];
         const fromSq = move >>> 7;
@@ -5007,7 +5013,7 @@ const alphaBeta = (
         let value;
         if (!canLmr && !pvsEligible) {
             value = alphaBeta(
-                d - 1, alpha, beta, !maximizing, nextPlayer,
+                d - 1, alpha, beta, nextPlayer,
                 searchDepth, nextHash, true, childInCheck
             );
         } else {
@@ -5015,13 +5021,13 @@ const alphaBeta = (
             const nullBeta = maximizing ? alpha + NULL_WINDOW : beta;
             if (canLmr) {
                 value = alphaBeta(
-                    reducedDepth, nullAlpha, nullBeta, !maximizing, nextPlayer,
+                    reducedDepth, nullAlpha, nullBeta, nextPlayer,
                     searchDepth, nextHash, true, childInCheck
                 );
             } else {
                 if (collectSearchMetrics) perfStats.pvsAttempts++;
                 value = alphaBeta(
-                    d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
+                    d - 1, nullAlpha, nullBeta, nextPlayer,
                     searchDepth, nextHash, true, childInCheck
                 );
             }
@@ -5031,26 +5037,26 @@ const alphaBeta = (
                 if (pvsEligible) {
                     if (collectSearchMetrics) perfStats.pvsAttempts++;
                     value = alphaBeta(
-                        d - 1, nullAlpha, nullBeta, !maximizing, nextPlayer,
+                        d - 1, nullAlpha, nullBeta, nextPlayer,
                         searchDepth, nextHash, true, childInCheck
                     );
                     if (maximizing ? value > alpha : value < beta) {
                         if (collectSearchMetrics) perfStats.pvsReSearches++;
                         value = alphaBeta(
-                            d - 1, alpha, beta, !maximizing, nextPlayer,
+                            d - 1, alpha, beta, nextPlayer,
                             searchDepth, nextHash, true, childInCheck
                         );
                     }
                 } else {
                     value = alphaBeta(
-                        d - 1, alpha, beta, !maximizing, nextPlayer,
+                        d - 1, alpha, beta, nextPlayer,
                         searchDepth, nextHash, true, childInCheck
                     );
                 }
             } else if (improves) {
                 if (collectSearchMetrics) perfStats.pvsReSearches++;
                 value = alphaBeta(
-                    d - 1, alpha, beta, !maximizing, nextPlayer,
+                    d - 1, alpha, beta, nextPlayer,
                     searchDepth, nextHash, true, childInCheck
                 );
             }
@@ -5099,14 +5105,15 @@ const alphaBeta = (
 const scratchPvUndo = [];
 const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
   const state = activeSearchPieceState;
+  const ttData = transpositionTable.data;
   const undo = scratchPvUndo;
   undo.length = 0;
   let currentTurn = turn;
   let hash = boardHash;
   const plyLimit = Math.max(0, maxPly | 0);
   for (let ply = 0; ply < plyLimit; ply++) {
-    const entry = transpositionTable.retrieve(zobristHasher.ttKeyFromHash(hash, currentTurn));
-    const move = entry && entry.bestMove;
+    const ttBase = transpositionTable.retrieve(zobristHasher.ttKeyFromHash(hash, currentTurn));
+    const move = ttBase >= 0 ? ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT : 0;
     if (!move) break;
     const from = move >>> 7;
     const to = move & MOVE_TO_MASK;
@@ -5343,6 +5350,7 @@ const getBestMove = (
   // 根局面哈希只算一次；增量模式整棵搜索树由此派生
   const rootHash = zobristHasher.hashFromSquareCodes(rootPieceState.squareCodes);
   const rootTTKey = zobristHasher.ttKeyFromHash(rootHash, side);
+  const ttData = transpositionTable.data;
 
   let completedDepth = 0;
 
@@ -5354,8 +5362,8 @@ const getBestMove = (
     });
 
     // 浅层最佳着 + TT 着排到最前，供本层 PVS 第一着全窗使用
-    const ttEntry = transpositionTable.retrieve(rootTTKey);
-    const ttMove = ttEntry && ttEntry.bestMove ? ttEntry.bestMove : null;
+    const ttBase = transpositionTable.retrieve(rootTTKey);
+    const ttMove = ttBase >= 0 ? (ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT) || null : null;
     const prevBest = rootMoves[0];
     sortSearchMoves(rootMoves, ttMove, null, rootInCheck, [rootScores, rootSeqs]);
     // 上一层最佳着放第一（最后 promote），保证本层 PVS 首着全窗命中热路径
@@ -5365,7 +5373,7 @@ const getBestMove = (
     const useExactRoot = exactRootScores && currentDepth === maxDepth;
     const collectRootPv = useExactRoot;
     const exactRootLimit = searchContext.exactRootLimit | 0;
-    let rootAlpha = -Infinity;
+    let rootAlpha = -SEARCH_INF;
 
     for (let i = 0; i < rootMoves.length; i++) {
       const encodedRootMove = rootMoves[i];
@@ -5396,19 +5404,24 @@ const getBestMove = (
       const remaining = currentDepth - 1;
       const exactThisMove = useExactRoot && (exactRootLimit <= 0 || i < exactRootLimit);
       const childTTKey = exactThisMove ? makeSearchTTKey(nextSide, childHash) : 0;
-      if (i === 0 || rootAlpha === -Infinity) {
+      if (i === 0 || rootAlpha === -SEARCH_INF) {
         score = alphaBeta(
-          remaining, -Infinity, Infinity,
-          false, nextSide, currentDepth, childHash, true, childInCheck
+          remaining, -SEARCH_INF, SEARCH_INF,
+          nextSide, currentDepth, childHash, true, childInCheck
         );
       } else {
         let cachedExact = null;
         if (exactThisMove) {
           // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
-          const entry = transpositionTable.retrieve(childTTKey);
-          if (entry && entry.flag === TT_FLAG_EXACT &&
-              entry.depth >= remaining && entry.value <= rootAlpha) {
-            cachedExact = entry.value;
+          const childBase = transpositionTable.retrieve(childTTKey);
+          if (childBase >= 0) {
+            const childWord0 = ttData[childBase];
+            const childWord1 = ttData[childBase + 1];
+            const childValue = (childWord1 << 14) >> 14;
+            if (((childWord0 >>> TT_W0_FLAG_SHIFT) & 3) === TT_FLAG_EXACT &&
+                (childWord0 >>> TT_W0_DEPTH_SHIFT) >= remaining && childValue <= rootAlpha) {
+              cachedExact = childValue;
+            }
           }
         }
         if (cachedExact != null) {
@@ -5416,23 +5429,27 @@ const getBestMove = (
         } else {
           const probe = alphaBeta(
             remaining, rootAlpha, rootAlpha + NULL_WINDOW,
-            false, nextSide, currentDepth, childHash, true, childInCheck
+            nextSide, currentDepth, childHash, true, childInCheck
           );
           if (probe > rootAlpha) {
             score = alphaBeta(
-              remaining, rootAlpha, Infinity,
-              false, nextSide, currentDepth, childHash, true, childInCheck
+              remaining, rootAlpha, SEARCH_INF,
+              nextSide, currentDepth, childHash, true, childInCheck
             );
           } else if (exactThisMove) {
-            const entry = transpositionTable.retrieve(childTTKey);
-            if (entry && entry.flag === TT_FLAG_EXACT &&
-                entry.depth >= remaining && entry.value <= rootAlpha) {
-              score = entry.value;
+            const childBase = transpositionTable.retrieve(childTTKey);
+            const childWord0 = childBase >= 0 ? ttData[childBase] : 0;
+            const childWord1 = childBase >= 0 ? ttData[childBase + 1] : 0;
+            const childValue = (childWord1 << 14) >> 14;
+            if (childBase >= 0 &&
+                ((childWord0 >>> TT_W0_FLAG_SHIFT) & 3) === TT_FLAG_EXACT &&
+                (childWord0 >>> TT_W0_DEPTH_SHIFT) >= remaining && childValue <= rootAlpha) {
+              score = childValue;
             } else {
               // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
               score = alphaBeta(
-                remaining, -Infinity, rootAlpha + NULL_WINDOW,
-                false, nextSide, currentDepth, childHash, true, childInCheck
+                remaining, -SEARCH_INF, rootAlpha + NULL_WINDOW,
+                nextSide, currentDepth, childHash, true, childInCheck
               );
               if (score > rootAlpha) {
                 // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
