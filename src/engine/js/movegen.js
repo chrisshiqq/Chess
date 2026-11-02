@@ -6,4 +6,4 @@ export const isEncodedMove = (move) => typeof move === 'number';
 export const moveFromSq = (move) => isEncodedMove(move) ? (move >>> 7) : move.from.r * COLS + move.from.c;
 export const moveToSq = (move) => isEncodedMove(move) ? (move & MOVE_TO_MASK) : move.to.r * COLS + move.to.c;
 
-export { getValidMoves } from './search.js';
+export { getValidMoves } from './search-ui.js';

@@ -59,8 +59,8 @@ interface ChessBoardProps {
   analysisSecondBestMove?: Move | null;
 }
 
-export const CELL_SIZE = 50;
-export const BOARD_OFFSET = 50; // Exported for App animation calculation
+const CELL_SIZE = 50;
+const BOARD_OFFSET = 50;
 const WIDTH = CELL_SIZE * 8 + BOARD_OFFSET * 2;
 const HEIGHT = CELL_SIZE * 9 + BOARD_OFFSET * 2;
 

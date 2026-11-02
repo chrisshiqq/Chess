@@ -31,5 +31,5 @@ export const isValidPlacement = (type, color, r, c) => {
 export {
   checkGameState,
   isCheck
-} from './search.js';
+} from './search-ui.js';
 

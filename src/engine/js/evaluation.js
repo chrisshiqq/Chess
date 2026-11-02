@@ -10,9 +10,12 @@ export const evaluatePieceInfo = (pieceInfo) => ({
 
 export {
   VALUE_WEIGHTS,
-  evaluateBoard,
-  evaluatePiece,
   getGameStage,
-  hydrateRelationsFromMasks,
   setValueWeights
 } from './search.js';
+
+export {
+  evaluateBoard,
+  evaluatePiece,
+  hydrateRelationsFromMasks
+} from './search-ui.js';

@@ -35,14 +35,6 @@ import {
     type PositionHistoryEntry
 } from './domain/repetition';
 import ChessWorker from '@chess-worker';
-
-/*
-import { 
-    createInitialBoard, 
-    createEmptyBoard, 
-    DIFFICULTIES 
-} from './src/utils/chessEngine';
-*/
 import { Board, Color, Position, Move, PieceType, Piece, GameStatusResult, CompactBoard } from './domain/types';
 import { decodeAnalysisMoves, decodeBoard, decodeMove, decodeMoves, encodeBoard, previewMove } from './engine/codec';
 import { Skin, DifficultyLevel, PieceMaterial } from './ui/types';
@@ -151,12 +143,12 @@ const createInitialBoard = (): Board => {
   return board;
 };
 
-export const createEmptyBoard = (): Board => {
+const createEmptyBoard = (): Board => {
     return Array(ROWS).fill(null).map(() => Array(COLS).fill(null));
 };
 
 // 棋谱/存档局面：与搜索码相同，0 空，红 1–7，黑 9–15
-export const boardToCompactFormat = (board: Board): CompactBoard => encodeBoard(board);
+const boardToCompactFormat = (board: Board): CompactBoard => encodeBoard(board);
 
 const compactFormatToBoard = (compactBoard: CompactBoard): Board => decodeBoard(compactBoard);
 
@@ -400,10 +392,6 @@ const INITIAL_SUPPLY: Record<Color, Record<PieceType, number>> = {
     black: { general: 1, advisor: 2, elephant: 2, horse: 2, chariot: 2, cannon: 2, soldier: 5 }
 };
 
-
-
-
-
 const App: React.FC = () => {
     const [appScreen, setAppScreen] = useState<AppScreen>('lobby');
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
@@ -479,7 +467,6 @@ const App: React.FC = () => {
     const [analysisPreviewIndex, setAnalysisPreviewIndex] = useState<number>(-1);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const isMuted = false;
     const [isMusicEnabled, setIsMusicEnabled] = useState<boolean>(true); // 默认打开
     const [musicVariant, setMusicVariant] = useState<number>(
         () => Math.floor(Math.random() * MUSIC_VARIANTS.length)
@@ -1274,35 +1261,35 @@ const App: React.FC = () => {
     const playMoveSound = () => {
         // 点击棋子不播放背景音乐
         
-        if (!isMuted && moveSoundRef.current) {
+        if (moveSoundRef.current) {
             moveSoundRef.current.currentTime = 0;
             moveSoundRef.current.play().catch(() => {});
         }
     };
 
     const playCaptureSound = () => {
-        if (!isMuted && captureSoundRef.current) {
+        if (captureSoundRef.current) {
             captureSoundRef.current.currentTime = 0;
             captureSoundRef.current.play().catch(() => {});
         }
     };
 
     const playCheckSound = () => {
-        if (!isMuted && checkSoundRef.current) {
+        if (checkSoundRef.current) {
             checkSoundRef.current.currentTime = 0;
             checkSoundRef.current.play().catch(() => {});
         }
     };
 
     const playGameOverSound = () => {
-        if (!isMuted && gameOverSoundRef.current) {
+        if (gameOverSoundRef.current) {
             gameOverSoundRef.current.currentTime = 0;
             gameOverSoundRef.current.play().catch(() => {});
         }
     };
 
     const playVictorySound = () => {
-        if (!isMuted && victorySoundRef.current) {
+        if (victorySoundRef.current) {
             victorySoundRef.current.currentTime = 0;
             victorySoundRef.current.play().catch(() => {});
         }
@@ -5003,7 +4990,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* 对弈与分析共用 AI Bench；分析模式放在着法列表下方 */}
                                 {(isThinking || lastSearchBench) && (
                                     <div className={`col-span-2 mt-2 mb-1 rounded-lg border border-stone-700 bg-stone-900/50 p-3 pb-4 font-mono text-xs ${isThinking ? 'text-amber-200/90' : 'text-stone-300'}`}>
-                                        <div className="mb-1 text-stone-400">{isThinking ? 'Thinking' : 'Done'}</div>
                                         <div className="space-y-1">
                                             {((isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves) || 0) > 0 ? (
                                                 <div>Root: {isThinking ? aiSearchDebug.rootMoves : lastSearchBench?.rootMoves}</div>
