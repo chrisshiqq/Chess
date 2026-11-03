@@ -6,10 +6,6 @@ import {
     cellToSearchCode
 } from './piece-code.js';
 import {
-    MOVE_TO_MASK,
-    encodeMove
-} from './movegen.js';
-import {
     collectSearchMetrics,
     searchContext,
     searchLmrMaxReduction,
@@ -20,6 +16,9 @@ import {
     searchProfile
 } from './search-context.js';
 import { OpeningBook } from './opening-book.js';
+
+const MOVE_TO_MASK = 0x7f;
+const encodeMove = (from, to) => ((from.r * COLS + from.c) << 7) | (to.r * COLS + to.c);
 
 // 评估分项权重。必须放在本模块，不能从 evaluation.js 回引：
 // Worker 先加载 evaluation.js 时，打包后顶层读 VALUE_WEIGHTS 会撞 TDZ。

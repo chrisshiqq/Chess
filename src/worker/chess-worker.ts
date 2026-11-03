@@ -10,7 +10,7 @@ import {
   hydrateRelationsFromMasks,
   setValueWeights
 } from '../engine/js/evaluation.js';
-import { getValidMoves } from '../engine/js/movegen.js';
+import { getValidMoves } from '../engine/js/search-ui.js';
 import {
   checkGameState,
   isCheck,
