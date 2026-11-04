@@ -44,22 +44,40 @@ code {
   z-index: 10;
 }
 
-.analysis-nav-button {
+/* Replay / Analysis / Setup 共用河界按钮：半透明、小尺寸 */
+.river-nav {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 30;
+  display: flex;
+  transform: translate(-50%, -50%);
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.375rem;
+  border: 1px solid rgb(68 64 60 / 0.3);
+  background-color: rgb(12 10 9 / 0.25);
+  padding: 0.25rem;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+.river-nav-button {
   display: flex;
   width: 2.25rem;
   height: 2.25rem;
   align-items: center;
   justify-content: center;
   border-radius: 0.25rem;
+  background-color: rgb(28 25 23 / 0.35);
   color: rgb(255 255 255 / 0.9);
   transition: color 150ms, background-color 150ms, opacity 150ms;
 }
 
-.analysis-nav-button:hover:not(:disabled) {
-  background-color: rgb(41 37 36 / 0.9);
+.river-nav-button:hover:not(:disabled) {
+  background-color: rgb(41 37 36 / 0.7);
   color: white;
 }
 
-.analysis-nav-button:disabled {
+.river-nav-button:disabled {
   opacity: 0.3;
 }

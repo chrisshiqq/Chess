@@ -4113,31 +4113,29 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     />
 
                     {isSetupMode && (
-                        <button
-                            type="button"
-                            onClick={collectSelectedSetupPiece}
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={handleSetupCollectDrop}
-                            disabled={!selectedPos || !board[selectedPos.r]?.[selectedPos.c]}
-                            className="absolute left-1/2 top-1/2 z-30 flex h-10 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-teal-500/70 bg-stone-900/90 px-3 text-xs font-semibold text-teal-200 shadow-md transition-[background-color,border-color,opacity,transform] hover:bg-stone-800 disabled:opacity-40"
-                            aria-label="Collect selected piece"
-                            title="Collect selected piece"
-                        >
-                            <UndoIcon className="h-4 w-4" />
-                        </button>
+                        <div className="river-nav" role="group" aria-label="Setup piece collection">
+                            <button
+                                type="button"
+                                onClick={collectSelectedSetupPiece}
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={handleSetupCollectDrop}
+                                disabled={!selectedPos || !board[selectedPos.r]?.[selectedPos.c]}
+                                className="river-nav-button"
+                                aria-label="Collect selected piece"
+                                title="Collect selected piece"
+                            >
+                                <ArrowPathIcon className="h-5 w-5" />
+                            </button>
+                        </div>
                     )}
 
                     {isReplaying && (
-                        <div
-                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-700/30 bg-stone-950/25 p-1 shadow-md"
-                            role="group"
-                            aria-label="Replay navigation"
-                        >
+                        <div className="river-nav" role="group" aria-label="Replay navigation">
                             <button
                                 type="button"
                                 onClick={() => jumpReplay(0)}
                                 disabled={replayIndex === 0}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
+                                className="river-nav-button"
                                 aria-label="First move"
                                 title="First move"
                             >
@@ -4147,7 +4145,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={prevReplay}
                                 disabled={replayIndex === 0}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
+                                className="river-nav-button"
                                 aria-label="Previous move"
                                 title="Previous move"
                             >
@@ -4157,7 +4155,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={nextReplay}
                                 disabled={replayIndex === allReplayBoards.length - 1}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
+                                className="river-nav-button"
                                 aria-label="Next move"
                                 title="Next move"
                             >
@@ -4167,7 +4165,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 type="button"
                                 onClick={() => jumpReplay(allReplayBoards.length - 1)}
                                 disabled={replayIndex === allReplayBoards.length - 1}
-                                className="flex h-9 w-9 items-center justify-center rounded bg-stone-900/35 text-white/90 transition-colors hover:bg-stone-800/70 hover:text-white disabled:opacity-30"
+                                className="river-nav-button"
                                 aria-label="Last move"
                                 title="Last move"
                             >
@@ -4225,24 +4223,20 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                     )}
 
                     {isAnalysisMode && selectedAnalysisMove !== null && analysisMoves[selectedAnalysisMove]?.moveSequence.length > 0 && (
-                        <div
-                            className="absolute left-1/2 top-1/2 z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-stone-700/40 bg-stone-950/80 p-1 shadow-md"
-                            role="group"
-                            aria-label="Analysis variation navigation"
-                        >
-                            <button type="button" onClick={() => void updateAnalysisPreview(0)} className="analysis-nav-button" aria-label="First analysis move" title="First move">
+                        <div className="river-nav" role="group" aria-label="Analysis variation navigation">
+                            <button type="button" onClick={() => void updateAnalysisPreview(0)} className="river-nav-button" aria-label="First analysis move" title="First move">
                                 <FirstPageIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void updateAnalysisPreview(Math.max(0, analysisPreviewIndex - 1))} disabled={analysisPreviewIndex <= 0} className="analysis-nav-button" aria-label="Previous analysis move" title="Previous move">
+                            <button type="button" onClick={() => void updateAnalysisPreview(Math.max(0, analysisPreviewIndex - 1))} disabled={analysisPreviewIndex <= 0} className="river-nav-button" aria-label="Previous analysis move" title="Previous move">
                                 <ChevronLeftIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void restoreAnalysisPreview()} disabled={!isPreviewing} className="analysis-nav-button text-red-400" aria-label="Restore position" title="Restore">
+                            <button type="button" onClick={() => void restoreAnalysisPreview()} disabled={!isPreviewing} className="river-nav-button text-red-400" aria-label="Restore position" title="Restore">
                                 <ArrowPathIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void updateAnalysisPreview(analysisPreviewIndex + 1)} disabled={analysisPreviewIndex >= analysisMoves[selectedAnalysisMove].moveSequence.length - 1} className="analysis-nav-button" aria-label="Next analysis move" title="Next move">
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisPreviewIndex + 1)} disabled={analysisPreviewIndex >= analysisMoves[selectedAnalysisMove].moveSequence.length - 1} className="river-nav-button" aria-label="Next analysis move" title="Next move">
                                 <ChevronRightIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void updateAnalysisPreview(analysisMoves[selectedAnalysisMove].moveSequence.length - 1)} className="analysis-nav-button" aria-label="Last analysis move" title="Last move">
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisMoves[selectedAnalysisMove].moveSequence.length - 1)} className="river-nav-button" aria-label="Last analysis move" title="Last move">
                                 <LastPageIcon className="h-5 w-5" />
                             </button>
                         </div>
