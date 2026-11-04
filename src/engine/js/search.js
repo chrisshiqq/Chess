@@ -698,10 +698,8 @@ const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
 
-// 根节点与树内共用。未将军：吃子、killer、history。被将：吃子先于走将。
-const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null) => {
-    const __t0 = searchProfile ? performance.now() : 0;
-    if (searchProfile) perfStats.sortMovesCount++;
+// 未将军：吃子、killer、history。被将：吃子先于走将。
+const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
     const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -750,13 +748,15 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
         sortMovePriorityScratch[index] = priority;
         sortMoveScoreScratch[index] = score;
     }
+};
 
-    const extraA = parallelArrays && parallelArrays[0];
-    const extraB = parallelArrays && parallelArrays[1];
+const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
+    const __t0 = searchProfile ? performance.now() : 0;
+    if (searchProfile) perfStats.sortMovesCount++;
+    fillSearchMoveSortKeys(moves, ttMove, killers, inCheck);
+    const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
-        const extraAVal = extraA ? extraA[i] : null;
-        const extraBVal = extraB ? extraB[i] : null;
         const priority = sortMovePriorityScratch[i];
         const score = sortMoveScoreScratch[i];
         let j = i - 1;
@@ -766,20 +766,48 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck, parallelArrays = null)
              (sortMovePriorityScratch[j] === priority && sortMoveScoreScratch[j] < score))
         ) {
             moves[j + 1] = moves[j];
-            if (extraA) extraA[j + 1] = extraA[j];
-            if (extraB) extraB[j + 1] = extraB[j];
             sortMovePriorityScratch[j + 1] = sortMovePriorityScratch[j];
             sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
             j--;
         }
         moves[j + 1] = move;
-        if (extraA) extraA[j + 1] = extraAVal;
-        if (extraB) extraB[j + 1] = extraBVal;
         sortMovePriorityScratch[j + 1] = priority;
         sortMoveScoreScratch[j + 1] = score;
     }
 
     if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
+    return moves;
+};
+
+// 根节点专用：着法与 rootScores / rootSeqs 同步重排。
+const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
+    fillSearchMoveSortKeys(moves, ttMove, null, inCheck);
+    const moveCount = moves.length;
+    for (let i = 1; i < moveCount; i++) {
+        const move = moves[i];
+        const scoreVal = scores[i];
+        const seqVal = seqs[i];
+        const priority = sortMovePriorityScratch[i];
+        const score = sortMoveScoreScratch[i];
+        let j = i - 1;
+        while (
+            j >= 0 &&
+            (sortMovePriorityScratch[j] > priority ||
+             (sortMovePriorityScratch[j] === priority && sortMoveScoreScratch[j] < score))
+        ) {
+            moves[j + 1] = moves[j];
+            scores[j + 1] = scores[j];
+            seqs[j + 1] = seqs[j];
+            sortMovePriorityScratch[j + 1] = sortMovePriorityScratch[j];
+            sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
+            j--;
+        }
+        moves[j + 1] = move;
+        scores[j + 1] = scoreVal;
+        seqs[j + 1] = seqVal;
+        sortMovePriorityScratch[j + 1] = priority;
+        sortMoveScoreScratch[j + 1] = score;
+    }
     return moves;
 };
 
@@ -4532,7 +4560,7 @@ const getBestMove = (
     const ttBase = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttBase >= 0 ? (ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT) || null : null;
     const prevBest = rootMoves[0];
-    sortSearchMoves(rootMoves, ttMove, null, rootInCheck, [rootScores, rootSeqs]);
+    sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores, rootSeqs);
     // 上一层最佳着放第一，保证本层 PVS 首着全窗命中热路径
     promoteRootMove(prevBest);
 
