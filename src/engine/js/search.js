@@ -700,6 +700,7 @@ const captureSortScoreScratch = [];
 
 // 未将军：吃子、killer、history。被将：吃子先于走将。
 const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
+    inCheck = false;
     const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -828,10 +829,6 @@ const sortRangeStagedMove = (moves, start, end, killers) => {
         if (targetSlot >= 0) {
             score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
                 materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
-        } else if (move === killers[0]) {
-            score += 8000;
-        } else if (move === killers[1]) {
-            score += 7000;
         }
         sortMoveScoreScratch[index] = score;
     }
