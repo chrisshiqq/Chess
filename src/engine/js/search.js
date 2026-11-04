@@ -811,7 +811,7 @@ const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
     return moves;
 };
 
-const sortRangeStagedMoves = (moves, start, end, killers) => {
+const sortRangeStagedMove = (moves, start, end, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
@@ -828,6 +828,10 @@ const sortRangeStagedMoves = (moves, start, end, killers) => {
         if (targetSlot >= 0) {
             score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
                 materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+        } else if (move === killers[0]) {
+            score += 8000;
+        } else if (move === killers[1]) {
+            score += 7000;
         }
         sortMoveScoreScratch[index] = score;
     }
@@ -2150,7 +2154,7 @@ const appendTrueStagedMoves = (
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    sortRangeStagedMoves(moves, start, moves.length, killers);
+    sortRangeStagedMove(moves, start, moves.length, killers);
     return moves.length - start;
 };
 
