@@ -698,8 +698,8 @@ const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
 
-// TT 最前；吃子按 MVV-LVA；其余 history / killer。
-const fillSearchMoveSortKeys = (moves, ttMove, killers) => {
+// 未将军：吃子、killer、history。被将：吃子先于走将。
+const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
     const pieceState = activeSearchPieceState;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
@@ -718,6 +718,16 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers) => {
         if (ttMove === move) {
             priority = -1;
             score = 1000000;
+        } else if (inCheck) {
+            const moverCode = pieceState.squareCodes[fromSq];
+            const pieceValue = materialValues[moverCode & 7];
+            if (hasTarget) {
+                priority = 2;
+                score = materialValues[pieceCodes[targetSlot] & 7] * 16 - pieceValue;
+            } else if ((moverCode & 7) === 1) {
+                priority = 3;
+                score = pieceValue;
+            }
         } else if (hasTarget) {
             priority = 3;
             score = materialValues[pieceCodes[targetSlot] & 7] * 16 -
@@ -740,10 +750,10 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers) => {
     }
 };
 
-const sortSearchMoves = (moves, ttMove, killers) => {
+const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.sortMovesCount++;
-    fillSearchMoveSortKeys(moves, ttMove, killers);
+    fillSearchMoveSortKeys(moves, ttMove, killers, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
@@ -770,8 +780,8 @@ const sortSearchMoves = (moves, ttMove, killers) => {
 };
 
 // 根节点专用：着法与 rootScores / rootSeqs 同步重排。
-const sortRootSearchMoves = (moves, ttMove, scores, seqs) => {
-    fillSearchMoveSortKeys(moves, ttMove, null);
+const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
+    fillSearchMoveSortKeys(moves, ttMove, null, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
@@ -801,7 +811,7 @@ const sortRootSearchMoves = (moves, ttMove, scores, seqs) => {
     return moves;
 };
 
-const sortRangeStagedMoves = (moves, start, end) => {
+const sortRangeStagedMove = (moves, start, end, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
@@ -818,6 +828,10 @@ const sortRangeStagedMoves = (moves, start, end) => {
         if (targetSlot >= 0) {
             score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
                 materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+        } else if (move === killers[0]) {
+            score += 8000;
+        } else if (move === killers[1]) {
+            score += 7000;
         }
         sortMoveScoreScratch[index] = score;
     }
@@ -2140,7 +2154,7 @@ const appendTrueStagedMoves = (
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    sortRangeStagedMoves(moves, start, moves.length);
+    sortRangeStagedMove(moves, start, moves.length, killers);
     return moves.length - start;
 };
 
@@ -3950,7 +3964,7 @@ const quiescence = (
         : standPat;
 
     if (knownInCheck) {
-        sortSearchMoves(moves, null, null);
+        sortSearchMoves(moves, null, null, false);
     } else if (moveCount > 1) {
         sortCaptures(moves);
         if (collectSearchMetrics) perfStats.qsCaptureSortRan++;
@@ -4132,7 +4146,7 @@ const alphaBeta = (
             ttMove, killersAtDepth
         );
     } else {
-        moves = sortSearchMoves(moves, ttMove, killersAtDepth);
+        moves = sortSearchMoves(moves, ttMove, killersAtDepth, knownInCheck);
     }
 
     let bestEval = maximizing ? -SEARCH_INF : SEARCH_INF;
@@ -4546,7 +4560,7 @@ const getBestMove = (
     const ttBase = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttBase >= 0 ? (ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT) || null : null;
     const prevBest = rootMoves[0];
-    sortRootSearchMoves(rootMoves, ttMove, rootScores, rootSeqs);
+    sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores, rootSeqs);
     // 上一层最佳着放第一，保证本层 PVS 首着全窗命中热路径
     promoteRootMove(prevBest);
 
