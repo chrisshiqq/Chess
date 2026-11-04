@@ -10,12 +10,13 @@ import {
   hydrateRelationsFromMasks,
   setValueWeights
 } from '../engine/js/evaluation.js';
-import { getValidMoves } from '../engine/js/search-ui.js';
-import {
+import { 
+  getValidMoves,
   checkGameState,
-  isCheck,
+  isCheck, 
   isValidPlacement
-} from '../engine/js/rules.js';
+} from '../engine/js/search-ui.js';
+
 import { configureSearch, noopSearchProgress, searchContext } from '../engine/js/search-context.js';
 import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
 

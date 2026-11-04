@@ -341,11 +341,9 @@ const runWithPieceState = (board, fn) => {
     } else {
         activeSearchPieceState = createSearchPieceState(board, 'mid');
     }
-    try {
-        return fn();
-    } finally {
-        activeSearchPieceState = previous;
-    }
+    const result = fn();
+    activeSearchPieceState = previous;
+    return result;
 };
 
 const makeSearchMove = (
@@ -839,16 +837,6 @@ const ELEPHANT_DIRS = [
     { dr: -2, dc: 2, eyeDr: -1, eyeDc: 1 },
     { dr: -2, dc: -2, eyeDr: -1, eyeDc: -1 }
 ];
-const HORSE_DIRS = [
-    { dr: 2, dc: 1, legDr: 1, legDc: 0 },
-    { dr: 2, dc: -1, legDr: 1, legDc: 0 },
-    { dr: -2, dc: 1, legDr: -1, legDc: 0 },
-    { dr: -2, dc: -1, legDr: -1, legDc: 0 },
-    { dr: 1, dc: 2, legDr: 0, legDc: 1 },
-    { dr: 1, dc: -2, legDr: 0, legDc: -1 },
-    { dr: -1, dc: 2, legDr: 0, legDc: 1 },
-    { dr: -1, dc: -2, legDr: 0, legDc: -1 }
-];
 // 4 条马腿，每腿最多两个日字落点。搜索表按腿打包，热路径只判一次占格。
 const HORSE_LEG_GROUPS = [
     { legDr: 1, legDc: 0, dests: [[2, 1], [2, -1]] },
@@ -892,13 +880,16 @@ const SOLDIER_DEST = [new Array(REL_SQUARES), new Array(REL_SQUARES)];
                 if (nr <= 4) eRed.push({ r: nr, c: nc, br: eyeR, bc: eyeC });
                 if (nr >= 5) eBlack.push({ r: nr, c: nc, br: eyeR, bc: eyeC });
             }
-            for (let i = 0; i < HORSE_DIRS.length; i++) {
-                const d = HORSE_DIRS[i];
-                const nr = r + d.dr, nc = c + d.dc;
-                const legR = r + d.legDr, legC = c + d.legDc;
+            for (let g = 0; g < HORSE_LEG_GROUPS.length; g++) {
+                const group = HORSE_LEG_GROUPS[g];
+                const legR = r + group.legDr, legC = c + group.legDc;
                 if (legR < 0 || legR >= ROWS || legC < 0 || legC >= COLS) continue;
-                if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-                horse.push({ r: nr, c: nc, br: legR, bc: legC });
+                for (let i = 0; i < group.dests.length; i++) {
+                    const dest = group.dests[i];
+                    const nr = r + dest[0], nc = c + dest[1];
+                    if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+                    horse.push({ r: nr, c: nc, br: legR, bc: legC });
+                }
             }
             {
                 const fr = r + 1;
@@ -1024,17 +1015,20 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
         }
 
         SEARCH_HORSE_CHECKER_OFF[sq] = horseCheckerWords.length;
-        for (let i = 0; i < HORSE_DIRS.length; i++) {
-            const d = HORSE_DIRS[i];
-            const horseR = r + d.dr;
-            const horseC = c + d.dc;
-            if (horseR < 0 || horseR >= ROWS || horseC < 0 || horseC >= COLS) continue;
-            const legR = horseR - d.legDr;
-            const legC = horseC - d.legDc;
-            const entry = (legR * 9 + legC) * 128 + horseR * 9 + horseC;
-            horseCheckerWords.push(entry);
-            markGiveCheckNear(sq, entry & 127);
-            markGiveCheckNear(sq, entry >>> 7);
+        for (let g = 0; g < HORSE_LEG_GROUPS.length; g++) {
+            const group = HORSE_LEG_GROUPS[g];
+            for (let i = 0; i < group.dests.length; i++) {
+                const dest = group.dests[i];
+                const horseR = r + dest[0];
+                const horseC = c + dest[1];
+                if (horseR < 0 || horseR >= ROWS || horseC < 0 || horseC >= COLS) continue;
+                const legR = horseR - group.legDr;
+                const legC = horseC - group.legDc;
+                const entry = (legR * 9 + legC) * 128 + horseR * 9 + horseC;
+                horseCheckerWords.push(entry);
+                markGiveCheckNear(sq, entry & 127);
+                markGiveCheckNear(sq, entry >>> 7);
+            }
         }
         if (r <= 2) {
             if (r + 1 < ROWS) markGiveCheckNear(sq, (r + 1) * 9 + c);
@@ -4340,7 +4334,6 @@ const getBestMove = (
   const gameStage = getGameStage();
   activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, gameStage);
   const rootPieceState = activeSearchPieceState;
-  try {
   const bookMove = openingBook.getBookMoveFromState(rootPieceState, ply);
   if (bookMove) {
     const fromSq = bookMove.from.r * 9 + bookMove.from.c;
@@ -4352,6 +4345,7 @@ const getBestMove = (
       const validDestinations = getValidMovesFromSq(fromSq);
       if (validDestinations.some((dest) => dest === toSq)) {
         resetPerfStats();
+        activeSearchPieceState = null;
         return {
           bestMove: encodedBook,
           secondBestMove: null,
@@ -4447,6 +4441,7 @@ const getBestMove = (
   }
 
   if (rootMoves.length === 0) {
+    activeSearchPieceState = null;
     return {
       bestMove: null,
       secondBestMove: null,
@@ -4701,10 +4696,8 @@ const getBestMove = (
     fromBook: false,
     thinkingTime: Date.now() - startTime
   };
+  activeSearchPieceState = null;
   return result;
-  } finally {
-    activeSearchPieceState = null;
-  }
 };
 
 export {
