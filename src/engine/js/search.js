@@ -153,8 +153,11 @@ const SEARCH_POSITION_VALUES = Array.from({ length: 16 }, () => new Int16Array(9
 
 // 攻击位图：90 格用 3×Uint32。搜索叶只需「是否敌控」；点棋/UI 仍用控制者列表。
 const ATTACK_WORDS = 3;
+// UI 关系图：全盘空控 90 格 / 3×u32。叶评估不用这两块。
 const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
 const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
+// 叶评估专用：每方 1×u32，只记打到对方九宫空格（bit = sq&31，同位原 word0/word2）。
+const scratchLeafPalaceAttack = new Uint32Array(2);
 // Packed destinations/rays and inlined relation writes for search leaves.
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘。
 // 仅基准诊断开启：额外 performance.now 会影响绝对耗时，正式对弈保持关闭。
@@ -2200,11 +2203,9 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     const horseDestData = SEARCH_HORSE_DEST_DATA;
     attackBySlot.fill(0);
     guardBySlot.fill(0);
-    clearAttackBits(scratchRedAttack);
-    clearAttackBits(scratchBlackAttack);
-
-    const redAttack = scratchRedAttack;
-    const blackAttack = scratchBlackAttack;
+    scratchLeafPalaceAttack[0] = 0;
+    scratchLeafPalaceAttack[1] = 0;
+    const leafPalaceAttack = scratchLeafPalaceAttack;
     let redMobility = 0;
     let blackMobility = 0;
     let attackedTargetMask = 0;
@@ -2219,7 +2220,6 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
-        const attackBits = isRed ? redAttack : blackAttack;
         let mobilityValue = 0;
 
         switch (pieceType) {
@@ -2278,7 +2278,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     const targetCode = squareCodes[sq];
                     if (targetCode === 0) {
                         if (attackTarget[sq] & attackTargetBit) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         mobilityValue += 1;
                     } else {
@@ -2329,7 +2329,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         const targetCode = squareCodes[d0];
                         if (targetCode === 0) {
                             if (attackTarget[d0] & attackTargetBit) {
-                                attackBits[d0 >>> 5] |= 1 << (d0 & 31);
+                                leafPalaceAttack[colorIdx] |= 1 << (d0 & 31);
                             }
                             mobilityValue += 1;
                         } else {
@@ -2346,7 +2346,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         const targetCode = squareCodes[d1];
                         if (targetCode === 0) {
                             if (attackTarget[d1] & attackTargetBit) {
-                                attackBits[d1 >>> 5] |= 1 << (d1 & 31);
+                                leafPalaceAttack[colorIdx] |= 1 << (d1 & 31);
                             }
                             mobilityValue += 1;
                         } else {
@@ -2398,15 +2398,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 16) {
                             const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 32) {
                             const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
                 }
@@ -2417,15 +2417,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         const firstRow = isRed ? 7 : 0;
                         let sq = firstRow * 9 + c;
                         if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         sq += 9;
                         if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         sq += 9;
                         if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
                 }
@@ -2468,15 +2468,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
                             const sq = r * 9 + 3;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 16) {
                             const sq = r * 9 + 4;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 32) {
                             const sq = r * 9 + 5;
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
                 }
@@ -2487,15 +2487,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         const firstRow = isRed ? 7 : 0;
                         let sq = firstRow * 9 + c;
                         if (fileControl & (1 << firstRow)) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         sq += 9;
                         if (fileControl & (1 << (firstRow + 1))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         sq += 9;
                         if (fileControl & (1 << (firstRow + 2))) {
-                            attackBits[sq >>> 5] |= 1 << (sq & 31);
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
                 }
@@ -3506,8 +3506,9 @@ const evaluateLeaf = (pieceState) => {
     const checkBonus = CHECK_BONUS;
     const attackBySlot = scratchLeafAttackBySlot;
     const guardBySlot = scratchLeafGuardBySlot;
-    const blackAttack = scratchBlackAttack;
-    const redAttack = scratchRedAttack;
+    const leafPalaceAttack = scratchLeafPalaceAttack;
+    const blackPalaceAttack = leafPalaceAttack[1];
+    const redPalaceAttack = leafPalaceAttack[0];
     let redThreat = 0;
     let blackThreat = 0;
     const tacticalStart = searchProfile ? performance.now() : 0;
@@ -3549,8 +3550,8 @@ const evaluateLeaf = (pieceState) => {
     if (redGeneralSq >= 0) {
         const destStart = SEARCH_GENERAL_DEST_OFF[redGeneralSq];
         const destEnd = SEARCH_GENERAL_DEST_OFF[redGeneralSq + 1];
-        // 红九宫全在 attack word 0；开局常整字为 0，可跳过 4 个空落点
-        if (blackAttack[0] === 0) {
+        // 红九宫：黑方 leaf u32；开局常为 0，可跳过空落点
+        if (blackPalaceAttack === 0) {
             if (collectSearchMetrics) {
                 perfStats.safetyWordSkips++;
                 perfStats.safetyDestsSkipped += destEnd - destStart;
@@ -3558,7 +3559,7 @@ const evaluateLeaf = (pieceState) => {
         } else {
             for (let i = destStart; i < destEnd; i++) {
                 const sq = SEARCH_GENERAL_DEST_DATA[i];
-                if (squareCodes[sq] === 0 && (blackAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
+                if (squareCodes[sq] === 0 && (blackPalaceAttack & (1 << (sq & 31))) !== 0) {
                     redSafety -= 50;
                 }
             }
@@ -3569,8 +3570,8 @@ const evaluateLeaf = (pieceState) => {
         const blackDestBase = DEST_OFF_STRIDE + blackGeneralSq;
         const destStart = SEARCH_GENERAL_DEST_OFF[blackDestBase];
         const destEnd = SEARCH_GENERAL_DEST_OFF[blackDestBase + 1];
-        // 黑九宫全在 attack word 2
-        if (redAttack[2] === 0) {
+        // 黑九宫：红方 leaf u32
+        if (redPalaceAttack === 0) {
             if (collectSearchMetrics) {
                 perfStats.safetyWordSkips++;
                 perfStats.safetyDestsSkipped += destEnd - destStart;
@@ -3578,7 +3579,7 @@ const evaluateLeaf = (pieceState) => {
         } else {
             for (let i = destStart; i < destEnd; i++) {
                 const sq = SEARCH_GENERAL_DEST_DATA[i];
-                if (squareCodes[sq] === 0 && (redAttack[sq >>> 5] & (1 << (sq & 31))) !== 0) {
+                if (squareCodes[sq] === 0 && (redPalaceAttack & (1 << (sq & 31))) !== 0) {
                     blackSafety -= 50;
                 }
             }
