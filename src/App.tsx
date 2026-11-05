@@ -3914,15 +3914,34 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const capturedInfo = useMemo(() => getCapturedPieces(displayBoard), [displayBoard]);
     const isFlipped = playerColor === 'black';
 
+    const applyPreviewEvaluation = async (previewBoard: Board, previewTurn: Color) => {
+        const evaluation = await workerGetDetailedEval(previewBoard, previewTurn, isReplaying);
+        const formatted = {
+            pre: evaluation,
+            post: evaluation,
+            diff: {
+                red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+                black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
+            },
+        };
+        if (isReplaying) setReplayEvaluation(formatted);
+        else setMoveEvaluation(formatted);
+    };
+
     const updateAnalysisPreview = async (sequenceIndex: number) => {
         if (selectedAnalysisMove === null) return;
         const sequence = analysisMoves[selectedAnalysisMove]?.moveSequence;
         if (!sequence?.length) return;
 
         const nextIndex = Math.max(0, Math.min(sequenceIndex, sequence.length - 1));
+        const baseTurn = isReplaying
+            ? (replayIndex % 2 === 0 ? 'red' : 'black')
+            : turn;
         let baseBoard = originalBoardForPreview;
         if (!baseBoard) {
-            baseBoard = board.map(row => [...row]);
+            baseBoard = isReplaying
+                ? (allReplayBoards[replayIndex] || board).map(row => [...row])
+                : board.map(row => [...row]);
             setOriginalBoardForPreview(baseBoard);
         }
 
@@ -3937,16 +3956,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setAnalysisPreviewIndex(nextIndex);
 
         try {
-            const previewTurn = (nextIndex + 1) % 2 === 0 ? turn : (turn === 'red' ? 'black' : 'red');
-            const evaluation = await workerGetDetailedEval(previewBoard, previewTurn, false);
-            setMoveEvaluation({
-                pre: evaluation,
-                post: evaluation,
-                diff: {
-                    red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
-                    black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
-                },
-            });
+            const previewTurn = (nextIndex + 1) % 2 === 0
+                ? baseTurn
+                : (baseTurn === 'red' ? 'black' : 'red');
+            await applyPreviewEvaluation(previewBoard, previewTurn);
         } catch (error) {
             console.error('获取局面评估失败:', error);
         }
@@ -3955,24 +3968,22 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const restoreAnalysisPreview = async () => {
         if (!originalBoardForPreview) return;
         const restoredBoard = originalBoardForPreview;
+        const restoreTurn = isReplaying
+            ? (replayIndex % 2 === 0 ? 'red' : 'black')
+            : turn;
         setBoard(restoredBoard);
         setOriginalBoardForPreview(null);
         setIsPreviewing(false);
         setAnalysisPreviewIndex(-1);
         try {
-            const evaluation = await workerGetDetailedEval(restoredBoard, turn, false);
-            setMoveEvaluation({
-                pre: evaluation,
-                post: evaluation,
-                diff: {
-                    red: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
-                    black: { total: 0, material: 0, position: 0, safety: 0, mobility: 0, threat: 0 },
-                },
-            });
+            await applyPreviewEvaluation(restoredBoard, restoreTurn);
         } catch (error) {
             console.error('获取局面评估失败:', error);
         }
     };
+
+    const showAnalysisRiverNav = selectedAnalysisMove !== null
+        && (analysisMoves[selectedAnalysisMove]?.moveSequence.length ?? 0) > 0;
 
     let topPanelPieces: PieceType[] = [];
     let topPanelColor: Color = playerColor === 'red' ? 'black' : 'red';
@@ -4129,7 +4140,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         </div>
                     )}
 
-                    {isReplaying && (
+                    {isReplaying && !showAnalysisRiverNav && (
                         <div className="river-nav" role="group" aria-label="Replay navigation">
                             <button
                                 type="button"
@@ -4222,7 +4233,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         </div>
                     )}
 
-                    {isAnalysisMode && selectedAnalysisMove !== null && analysisMoves[selectedAnalysisMove]?.moveSequence.length > 0 && (
+                    {showAnalysisRiverNav && (
                         <div className="river-nav" role="group" aria-label="Analysis variation navigation">
                             <button type="button" onClick={() => void updateAnalysisPreview(0)} className="river-nav-button" aria-label="First analysis move" title="First move">
                                 <FirstPageIcon className="h-5 w-5" />
@@ -4233,10 +4244,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                             <button type="button" onClick={() => void restoreAnalysisPreview()} disabled={!isPreviewing} className="river-nav-button text-red-400" aria-label="Restore position" title="Restore">
                                 <ArrowPathIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void updateAnalysisPreview(analysisPreviewIndex + 1)} disabled={analysisPreviewIndex >= analysisMoves[selectedAnalysisMove].moveSequence.length - 1} className="river-nav-button" aria-label="Next analysis move" title="Next move">
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisPreviewIndex + 1)} disabled={analysisPreviewIndex >= analysisMoves[selectedAnalysisMove!].moveSequence.length - 1} className="river-nav-button" aria-label="Next analysis move" title="Next move">
                                 <ChevronRightIcon className="h-5 w-5" />
                             </button>
-                            <button type="button" onClick={() => void updateAnalysisPreview(analysisMoves[selectedAnalysisMove].moveSequence.length - 1)} className="river-nav-button" aria-label="Last analysis move" title="Last move">
+                            <button type="button" onClick={() => void updateAnalysisPreview(analysisMoves[selectedAnalysisMove!].moveSequence.length - 1)} className="river-nav-button" aria-label="Last analysis move" title="Last move">
                                 <LastPageIcon className="h-5 w-5" />
                             </button>
                         </div>
@@ -4688,11 +4699,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 {/* Analysis button moved into Resign slot */}
                                 <button
                                     onClick={() => {
-                                        if (isAnalysisMode) {
-                                            stopAnalysis();
-                                            return;
-                                        }
-                                        // 进入Analysis模式，触发分析
+                                        // 进入Analysis模式，触发分析（分析中禁用，与 Replay 一致）
                                         setIsAnalysisMode(true);
                                         setAnalysisBestMove(null);
                                         setAnalysisSecondBestMove(null);
@@ -4816,12 +4823,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                             });
                                         }
                                     }}
-                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || (!isAnalysisMode && isThinking) || !!gameOver}
+                                    disabled={(turn === 'red' ? redIsAuto : blackIsAuto) || isThinking || !!gameOver}
                                     style={getButtonStyle()}
                                     className={`px-3 py-4 disabled:opacity-50 rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex flex-col items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 ${isAnalysisMode ? 'bg-blue-600/30 border-stone-600' : ''}`}
                                 >
-                                    <BarChartIcon className="w-4 h-4" />
-                                    <span className="text-xs">{isAnalysisMode && isThinking ? 'Stop' : 'Analysis'}</span>
+                                    {isAnalysisMode && isThinking ? (
+                                        <div className="w-4 h-4 border-2 border-stone-300 border-t-transparent rounded-full animate-spin"></div>
+                                    ) : (
+                                        <BarChartIcon className="w-4 h-4" />
+                                    )}
+                                    <span className="text-xs">Analysis</span>
                                 </button>
                                 
                                 {/* 第2排：Undo, Switch */}
@@ -5180,78 +5191,18 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                         {/* 显示着法序列 */}
                                                         {selectedAnalysisMove === index && item.moveSequence.length > 0 && (
                                                             <div className="mt-1 text-xs text-stone-400 font-mono">
-                                                                {/* 显示着法序列 */}
-                                                                {item.moveSequence.map((seqMove, seqIndex) => {
-                                                                    return (
-                                                                        <div 
-                                                                            key={seqIndex}
-                                                                            onClick={async (e) => {
-                                                                                e.stopPropagation();
-                                                                                // 保存当前棋盘状态作为预览的基准（如果是第一次预览）
-                                                                                let baseBoard = originalBoardForPreview;
-                                                                                if (!isPreviewing) {
-                                                                                    // 保存当前Replay模式下的棋盘状态
-                                                                                    const currentBoard = allReplayBoards[replayIndex];
-                                                                                    setOriginalBoardForPreview(currentBoard);
-                                                                                    setIsPreviewing(true);
-                                                                                    baseBoard = currentBoard;
-                                                                                }
-                                                                                
-                                                                                // 确保有基准棋盘状态
-                                                                                if (!baseBoard) return;
-                                                                                
-                                                                                // 创建一个新的棋盘副本
-                                                                                let tempBoard = JSON.parse(JSON.stringify(baseBoard));
-                                                                                
-                                                                                // 应用从第一步到当前选中着法的所有着法
-                                                                                for (let i = 0; i <= seqIndex; i++) {
-                                                                                    const previewMove = item.moveSequence[i];
-                                                                                    tempBoard[previewMove.to.r][previewMove.to.c] = tempBoard[previewMove.from.r][previewMove.from.c];
-                                                                                    tempBoard[previewMove.from.r][previewMove.from.c] = null;
-                                                                                }
-                                                                                
-                                                                                // 更新棋盘状态
-                                                                                setBoard(tempBoard);
-                                                                                setAnalysisPreviewIndex(seqIndex);
-                                                                                
-                                                                                // 重新评估局面并更新 EVALUATION 面板
-                                                                                try {
-                                                                                    const nextTurn = (seqIndex + 1) % 2 === 0 ? (replayIndex % 2 === 0 ? 'red' : 'black') : (replayIndex % 2 === 0 ? 'black' : 'red');
-                                                                                    const evaluation = await workerGetDetailedEval(tempBoard, nextTurn, true);
-                                                                                    // 将评估结果转换为 replayEvaluation 期望的格式
-                                                                                    const formattedEvaluation = {
-                                                                                        pre: evaluation,
-                                                                                        post: evaluation,
-                                                                                        diff: {
-                                                                                            red: {
-                                                                                                total: 0,
-                                                                                                material: 0,
-                                                                                                position: 0,
-                                                                                                safety: 0,
-                                                                                                mobility: 0,
-                                                                                                threat: 0
-                                                                                            },
-                                                                                            black: {
-                                                                                                total: 0,
-                                                                                                material: 0,
-                                                                                                position: 0,
-                                                                                                safety: 0,
-                                                                                                mobility: 0,
-                                                                                                threat: 0
-                                                                                            }
-                                                                                        }
-                                                                                    };
-                                                                                    setReplayEvaluation(formattedEvaluation);
-                                                                                } catch (evalError) {
-                                                                                    console.error('获取局面评估失败:', evalError);
-                                                                                }
-                                                                            }}
-                                                                            className="hover:bg-amber-600/30 p-1 rounded transition-colors cursor-pointer"
-                                                                        >
-                                                                            ({seqMove.from.r},{seqMove.from.c})→({seqMove.to.r},{seqMove.to.c})
-                                                                        </div>
-                                                                    );
-                                                                })}
+                                                                {item.moveSequence.map((seqMove, seqIndex) => (
+                                                                    <div
+                                                                        key={seqIndex}
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            void updateAnalysisPreview(seqIndex);
+                                                                        }}
+                                                                        className="hover:bg-amber-600/30 p-1 rounded transition-colors cursor-pointer"
+                                                                    >
+                                                                        ({seqMove.from.r},{seqMove.from.c})→({seqMove.to.r},{seqMove.to.c})
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         )}
                                                     </div>
@@ -5264,56 +5215,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                     )}
                                 </div>
                             </div>
-                            
-                            {/* 退出预览模式按钮 - Replay模式下 */}
-                            {isPreviewing && (
-                                <button
-                                    onClick={async () => {
-                                        if (originalBoardForPreview) {
-                                            // 恢复到原始棋盘状态
-                                            setBoard(originalBoardForPreview);
-                                            setOriginalBoardForPreview(null);
-                                            setIsPreviewing(false);
-                                            
-                                            // 恢复到原始局面后更新EVALUATION面板
-                                            try {
-                                                const currentTurn = replayIndex % 2 === 0 ? 'red' : 'black';
-                                                const evaluation = await workerGetDetailedEval(originalBoardForPreview, currentTurn, true);
-                                                // 将评估结果转换为replayEvaluation期望的格式
-                                                const formattedEvaluation = {
-                                                    pre: evaluation,
-                                                    post: evaluation,
-                                                    diff: {
-                                                        red: {
-                                                            total: 0,
-                                                            material: 0,
-                                                            position: 0,
-                                                            safety: 0,
-                                                            mobility: 0,
-                                                            threat: 0
-                                                        },
-                                                        black: {
-                                                            total: 0,
-                                                            material: 0,
-                                                            position: 0,
-                                                            safety: 0,
-                                                            mobility: 0,
-                                                            threat: 0
-                                                        }
-                                                    }
-                                                };
-                                                setReplayEvaluation(formattedEvaluation);
-                                            } catch (evalError) {
-                                                console.error('获取局面评估失败:', evalError);
-                                            }
-                                        }
-                                    }}
-                                    className="w-full p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold transition-[color,background-color,border-color,opacity,transform] flex items-center justify-center gap-1 border shadow-sm hover:opacity-80 active:scale-95 mt-2"
-                                >
-                                    <ArrowPathIcon className="w-5 h-5" />
-                                    <span>Resume</span>
-                                </button>
-                            )}
                             
                             {/* 按钮布局：第1排Load和Save，第2排Switch和Analysis，第3排Play和Exit */}
                             <div className="grid grid-cols-2 gap-2 mb-2">
