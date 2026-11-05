@@ -1,0 +1,152 @@
+{
+  "repo_notes": [
+    {
+      "content": "Chinese Chess (Xiangqi) web app. The engine hot path is src/engine/js/search.js; keep identifiers and line references exact."
+    }
+  ],
+  "pages": [
+    {
+      "title": "Overview",
+      "purpose": "High-level overview of the Xiangqi (Chinese Chess) web app: React UI, Web Worker engine, P2P networking, and the key files"
+    },
+    {
+      "title": "Getting Started",
+      "purpose": "Installation, dependencies, dev server, build scripts (*.bat, vite configs) and environment configuration (.env.example, ICE/P2P settings)",
+      "parent": "Overview"
+    },
+    {
+      "title": "System Architecture",
+      "purpose": "Module boundaries and data flow from the React UI (src/App.tsx) through the Web Worker (src/worker/chess-worker.ts) to the engine (src/engine/js)",
+      "parent": "Overview"
+    },
+    {
+      "title": "Chess Engine",
+      "purpose": "Overview of the search engine in src/engine/js and how its modules fit together"
+    },
+    {
+      "title": "Search Algorithm",
+      "purpose": "Iterative deepening, alpha-beta/PVS, LMR, NMP, quiescence search and move ordering in src/engine/js/search.js",
+      "parent": "Chess Engine"
+    },
+    {
+      "title": "Transposition Table & Zobrist Hashing",
+      "purpose": "The packed-word TranspositionTable and ZobristHasher in src/engine/js/search.js, including generations and reuse",
+      "parent": "Search Algorithm"
+    },
+    {
+      "title": "Search Configuration & Context",
+      "purpose": "The search context and heuristic configuration in src/engine/js/search-context.js",
+      "parent": "Search Algorithm"
+    },
+    {
+      "title": "Board Representation & Move Generation",
+      "purpose": "Board constants and precomputed arrays in src/engine/js/board.js, piece codes (piece-code.js), encodeMove integer encoding, and legal move generation including flying-general rules",
+      "parent": "Chess Engine"
+    },
+    {
+      "title": "Hot path data structure and work flow",
+      "purpose": "Document getBestMove in src/engine/js/search.js (root search entry point): signature and inputs, setup phase, root move generation, the iterative-deepening PVS loop, result assembly, the key hot-path data structures, and a control-flow summary",
+      "parent": "Board Representation & Move Generation",
+      "page_notes": [
+        {
+          "content": "Write this page from the verified reference below (checked against src/engine/js/search.js at commit 280f3aa). Keep every section, table and the control-flow diagram, and use the exact identifiers. Part 1 of 3:\n\n## 1. Signature and inputs\n\n```js\nconst getBestMove = (\n  board,\n  turn,\n  depth = 10,\n  ply = 0,\n  exactRootScores = false,\n  excludedRootMoves = []\n) => { ... }\n```\n\n| Parameter | Meaning |\n|---|---|\n| `board` | The position to search. `loadSearchPieceState` loads it into the reusable `retainedSearchPieceState`. |\n| `turn` | Side to move (`'red'`/`'black'` or `SIDE_*`). `colorToSide(turn)` converts it to a numeric side. |\n| `depth` | Maximum iterative-deepening depth. It is normalized with `maxDepth = Math.max(1, depth \\| 0)`. |\n| `ply` | Game ply. It is passed to `openingBook.getBookMoveFromState(rootPieceState, ply)`. The book is skipped when `ply >= maxPly`. |\n| `exactRootScores` | `false` (play mode): standard PVS. A root move that fails low keeps an upper-bound score and is **not** re-searched. `true` (analysis mode): root moves get exact scores. This only applies at the **final iteration** (`useExactRoot = exactRootScores && currentDepth === maxDepth`) and only to the first `searchContext.exactRootLimit` root moves (`exactThisMove = useExactRoot && (exactRootLimit <= 0 \\|\\| i < exactRootLimit)`). `exactRootLimit` defaults to `0`, which means no limit (see `src/engine/js/search-context.js`). |\n| `excludedRootMoves` | An array of `{from:{r,c}, to:{r,c}}`. Entries without `from`/`to` are dropped. The rest are encoded with `encodeMove(from, to)` = `((from.r*9+from.c) << 7) \\| (to.r*9+to.c)` into `excludedRootMoveSet` (a `Set`). Matching moves are skipped during root move generation and are also rejected as book moves. |\n\n\n## 2. Setup phase (L4356–L4431)\n\n1. **Excluded set** (L4356): builds `excludedRootMoveSet`.\n2. **Side and stage** (L4362–L4363): `side = colorToSide(turn)` and `gameStage = getGameStage()`. `getGameStage` currently always returns `'early'`.\n3. **Piece state** (L4364): `activeSearchPieceState = loadSearchPieceState(retainedSearchPieceState, board, gameStage)`. The result is aliased as `rootPieceState`.\n4. **Opening book** (L4366–L4392): calls `openingBook.getBookMoveFromState(rootPieceState, ply)`. A book move is used only if all of these hold:\n   - the mover belongs to `side`\n   - it is not in `excludedRootMoveSet`\n   - `getValidMovesFromSq(fromSq)` contains `toSq`\n\n   In that case the function calls `resetPerfStats()`, clears `activeSearchPieceState`, and **returns early** with `bestMove: encodedBook`, `fromBook: true`, `completedDepth: 0`, `thinkingTime: 0`, and empty sequences and score lists.\n5. **Perf / progress** (L4395–L4405): `resetPerfStats()`, `snapshotLeafWeights()`, `startTime = Date.now()`, and a `reportSearchProgress({phase:'root-eval'})` event.\n6. **Transposition table** (L4406–L4424): `transpositionTable.resetStats()`, then builds `ttReuseScope` from `searchContext.ttReuseScope`, turn, mode (`analysis`/`play`), stage and `VALUE_WEIGHTS`. Then it calls `transpositionTable.beginSearch(true, searchContext.ttMaxAge, ttReuseScope, searchContext.ttSearchPly)`. `beginSearch` bumps the 8-bit generation. Entries from earlier searches stay readable only if the reuse scope matches and `searchPly === lastSearchPly + 2`, i.e. the same side to move two plies later.\n7. **Eval cache** (L4425): `clearEvalCache()` bumps `evalCacheGeneration`, which clears the cache in O(1). Only when the generation wraps to 0 does it reset to 1 and `fill(0)` the generation array.\n8. **Heuristics** (L4426–L4428): `maxDepth`, `activeSearchInitiator = side`, then `resetSearchHeuristics(maxDepth)`. This grows and nulls `killerMoves` to `maxDepth + 2` slots and zeroes (or allocates) `historyTable`.\n9. **Root check detection** (L4429–L4431): `rootInCheck = isKingInCheckFromState(rootPieceState, side)`. When in check, `collectCheckersFromState(..., scratchRootCheckInfo)` fills the module-level `scratchRootCheckInfo` (from `createCheckInfo()`, L4345), and that object is used as `rootCheckInfo`.\n\n\n## 3. Root move generation (L4434–L4486)\n\nRoot moves are stored in three **parallel arrays** that always move together:\n\n| Array | Contents |\n|---|---|\n| `rootMoves` | Encoded move integer `(fromSq << 7) \\| toSq` (square = `r*9 + c`). Decode with `from = m >>> 7` and `to = m & MOVE_TO_MASK` (`0x7f`). |\n| `rootScores` | Latest score per move. Starts at `0`. |\n| `rootSeqs` | PV (array of encoded moves) per move, or `null`. |\n\n- **In check:** `appendLegalEvasions(evasionMoves, side, rootPieceState, rootCheckInfo)` generates legal evasions only.\n- **Not in check:** scans every square (rows reversed for black). For each own piece, `getValidMovesFromSq(fromSq, false, null)` returns legal destinations.\n- Moves in `excludedRootMoveSet` are skipped in both cases.\n- **No moves** (mate/stalemate or all excluded): the function **returns early** with `bestMove: null`, `fromBook: false`, `completedDepth: 0`.\n\nIt then emits `reportSearchProgress({phase:'start'})` and defines two closures over the parallel arrays:\n\n- `sortRootMovesByScore()` (L4499): stable insertion sort by score, descending. Ties are broken by PV length. With a positive score the **shorter** PV goes first (faster win). With a negative score the **longer** PV goes first (slower loss). Score `0` keeps the existing order.\n- `promoteRootMove(preferred)` (L4528): moves `preferred` to index 0 and shifts the moves before it down. Scores and seqs move with it.\n\nFinally, the root hash is computed once: `rootHash = zobristHasher.hashFromSquareCodes(...)`, `rootTTKey = zobristHasher.ttKeyFromHash(rootHash, side)`, and `ttData = transpositionTable.data`."
+        },
+        {
+          "content": "Write this page from the verified reference below (checked against src/engine/js/search.js at commit 280f3aa). Keep every section, table and the control-flow diagram, and use the exact identifiers. Part 2 of 3:\n\n## 4. Iterative deepening loop (L4559–L4701)\n\n`for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++)`\n\n### 4.1 Move ordering (L4561–L4566)\n- Reads the TT move for the root: `transpositionTable.retrieve(rootTTKey)`, then `ttData[base + 1] >>> TT_W1_MOVE_SHIFT`.\n- `prevBest = rootMoves[0]` (the best move from the previous iteration).\n- `sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores, rootSeqs)` (L786) orders moves with `fillSearchMoveSortKeys` priorities (TT move first, then captures/history). It permutes `rootScores`/`rootSeqs` in step with the moves.\n- `promoteRootMove(prevBest)` puts the previous best move first, so it gets the full-window search.\n\n### 4.2 Per root move (L4572–L4680)\n1. Decodes `from`/`to` and reads `moverCode`/`capturedCode` from `activeSearchPieceState.squareCodes`.\n2. Calls `makeSearchMove(state, from, to, moverCode, capturedCode, fromR, fromC, toR, toC)`. The undo slots `scratchSearchUndoMoverSlot`/`scratchSearchUndoCapturedSlot` are copied to locals right away.\n3. Computes `childHash = childBoardHash(rootHash, from, to, moverCode, capturedCode)`: incremental Zobrist XOR of mover out, mover in, and the captured piece.\n4. `childInCheck = moveGivesCheck(state, nextSide, ...)` is passed to `alphaBeta` as `knownInCheck`.\n5. **PVS scoring** (`remaining = currentDepth - 1`):\n\n| Case | Window | Notes |\n|---|---|---|\n| First move (`i === 0` or `rootAlpha === -SEARCH_INF`) | `alphaBeta(remaining, -SEARCH_INF, +SEARCH_INF, ...)` | Full window. |\n| Later moves: exact-mode TT shortcut | none | If `exactThisMove` and the child TT entry is `TT_FLAG_EXACT`, has depth `>= remaining` and value `<= rootAlpha`, that value is used directly (`cachedExact`). |\n| Later moves: null-window probe | `(rootAlpha, rootAlpha + NULL_WINDOW)` | `NULL_WINDOW = 1`. |\n| Probe fails high (`probe > rootAlpha`) | re-search `(rootAlpha, +SEARCH_INF)` | The result is exact and may raise `rootAlpha`. |\n| Probe fails low, **exact mode** | TT EXACT substitution, otherwise tight-beta re-search `(-SEARCH_INF, rootAlpha + NULL_WINDOW)` | If that re-search returns `> rootAlpha` (unstable under NMP/TT), the function falls back to `probe` so the move does not wrongly overtake the best. |\n| Probe fails low, **play mode** | none | `score = probe` and `scoreIsExact = false`, so the score is only an upper bound. |\n\n6. **PV reconstruction** (only when `useExactRoot`): `sequence = [move]`, then `appendPvFromTt(sequence, nextSide, childHash, currentDepth - 1)` (L4307) follows TT best moves. It plays each move on the live state, stops on a missing, illegal, or self-check move, then unmakes everything. The result goes into `rootSeqs[i]`. In play mode `rootSeqs` stays `null`, so `moveSequence` is `[]`.\n7. Calls `unmakeSearchMove(state, from, to, undoMoverSlot, undoCapturedSlot, ...)`.\n8. **Score write-back:**\n   - exact score: `rootScores[i] = score`, and `rootAlpha = max(rootAlpha, score)`\n   - upper bound: the previous iteration's score is kept, but if it is above `rootAlpha` it is clamped to `rootAlpha - 1`. Otherwise stale scores would pollute the next iteration's ordering.\n\n### 4.3 End of iteration (L4683–L4700)\n- `sortRootMovesByScore()`, then `completedDepth = currentDepth`.\n- `reportSearchProgress({phase:'depth', completedDepth, bestMove, score})`.\n- `transpositionTable.store(rootTTKey, currentDepth, rootScores[0], TT_FLAG_EXACT, rootMoves[0])` saves the root best move as EXACT, so the next iteration can order by it."
+        },
+        {
+          "content": "Write this page from the verified reference below (checked against src/engine/js/search.js at commit 280f3aa). Keep every section, table and the control-flow diagram, and use the exact identifiers. Part 3 of 3:\n\n## 5. Result assembly (L4703–L4729)\n\n```js\n{\n  bestMove,            // rootMoves[0] (encoded) or null\n  secondBestMove,      // rootMoves[1] or null\n  moveSequence,        // rootSeqs[0] || []\n  secondMoveSequence,  // rootSeqs[1] || []\n  bestMoveScore,       // rootScores[0]\n  secondBestMoveScore, // rootScores[1]\n  allMovesWithScores,  // rootMoves.map((move, i) => ({ move, score: rootScores[i], moveSequence: rootSeqs[i] || [] }))\n  completedDepth,      // last finished iteration\n  fromBook: false,\n  thinkingTime         // Date.now() - startTime\n}\n```\n\n`activeSearchPieceState` is reset to `null` before every return.\n\n\n## 6. Key data structures\n\n| Structure | Defined at | Type / layout | Role in the hot path |\n|---|---|---|---|\n| `rootMoves` / `rootScores` / `rootSeqs` | L4434 (local) | Parallel JS arrays: encoded move, score, PV or `null` | Root move list. They are reordered together by `sortRootSearchMoves`, `promoteRootMove` and `sortRootMovesByScore`. |\n| `transpositionTable` | L3400 (`class TranspositionTable`, L3048) | `Uint32Array(size << 1)`, `TT_DEFAULT_SIZE = 1 << 22` slots, 2 words per slot. **word0:** key16 (0–15), gen (16–23), flag (24–25), keyHigh (26), depth (27–31). **word1:** value18 (0–17, signed), move (18–31). Indexed by the Zobrist TT key, `key & mask`. | Depth/flag/value/best move per position. `retrieve()` returns the slot base or `-1`. Generation-based O(1) clear. Supplies root TT-move ordering, the exact-mode child lookups, and the PV walk. |\n| `evalCacheKeys` / `evalCacheValues` / `evalCacheGenerations` | L3406–L3408 | `Int32Array`, `Int32Array`, `Uint8Array` with `EVAL_CACHE_SIZE = 1 << 20` entries, direct-mapped (`& EVAL_CACHE_MASK`), full-key check | Leaf evaluation cache. `clearEvalCache()` only bumps `evalCacheGeneration`. |\n| `killerMoves` | L3439 | Array of `[move, move]` pairs indexed by depth | Quiet-move cutoff memory. Reset per search by `resetSearchHeuristics`. |\n| `historyTable` | L3440 / L3453 | `Int32Array(HISTORY_TABLE_SIZE)`, `HISTORY_TABLE_SIZE = REL_SQUARES << 7`, indexed by move | History heuristic for quiet-move ordering. Zeroed per search. |\n| `LMR_REDUCTION` | L3426 | `Int8Array((32 + 1) * 65)`, precomputed `(log(d) * log(m) / ln2) \\| 0` | Late-move reduction lookup, so the hot path never calls `Math.log`. |\n| `playStagedMoveBuffers` | L3436 | Array of move arrays indexed by `plyFromRoot` | One reusable move list per `alphaBeta` stack level. Avoids allocation during staged move generation. |\n| `activeSearchPieceState` | L206 | Search piece state (`squareCodes`, `squareToSlot`, occupancy, …) loaded into `retainedSearchPieceState` | The single mutable board for the search. `makeSearchMove`/`unmakeSearchMove` update it in place. Reset to `null` on return. |\n| `scratchRootCheckInfo` | L4345 | `createCheckInfo()` object | Root checker info, reused across calls. |\n\n\n## 7. Control flow summary\n\n```\ngetBestMove(board, turn, depth, ply, exactRootScores, excludedRootMoves)\n│\n├─ build excludedRootMoveSet\n├─ side, gameStage, loadSearchPieceState\n├─ opening book lookup ──(valid book move)──▶ return { fromBook: true }\n├─ resetPerfStats / beginSearch(TT) / clearEvalCache / resetSearchHeuristics\n├─ root check detection → scratchRootCheckInfo\n├─ root move generation → rootMoves / rootScores / rootSeqs\n│        └─(none)──▶ return { bestMove: null }\n├─ rootHash, rootTTKey\n│\n├─ for currentDepth = 1 .. maxDepth            (iterative deepening)\n│     ├─ reorder: sortRootSearchMoves(ttMove) + promoteRootMove(prevBest)\n│     ├─ for each root move                    (PVS)\n│     │     make → childBoardHash → moveGivesCheck\n│     │     first: full window │ others: null-window probe → re-search on fail-high\n│     │     exact mode: TT EXACT / tight-beta re-search on fail-low\n│     │     play mode: fail-low = upper bound (scoreIsExact = false)\n│     │     exact mode: appendPvFromTt → rootSeqs[i]\n│     │     unmake → update rootScores / rootAlpha\n│     ├─ sortRootMovesByScore()\n│     └─ transpositionTable.store(root, EXACT, rootMoves[0])\n│\n└─ assemble result { bestMove, secondBestMove, allMovesWithScores, completedDepth, fromBook: false, thinkingTime }\n```"
+        }
+      ]
+    },
+    {
+      "title": "Evaluation Heuristics",
+      "purpose": "Static evaluation: material, position, threat, safety and mobility terms, VALUE_WEIGHTS, and SEE",
+      "parent": "Chess Engine"
+    },
+    {
+      "title": "Opening Book",
+      "purpose": "The opening book in src/engine/js/opening-book.js and src/openingBookData.ts",
+      "parent": "Chess Engine"
+    },
+    {
+      "title": "Worker & Communication Layer",
+      "purpose": "How the React thread talks to the engine Web Worker"
+    },
+    {
+      "title": "Web Worker Engine Interface",
+      "purpose": "src/worker/chess-worker.ts and its constructors: request handling and how it drives the engine",
+      "parent": "Worker & Communication Layer"
+    },
+    {
+      "title": "Wire Protocol & Codec",
+      "purpose": "Worker message types in src/engine/protocol.ts and the compact board/move codecs in src/engine/codec.ts",
+      "parent": "Worker & Communication Layer"
+    },
+    {
+      "title": "User Interface",
+      "purpose": "Overview of the React UI (src/AppUI.tsx) and component hierarchy"
+    },
+    {
+      "title": "App Orchestration & Game State",
+      "purpose": "src/App.tsx: game state, game modes (AI, local), setup mode, audio and worker orchestration",
+      "parent": "User Interface"
+    },
+    {
+      "title": "Board Rendering Components",
+      "purpose": "ChessBoard, BoardStaticLayer, ChessPiece, skins, animations and icons in src/components",
+      "parent": "User Interface"
+    },
+    {
+      "title": "Panels & Chrome",
+      "purpose": "GameChrome, EvaluationPanel, CapturedPiecesPanel and other non-board UI panels",
+      "parent": "User Interface"
+    },
+    {
+      "title": "Game Rules & Domain Logic",
+      "purpose": "Domain types and rule logic in src/domain"
+    },
+    {
+      "title": "Repetition, Long Check & Long Chase",
+      "purpose": "Repetition detection, long check and long chase rules in src/domain/repetition.ts and src/domain/position-hash.js",
+      "parent": "Game Rules & Domain Logic"
+    },
+    {
+      "title": "Online Multiplayer",
+      "purpose": "P2P online play over WebRTC"
+    },
+    {
+      "title": "PeerSession & Signaling",
+      "purpose": "src/net/PeerSession.ts, room codes (roomCode.ts) and ICE servers (iceServers.ts)",
+      "parent": "Online Multiplayer"
+    },
+    {
+      "title": "Lobby & Room UX",
+      "purpose": "src/components/LobbyScreen.tsx: lobby states, nicknames and room-code URL handling",
+      "parent": "Online Multiplayer"
+    },
+    {
+      "title": "Build, Deployment & Benchmarking",
+      "purpose": "Builds, GitHub Pages deployment, benchmarks and tests"
+    },
+    {
+      "title": "Build Configuration & Distributions",
+      "purpose": "vite.config.ts, vite.config.standalone.ts, build-*.bat, docs/ (GitHub Pages) and dist-standalone/",
+      "parent": "Build, Deployment & Benchmarking"
+    },
+    {
+      "title": "Benchmarking & Profiling",
+      "purpose": "scripts/bench-search.mjs, scripts/bench-worker.mjs and benchmark.bat",
+      "parent": "Build, Deployment & Benchmarking"
+    },
+    {
+      "title": "Testing",
+      "purpose": "Tests such as src/domain/repetition.test.mjs and src/worker/chess-worker.test.mjs",
+      "parent": "Build, Deployment & Benchmarking"
+    },
+    {
+      "title": "Glossary",
+      "purpose": "Glossary of Xiangqi, search-engine and data-representation terms used in the codebase"
+    }
+  ]
+}
