@@ -811,7 +811,7 @@ const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
     return moves;
 };
 
-const sortRangeStagedMove = (moves, start, end, killers) => {
+const sortRangeStagedMoves = (moves, start, end, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
@@ -2154,7 +2154,7 @@ const appendTrueStagedMoves = (
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    sortRangeStagedMove(moves, start, moves.length, killers);
+    sortRangeStagedMoves(moves, start, moves.length, killers);
     return moves.length - start;
 };
 

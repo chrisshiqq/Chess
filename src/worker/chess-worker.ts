@@ -2,14 +2,28 @@
 
 import { decodeSquares, formatMove } from '../engine/codec.ts';
 import type { EncodedMove, WireBoard, WorkerRequest, WorkerResponse } from '../engine/protocol.ts';
+
 import {
   evaluateBoard,
   evaluatePiece,
-  evaluatePieceInfo,
+  hydrateRelationsFromMasks
+} from '../engine/js/search-ui.js';
+
+const evaluatePieceInfo = (pieceInfo) => ({
+  material: pieceInfo.materialValue * VALUE_WEIGHTS.material,
+  position: pieceInfo.positionValue * VALUE_WEIGHTS.position,
+  mobility: pieceInfo.mobilityValue * VALUE_WEIGHTS.mobility,
+  threat: pieceInfo.threatValue * VALUE_WEIGHTS.threat,
+  safety: pieceInfo.safetyValue * VALUE_WEIGHTS.safety
+});
+
+import {
+  VALUE_WEIGHTS,
   getGameStage,
-  hydrateRelationsFromMasks,
   setValueWeights
-} from '../engine/js/evaluation.js';
+} from '../engine/js/search.js';
+
+
 import { 
   getValidMoves,
   checkGameState,
