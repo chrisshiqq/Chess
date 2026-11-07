@@ -293,32 +293,32 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
         for (let c = 0; c < COLS; c++) {
             const code = cellToSearchCode(board[r][c]);
             if (!code) continue;
+            const sq = r * 9 + c;
             const slot = slotCount++;
-            if ((code & 7) === 1) {
-                if (code < 8) redGeneralSq = r * 9 + c;
-                else blackGeneralSq = r * 9 + c;
-            }
-            pieceCodes[slot] = code;
-            pieceSquares[slot] = r * 9 + c;
-            if (code < 8) redAliveMask = (redAliveMask | (1 << slot)) >>> 0;
-            else blackAliveMask = (blackAliveMask | (1 << slot)) >>> 0;
             const pieceType = code & 7;
-            if (pieceType === 2 || pieceType === 3 || pieceType === 6) {
-                nullMoveMaterialMask = (nullMoveMaterialMask | (1 << slot)) >>> 0;
-            }
-            squareToSlot[r * 9 + c] = slot;
-            squareCodes[r * 9 + c] = code;
+            const slotBit = 1 << slot;
+            pieceCodes[slot] = code;
+            pieceSquares[slot] = sq;
+            squareToSlot[sq] = slot;
+            squareCodes[sq] = code;
             rowOccupancy[r] |= 1 << c;
             colOccupancy[c] |= 1 << r;
-            if (code < 8) redRowOccupancy[r] |= 1 << c;
-            else blackRowOccupancy[r] |= 1 << c;
-            evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[code][r * 9 + c];
-            const materialValue = materialValues[code & 7];
-            const positionValue = SEARCH_POSITION_VALUES[code][r * 9 + c];
+            evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[code][sq];
+            if (pieceType === 2 || pieceType === 3 || pieceType === 6) {
+                nullMoveMaterialMask = (nullMoveMaterialMask | slotBit) >>> 0;
+            }
+            const materialValue = materialValues[pieceType];
+            const positionValue = SEARCH_POSITION_VALUES[code][sq];
             if (code < 8) {
+                if (pieceType === 1) redGeneralSq = sq;
+                redAliveMask = (redAliveMask | slotBit) >>> 0;
+                redRowOccupancy[r] |= 1 << c;
                 netMaterial += materialValue;
                 netPosition += positionValue;
             } else {
+                if (pieceType === 1) blackGeneralSq = sq;
+                blackAliveMask = (blackAliveMask | slotBit) >>> 0;
+                blackRowOccupancy[r] |= 1 << c;
                 netMaterial -= materialValue;
                 netPosition -= positionValue;
             }
