@@ -202,6 +202,10 @@ let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Int32Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
+let occupancyScanGen = 0;
+let ownScanCacheGen = -1;
+let ownScanCacheRed = -1;
+let ownScanCacheN = 0;
 
 let activeSearchPieceState = null;
 let activeSearchInitiator = SIDE_RED;
@@ -241,6 +245,8 @@ const createEmptySearchPieceState = () => ({
     squareCodes: new Uint8Array(REL_SQUARES),
     rowOccupancy: new Uint16Array(ROWS),
     colOccupancy: new Uint16Array(COLS),
+    redRowOccupancy: new Uint16Array(ROWS),
+    blackRowOccupancy: new Uint16Array(ROWS),
     pieceCodes: new Uint8Array(32),
     pieceSquares: new Uint8Array(32),
     redAliveMask: 0,
@@ -260,6 +266,8 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const squareCodes = state.squareCodes;
     const rowOccupancy = state.rowOccupancy;
     const colOccupancy = state.colOccupancy;
+    const redRowOccupancy = state.redRowOccupancy;
+    const blackRowOccupancy = state.blackRowOccupancy;
     const pieceCodes = state.pieceCodes;
     const pieceSquares = state.pieceSquares;
     const materialValues = searchMaterialTable(gameStage);
@@ -267,6 +275,8 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     squareCodes.fill(0);
     rowOccupancy.fill(0);
     colOccupancy.fill(0);
+    redRowOccupancy.fill(0);
+    blackRowOccupancy.fill(0);
     pieceCodes.fill(0);
     pieceSquares.fill(0);
     state.materialValues = materialValues;
@@ -300,6 +310,8 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
             squareCodes[r * 9 + c] = code;
             rowOccupancy[r] |= 1 << c;
             colOccupancy[c] |= 1 << r;
+            if (code < 8) redRowOccupancy[r] |= 1 << c;
+            else blackRowOccupancy[r] |= 1 << c;
             evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[code][r * 9 + c];
             const materialValue = materialValues[code & 7];
             const positionValue = SEARCH_POSITION_VALUES[code][r * 9 + c];
@@ -322,6 +334,7 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     state.blackGeneralSq = blackGeneralSq;
     state.evalVerificationHash = evalVerificationHash;
     state.slotCount = slotCount;
+    occupancyScanGen++;
     return state;
 };
 
@@ -354,10 +367,13 @@ const makeSearchMove = (
 ) => {
     const moverSlot = state.squareToSlot[fromSq];
     const capturedSlot = state.squareToSlot[toSq];
+    const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
     scratchSearchUndoMoverSlot = moverSlot;
     scratchSearchUndoCapturedSlot = capturedSlot;
+    occupancyScanGen++;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
+    moverRowOccupancy[fromR] ^= 1 << fromC;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
         EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
     const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][toSq] -
@@ -382,9 +398,15 @@ const makeSearchMove = (
             if (capturedCode < 8) state.redGeneralSq = -1;
             else state.blackGeneralSq = -1;
         }
+        const capturedRowOccupancy = capturedCode < 8
+            ? state.redRowOccupancy
+            : state.blackRowOccupancy;
+        capturedRowOccupancy[toR] ^= 1 << toC;
+        moverRowOccupancy[toR] ^= 1 << toC;
     } else {
         state.rowOccupancy[toR] ^= 1 << toC;
         state.colOccupancy[toC] ^= 1 << toR;
+        moverRowOccupancy[toR] ^= 1 << toC;
     }
     state.pieceSquares[moverSlot] = toSq;
     state.squareToSlot[fromSq] = -1;
@@ -399,8 +421,11 @@ const makeSearchMove = (
 
 const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
     const moverCode = state.pieceCodes[moverSlot];
+    const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
+    occupancyScanGen++;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
+    moverRowOccupancy[fromR] ^= 1 << fromC;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
         EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
     const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][fromSq] -
@@ -428,9 +453,15 @@ const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, f
             if (capturedCode < 8) state.redGeneralSq = toSq;
             else state.blackGeneralSq = toSq;
         }
+        const capturedRowOccupancy = capturedCode < 8
+            ? state.redRowOccupancy
+            : state.blackRowOccupancy;
+        moverRowOccupancy[toR] ^= 1 << toC;
+        capturedRowOccupancy[toR] ^= 1 << toC;
     } else {
         state.rowOccupancy[toR] ^= 1 << toC;
         state.colOccupancy[toC] ^= 1 << toR;
+        moverRowOccupancy[toR] ^= 1 << toC;
         state.squareToSlot[toSq] = -1;
         state.squareCodes[toSq] = 0;
     }
@@ -1362,34 +1393,42 @@ const snapshotLeafWeights = () => {
 };
 
 const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
+    if (
+        ownScanCacheGen === occupancyScanGen &&
+        ownScanCacheRed === (isRed ? 1 : 0)
+    ) {
+        return ownScanCacheN;
+    }
     const squareToSlot = pieceState.squareToSlot;
-    const rowOccupancy = pieceState.rowOccupancy;
+    const rowOccupancy = isRed ? pieceState.redRowOccupancy : pieceState.blackRowOccupancy;
     const slots = scratchOwnScanSlots;
-    const alive = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
     let n = 0;
     if (isRed) {
         for (let r = 0; r < ROWS; r++) {
             let bits = rowOccupancy[r];
+            if (bits === 0) continue;
             const row = r * 9;
             while (bits !== 0) {
                 const bit = bits & -bits;
                 bits ^= bit;
-                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
-                if (slot >= 0 && (alive & (1 << slot)) !== 0) slots[n++] = slot;
+                slots[n++] = squareToSlot[row + (31 - Math.clz32(bit))];
             }
         }
     } else {
         for (let r = ROWS - 1; r >= 0; r--) {
             let bits = rowOccupancy[r];
+            if (bits === 0) continue;
             const row = r * 9;
             while (bits !== 0) {
                 const bit = bits & -bits;
                 bits ^= bit;
-                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
-                if (slot >= 0 && (alive & (1 << slot)) !== 0) slots[n++] = slot;
+                slots[n++] = squareToSlot[row + (31 - Math.clz32(bit))];
             }
         }
     }
+    ownScanCacheGen = occupancyScanGen;
+    ownScanCacheRed = isRed ? 1 : 0;
+    ownScanCacheN = n;
     return n;
 };
 
