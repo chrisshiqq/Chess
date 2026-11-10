@@ -74,7 +74,7 @@ const collectUiPiecesInfo = (gameStage) => {
     for (let slot = 0; slot < slotCount; slot++) {
         const code = pieceState.pieceCodes[slot];
         if (!code) continue;
-        const sq = pieceState.pieceSquares[slot];
+        const sq = pieceState.slotToSquare[slot];
         piecesInfo.push({
             pieceCode: code,
             r: SQ_ROW[sq],

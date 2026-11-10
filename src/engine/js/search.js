@@ -242,7 +242,7 @@ const createEmptySearchPieceState = () => ({
     rowOccupancy: new Uint16Array(ROWS),
     colOccupancy: new Uint16Array(COLS),
     pieceCodes: new Uint8Array(32),
-    pieceSquares: new Uint8Array(32),
+    slotToSquare: new Uint8Array(32),
     redAliveMask: 0,
     blackAliveMask: 0,
     nullMoveMaterialMask: 0,
@@ -261,14 +261,14 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const rowOccupancy = state.rowOccupancy;
     const colOccupancy = state.colOccupancy;
     const pieceCodes = state.pieceCodes;
-    const pieceSquares = state.pieceSquares;
+    const slotToSquare = state.slotToSquare;
     const materialValues = searchMaterialTable(gameStage);
     squareToSlot.fill(-1);
     squareCodes.fill(0);
     rowOccupancy.fill(0);
     colOccupancy.fill(0);
     pieceCodes.fill(0);
-    pieceSquares.fill(0);
+    slotToSquare.fill(0);
     state.materialValues = materialValues;
     let slotCount = 0;
     let netMaterial = 0;
@@ -289,7 +289,7 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
                 else blackGeneralSq = r * 9 + c;
             }
             pieceCodes[slot] = code;
-            pieceSquares[slot] = r * 9 + c;
+            slotToSquare[slot] = r * 9 + c;
             if (code < 8) redAliveMask = (redAliveMask | (1 << slot)) >>> 0;
             else blackAliveMask = (blackAliveMask | (1 << slot)) >>> 0;
             const pieceType = code & 7;
@@ -386,7 +386,7 @@ const makeSearchMove = (
         state.rowOccupancy[toR] ^= 1 << toC;
         state.colOccupancy[toC] ^= 1 << toR;
     }
-    state.pieceSquares[moverSlot] = toSq;
+    state.slotToSquare[moverSlot] = toSq;
     state.squareToSlot[fromSq] = -1;
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
@@ -397,8 +397,9 @@ const makeSearchMove = (
     }
 };
 
-const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, fromC, toR, toC) => {
-    const moverCode = state.pieceCodes[moverSlot];
+const unmakeSearchMove = (
+    state, fromSq, toSq, moverSlot, capturedSlot, moverCode, capturedCode, fromR, fromC, toR, toC
+) => {
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
@@ -408,7 +409,6 @@ const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, f
     if (moverCode < 8) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
-        const capturedCode = state.pieceCodes[capturedSlot];
         const capturedBit = 1 << capturedSlot;
         if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
         else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
@@ -434,7 +434,7 @@ const unmakeSearchMove = (state, fromSq, toSq, moverSlot, capturedSlot, fromR, f
         state.squareToSlot[toSq] = -1;
         state.squareCodes[toSq] = 0;
     }
-    state.pieceSquares[moverSlot] = fromSq;
+    state.slotToSquare[moverSlot] = fromSq;
     state.squareToSlot[fromSq] = moverSlot;
     state.squareCodes[fromSq] = moverCode;
     if ((moverCode & 7) === 1) {
@@ -690,7 +690,7 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
         );
         unmakeSearchMove(
             state, fromSq, toSq, scratchSearchUndoMoverSlot, scratchSearchUndoCapturedSlot,
-            fromR, fromC, toR, toC
+            moverCode, capturedCode, fromR, fromC, toR, toC
         );
         if (!illegal) validMoves.push(toSq);
     }
@@ -704,8 +704,7 @@ const captureSortScoreScratch = [];
 // 未将军：吃子、killer、history。被将：吃子先于走将。
 const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
     const pieceState = activeSearchPieceState;
-    const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = pieceState.pieceCodes;
+    const squareCodes = pieceState.squareCodes;
     const materialValues = pieceState.materialValues;
     const moveCount = moves.length;
 
@@ -713,8 +712,8 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
         const move = moves[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        const targetSlot = squareToSlot[toSq];
-        const hasTarget = targetSlot >= 0;
+        const targetCode = squareCodes[toSq];
+        const hasTarget = targetCode !== 0;
         let priority = 4;
         let score = 0;
 
@@ -722,19 +721,19 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
             priority = -1;
             score = 1000000;
         } else if (inCheck) {
-            const moverCode = pieceState.squareCodes[fromSq];
+            const moverCode = squareCodes[fromSq];
             const pieceValue = materialValues[moverCode & 7];
             if (hasTarget) {
                 priority = 2;
-                score = materialValues[pieceCodes[targetSlot] & 7] * 16 - pieceValue;
+                score = materialValues[targetCode & 7] * 16 - pieceValue;
             } else if ((moverCode & 7) === 1) {
                 priority = 3;
                 score = pieceValue;
             }
         } else if (hasTarget) {
             priority = 3;
-            score = materialValues[pieceCodes[targetSlot] & 7] * 16 -
-                materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+            score = materialValues[targetCode & 7] * 16 -
+                materialValues[squareCodes[fromSq] & 7];
         }
 
         if (priority >= 0) {
@@ -818,19 +817,18 @@ const sortRangeStagedMoves = (moves, start, end, killers) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
-    const squareToSlot = pieceState.squareToSlot;
-    const pieceCodes = pieceState.pieceCodes;
+    const squareCodes = pieceState.squareCodes;
     const materialValues = pieceState.materialValues;
 
     for (let index = start; index < end; index++) {
         const move = moves[index];
         const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        const targetSlot = squareToSlot[toSq];
+        const targetCode = squareCodes[toSq];
         let score = getHistoryScore(move);
-        if (targetSlot >= 0) {
-            score += materialValues[pieceCodes[targetSlot] & 7] * 16 -
-                materialValues[pieceCodes[squareToSlot[fromSq]] & 7];
+        if (targetCode !== 0) {
+            score += materialValues[targetCode & 7] * 16 -
+                materialValues[squareCodes[fromSq] & 7];
         } else if (move === killers[0]) {
             score += 8000;
         } else if (move === killers[1]) {
@@ -1326,14 +1324,14 @@ const applyPinnedGuardFilterToLeaf = (pieceState) => {
     if (relevantGuards === 0) return;
     const pinned = collectPinnedGuardSlots(pieceState, relevantGuards);
     if (pinned === 0) return;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     for (let i = 0; i < targetCount; i++) {
         const target = scratchPinnedGuardTargets[i];
         const guards = guardBySlot[target] >>> 0;
         let pinnedGuards = (guards & pinned) >>> 0;
         if (pinnedGuards === 0) continue;
         let drop = 0;
-        const targetSq = pieceSquares[target];
+        const targetSq = slotToSquare[target];
         while (pinnedGuards !== 0) {
             const bit = pinnedGuards & -pinnedGuards;
             pinnedGuards ^= bit;
@@ -2037,13 +2035,13 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const isRed = currentPlayer === SIDE_RED;
     const generalSq = isRed ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     const resolveCount = fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
 
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
-        const sq = pieceSquares[slot];
+        const sq = slotToSquare[slot];
         if (sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
             appendSearchPseudoMovesForPiece(moves, sq, pieceCodes[slot], pieceState, false);
         } else if (resolveCount > 0) {
@@ -2074,7 +2072,7 @@ const appendLegalEvasions = (out, color, pieceState, checkInfo) => {
         );
         unmakeSearchMove(
             pieceState, fromSq, toSq, scratchSearchUndoMoverSlot, scratchSearchUndoCapturedSlot,
-            fromR, fromC, toR, toC
+            moverCode, capturedCode, fromR, fromC, toR, toC
         );
         if (!unsafe) out.push(move);
     }
@@ -2089,13 +2087,13 @@ const appendGeneratedStagedMoves = (
     moves, start, currentPlayer, pieceState, capturesOnly, quietsOnly
 ) => {
     const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
     if (start === 0) {
         for (let i = 0; i < n; i++) {
             const slot = scratchOwnScanSlots[i];
             appendSearchPseudoMovesForPiece(
-                moves, pieceSquares[slot], pieceCodes[slot], pieceState,
+                moves, slotToSquare[slot], pieceCodes[slot], pieceState,
                 capturesOnly, null, quietsOnly
             );
         }
@@ -2108,7 +2106,7 @@ const appendGeneratedStagedMoves = (
         const slot = scratchOwnScanSlots[i];
         const pieceStart = moves.length;
         appendSearchPseudoMovesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState,
+            moves, slotToSquare[slot], pieceCodes[slot], pieceState,
             capturesOnly, null, quietsOnly
         );
         let write = pieceStart;
@@ -2126,9 +2124,8 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     if (!move || matchesStagedPrefix(moves, moves.length, move)) return false;
     const fromSq = move >>> 7;
     const toSq = move & MOVE_TO_MASK;
-    const slot = pieceState.squareToSlot[fromSq];
-    if (slot < 0) return false;
-    const pieceCode = pieceState.pieceCodes[slot];
+    const pieceCode = pieceState.squareCodes[fromSq];
+    if (!pieceCode) return false;
     if ((pieceCode < 8) !== (currentPlayer === SIDE_RED)) return false;
     const targetCode = pieceState.squareCodes[toSq];
     if (quietOnly && targetCode !== 0) return false;
@@ -2185,7 +2182,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     const rowOccupancy = pieceState.rowOccupancy;
     const colOccupancy = pieceState.colOccupancy;
     const attackBySlot = scratchLeafAttackBySlot;
@@ -2214,7 +2211,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     for (let slot = 0; slot < slotCount; slot++) {
         const bit = 1 << slot;
         if ((aliveMask & bit) === 0) continue;
-        const fromSq = pieceSquares[slot];
+        const fromSq = slotToSquare[slot];
         const pieceCode = pieceCodes[slot];
         const pieceType = pieceCode & 7;
         const isRed = pieceCode < 8;
@@ -2238,7 +2235,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                         }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
@@ -2262,7 +2259,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                         }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
@@ -2287,7 +2284,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                         }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 if (isRed) redMobility += mobilityValue;
@@ -2311,7 +2308,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                             attackedTargetMask |= 1 << targetSlot;
                             attackBySlot[targetSlot] |= bit;
                         }
-                        else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
+                            else if ((targetCode & 7) !== 1) guardBySlot[targetSlot] |= bit;
                     }
                 }
                 mobilityValue = openCount - occupied;
@@ -3803,13 +3800,13 @@ const generateQuiescenceMoves = (currentPlayer, destination = null) => {
     moves.length = 0;
     const pieceState = activeSearchPieceState;
     const pieceCodes = pieceState.pieceCodes;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     const isRed = currentPlayer === SIDE_RED;
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         appendScoredQuiescenceCapturesForPiece(
-            moves, pieceSquares[slot], pieceCodes[slot], pieceState
+            moves, slotToSquare[slot], pieceCodes[slot], pieceState
         );
     }
     if (searchProfile) perfStats.captureGenMs += performance.now() - __t0;
@@ -3826,7 +3823,7 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         return;
     }
     const isRed = currentPlayer === SIDE_RED;
-    const pieceSquares = pieceState.pieceSquares;
+    const slotToSquare = pieceState.slotToSquare;
     const pieceCodes = pieceState.pieceCodes;
     const squareCodes = pieceState.squareCodes;
     const materialValues = pieceState.materialValues;
@@ -3847,7 +3844,7 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         const slot = scratchOwnScanSlots[i];
         const attackerBit = 1 << slot;
         if ((attackerUnion & attackerBit) === 0) continue;
-        const fromSq = pieceSquares[slot];
+        const fromSq = slotToSquare[slot];
         const moverValue = materialValues[pieceCodes[slot] & 7];
         let targetBits = attacked;
         while (targetBits !== 0) {
@@ -3855,7 +3852,7 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
             targetBits ^= targetBit;
             const targetSlot = 31 - Math.clz32(targetBit);
             if ((attackBySlot[targetSlot] & attackerBit) === 0) continue;
-            const toSq = pieceSquares[targetSlot];
+            const toSq = slotToSquare[targetSlot];
             const targetCode = squareCodes[toSq];
             captureSortScoreScratch[moves.length] =
                 materialValues[targetCode & 7] * 16 - moverValue;
@@ -4009,7 +4006,10 @@ const quiescence = (
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
         if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+            unmakeSearchMove(
+                state, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
+                moverCode, capturedCode, fromR, fromC, toR, toC
+            );
             continue;
         }
         const nextHash = childBoardHash(
@@ -4028,7 +4028,10 @@ const quiescence = (
                 alpha, beta, nextPlayer, qsDepth - 1,
                 nextHash, qsPly + 1, childInCheck
             );
-        unmakeSearchMove(state, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(
+            state, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
+            moverCode, capturedCode, fromR, fromC, toR, toC
+        );
 
         if (maximizing) {
             if (value > bestEval) bestEval = value;
@@ -4178,7 +4181,10 @@ const alphaBeta = (
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
         if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
-            unmakeSearchMove(stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+            unmakeSearchMove(
+                stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
+                moverCode, capturedCode, fromR, fromC, toR, toC
+            );
             continue;
         }
         const nextHash = childBoardHash(
@@ -4262,7 +4268,10 @@ const alphaBeta = (
                 );
             }
         }
-        unmakeSearchMove(stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+        unmakeSearchMove(
+            stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
+            moverCode, capturedCode, fromR, fromC, toR, toC
+        );
 
         if (maximizing) {
             if (value > bestEval) {
@@ -4329,16 +4338,25 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
     const undoMoverSlot = scratchSearchUndoMoverSlot;
     const undoCapturedSlot = scratchSearchUndoCapturedSlot;
     if (moveReceivesCheck(state, currentTurn, from, to, true, null, fromR, fromC, toR, toC)) {
-      unmakeSearchMove(state, from, to, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+      unmakeSearchMove(
+        state, from, to, undoMoverSlot, undoCapturedSlot,
+        moverCode, capturedCode, fromR, fromC, toR, toC
+      );
       break;
     }
     sequence.push(move);
-    undo.push(from, to, undoMoverSlot, undoCapturedSlot, fromR, fromC, toR, toC);
+    undo.push(
+      from, to, undoMoverSlot, undoCapturedSlot, moverCode, capturedCode,
+      fromR, fromC, toR, toC
+    );
     hash = childBoardHash(hash, from, to, moverCode, capturedCode);
     currentTurn ^= 1;
   }
-  for (let i = undo.length - 8; i >= 0; i -= 8) {
-    unmakeSearchMove(state, undo[i], undo[i + 1], undo[i + 2], undo[i + 3], undo[i + 4], undo[i + 5], undo[i + 6], undo[i + 7]);
+  for (let i = undo.length - 10; i >= 0; i -= 10) {
+    unmakeSearchMove(
+      state, undo[i], undo[i + 1], undo[i + 2], undo[i + 3],
+      undo[i + 4], undo[i + 5], undo[i + 6], undo[i + 7], undo[i + 8], undo[i + 9]
+    );
   }
 };
 
@@ -4666,7 +4684,8 @@ const getBestMove = (
 
       unmakeSearchMove(
         activeSearchPieceState, rootFromSq, rootToSq,
-        rootUndoMoverSlot, rootUndoCapturedSlot, rootFromR, rootFromC, rootToR, rootToC
+        rootUndoMoverSlot, rootUndoCapturedSlot, moverCode, capturedCode,
+        rootFromR, rootFromC, rootToR, rootToC
       );
 
       if (scoreIsExact) {
