@@ -72,7 +72,7 @@ const collectUiPiecesInfo = (gameStage) => {
     const materialValues = searchMaterialTable(gameStage);
     const slotCount = pieceState ? pieceState.slotCount : 0;
     for (let slot = 0; slot < slotCount; slot++) {
-        const code = pieceState.pieceCodes[slot];
+        const code = pieceState.slotCodes[slot];
         if (!code) continue;
         const sq = pieceState.slotToSquare[slot];
         piecesInfo.push({
