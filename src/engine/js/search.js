@@ -374,10 +374,10 @@ const makeSearchMove = (
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     moverRowOccupancy[fromR] ^= 1 << fromC;
-    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
-        EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
-    const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][toSq] -
-        SEARCH_POSITION_VALUES[moverCode][fromSq];
+    const moverVerify = EVAL_VERIFY_HASH_BY_CODE[moverCode];
+    const moverPosition = SEARCH_POSITION_VALUES[moverCode];
+    state.evalVerificationHash ^= moverVerify[fromSq] ^ moverVerify[toSq];
+    const moverPositionDelta = moverPosition[toSq] - moverPosition[fromSq];
     if (moverCode < 8) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
@@ -427,10 +427,10 @@ const unmakeSearchMove = (
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
     moverRowOccupancy[fromR] ^= 1 << fromC;
-    state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[moverCode][fromSq] ^
-        EVAL_VERIFY_HASH_BY_CODE[moverCode][toSq];
-    const moverPositionDelta = SEARCH_POSITION_VALUES[moverCode][fromSq] -
-        SEARCH_POSITION_VALUES[moverCode][toSq];
+    const moverVerify = EVAL_VERIFY_HASH_BY_CODE[moverCode];
+    const moverPosition = SEARCH_POSITION_VALUES[moverCode];
+    state.evalVerificationHash ^= moverVerify[fromSq] ^ moverVerify[toSq];
+    const moverPositionDelta = moverPosition[fromSq] - moverPosition[toSq];
     if (moverCode < 8) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
@@ -609,14 +609,18 @@ const acquireCheckInfo = (pool, ply) => {
     if (!info) {
         info = createCheckInfo();
         pool[ply] = info;
-    } else {
-        info.count = 0;
     }
+    info.count = 0;
     return info;
 };
 
 const abCheckInfoPool = [];
 const qsCheckInfoPool = [];
+const fillCheckInfoPool = (pool, n) => {
+    for (let i = pool.length; i < n; i++) pool.push(createCheckInfo());
+};
+fillCheckInfoPool(abCheckInfoPool, 64);
+fillCheckInfoPool(qsCheckInfoPool, 64);
 const evasionResolveMask = new Uint8Array(REL_SQUARES);
 const evasionResolveScratch = new Uint8Array(REL_SQUARES);
 
@@ -3478,6 +3482,8 @@ const HISTORY_TABLE_SIZE = REL_SQUARES << 7;
 
 const resetSearchHeuristics = (maxDepth) => {
     const need = Math.max(2, (maxDepth | 0) + 2);
+    fillCheckInfoPool(abCheckInfoPool, need);
+    fillCheckInfoPool(qsCheckInfoPool, need);
     for (let i = killerMoves.length; i < need; i++) {
         killerMoves.push([null, null]);
     }
