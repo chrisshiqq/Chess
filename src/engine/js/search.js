@@ -202,6 +202,7 @@ let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Int32Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
+let scratchOwnScanMask = 0;
 let occupancyScanGen = 0;
 let ownScanCacheGen = -1;
 let ownScanCacheRed = -1;
@@ -1404,6 +1405,7 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
     const squareToSlot = pieceState.squareToSlot;
     const rowOccupancy = isRed ? pieceState.redRowOccupancy : pieceState.blackRowOccupancy;
     const slots = scratchOwnScanSlots;
+    scratchOwnScanMask = 0;
     let n = 0;
     if (isRed) {
         for (let r = 0; r < ROWS; r++) {
@@ -1413,7 +1415,9 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
             while (bits !== 0) {
                 const bit = bits & -bits;
                 bits ^= bit;
-                slots[n++] = squareToSlot[row + (31 - Math.clz32(bit))];
+                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
+                slots[n++] = slot;
+                scratchOwnScanMask |= 1 << slot;
             }
         }
     } else {
@@ -1424,7 +1428,9 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
             while (bits !== 0) {
                 const bit = bits & -bits;
                 bits ^= bit;
-                slots[n++] = squareToSlot[row + (31 - Math.clz32(bit))];
+                const slot = squareToSlot[row + (31 - Math.clz32(bit))];
+                slots[n++] = slot;
+                scratchOwnScanMask |= 1 << slot;
             }
         }
     }
@@ -3872,30 +3878,29 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const slotCodes = pieceState.slotCodes;
     const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
-    const n = collectOwnSlotsInScanOrder(pieceState, isRed);
-    let attackerUnion = 0;
-    let targets = attacked;
-    while (targets !== 0) {
-        const targetBit = targets & -targets;
-        attackerUnion |= attackBySlot[31 - Math.clz32(targetBit)];
-        targets ^= targetBit;
-    }
-    if (attackerUnion === 0) {
+    const ownCount = collectOwnSlotsInScanOrder(pieceState, isRed);
+    const ownerMask = scratchOwnScanMask >>> 0;
+    if (ownerMask === 0 || ownCount === 0) {
         if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
         return;
     }
-    for (let i = 0; i < n; i++) {
-        const slot = scratchOwnScanSlots[i];
-        const attackerBit = 1 << slot;
-        if ((attackerUnion & attackerBit) === 0) continue;
-        const fromSq = slotToSquare[slot];
-        const moverValue = materialValues[slotCodes[slot] & 7];
-        let targetBits = attacked;
-        while (targetBits !== 0) {
-            const targetBit = targetBits & -targetBits;
-            targetBits ^= targetBit;
-            const targetSlot = 31 - Math.clz32(targetBit);
-            if ((attackBySlot[targetSlot] & attackerBit) === 0) continue;
+
+    // Walk only attacked targets and their actual attackers. This avoids the
+    // previous O(ownPieces * attackedTargets) scan where each own slot re-checked
+    // every target bit even when that slot could not possibly attack it.
+    let targetBits = attacked;
+    while (targetBits !== 0) {
+        const targetBit = targetBits & -targetBits;
+        targetBits ^= targetBit;
+        const targetSlot = 31 - Math.clz32(targetBit);
+        let attackerMask = attackBySlot[targetSlot] >>> 0;
+        attackerMask &= ownerMask;
+        while (attackerMask !== 0) {
+            const attackerBit = attackerMask & -attackerMask;
+            attackerMask ^= attackerBit;
+            const attackerSlot = 31 - Math.clz32(attackerBit);
+            const fromSq = slotToSquare[attackerSlot];
+            const moverValue = materialValues[slotCodes[attackerSlot] & 7];
             const toSq = slotToSquare[targetSlot];
             captureSortScoreScratch[moves.length] =
                 materialValues[slotCodes[targetSlot] & 7] * 16 - moverValue;
