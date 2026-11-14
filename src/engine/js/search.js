@@ -194,8 +194,6 @@ const createRelationBoardInfo = () => {
 
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
-const scratchLeafTargetSlots = new Uint8Array(32);
-const scratchLeafAttackerSlots = new Uint8Array(32);
 const scratchPinRank = new Int8Array(32);
 const scratchPinFile = new Int8Array(32);
 const scratchPinOnlySq = new Int8Array(32);
@@ -3880,7 +3878,6 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const slotCodes = pieceState.slotCodes;
     const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
-    const ownSlots = scratchOwnScanSlots;
     const ownCount = collectOwnSlotsInScanOrder(pieceState, isRed);
     const ownerMask = scratchOwnScanMask >>> 0;
     if (ownerMask === 0 || ownCount === 0) {
@@ -3888,54 +3885,22 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         return;
     }
 
-    // Phase 1: target-driven. Only keep attacked targets that actually have at
-    // least one legal attacker in the current side-to-move pool. This avoids the
-    // previous repeated check of every own slot against every target.
-    let targetCount = 0;
+    // Walk only attacked targets and their actual attackers. This avoids the
+    // previous O(ownPieces * attackedTargets) scan where each own slot re-checked
+    // every target bit even when that slot could not possibly attack it.
     let targetBits = attacked;
     while (targetBits !== 0) {
         const targetBit = targetBits & -targetBits;
         targetBits ^= targetBit;
         const targetSlot = 31 - Math.clz32(targetBit);
-        if ((attackBySlot[targetSlot] & ownerMask) !== 0) {
-            scratchLeafTargetSlots[targetCount++] = targetSlot;
-        }
-    }
-    if (targetCount === 0) {
-        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
-        return;
-    }
-
-    // Phase 2: attacker-pool-driven. Build a compact pool of own attackers that
-    // are relevant to these targets, then emit captures only from that pool.
-    let attackerCount = 0;
-    for (let i = 0; i < ownCount; i++) {
-        const slot = ownSlots[i];
-        const attackerBit = 1 << slot;
-        let participates = false;
-        for (let j = 0; j < targetCount; j++) {
-            if ((attackBySlot[scratchLeafTargetSlots[j]] & attackerBit) !== 0) {
-                participates = true;
-                break;
-            }
-        }
-        if (participates) {
-            scratchLeafAttackerSlots[attackerCount++] = slot;
-        }
-    }
-    if (attackerCount === 0) {
-        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
-        return;
-    }
-
-    for (let i = 0; i < attackerCount; i++) {
-        const attackerSlot = scratchLeafAttackerSlots[i];
-        const attackerBit = 1 << attackerSlot;
-        const fromSq = slotToSquare[attackerSlot];
-        const moverValue = materialValues[slotCodes[attackerSlot] & 7];
-        for (let j = 0; j < targetCount; j++) {
-            const targetSlot = scratchLeafTargetSlots[j];
-            if ((attackBySlot[targetSlot] & attackerBit) === 0) continue;
+        let attackerMask = attackBySlot[targetSlot] >>> 0;
+        attackerMask &= ownerMask;
+        while (attackerMask !== 0) {
+            const attackerBit = attackerMask & -attackerMask;
+            attackerMask ^= attackerBit;
+            const attackerSlot = 31 - Math.clz32(attackerBit);
+            const fromSq = slotToSquare[attackerSlot];
+            const moverValue = materialValues[slotCodes[attackerSlot] & 7];
             const toSq = slotToSquare[targetSlot];
             captureSortScoreScratch[moves.length] =
                 materialValues[slotCodes[targetSlot] & 7] * 16 - moverValue;
