@@ -637,8 +637,7 @@ const moveResolvesKnownChecks = (fromSq, toSq, generalSq, checkInfo) => {
 
 // 走子后是否使己方将不安全（飞将或被将）。调用前须已 makeSearchMove。
 const moveReceivesCheck = (
-    pieceState, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC,
-    knownChecksResolved
+    pieceState, color, fromSq, toSq, wasInCheck, checkInfo, fromR, fromC, toR, toC
 ) => {
     const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
     if (!wasInCheck) {
@@ -661,10 +660,7 @@ const moveReceivesCheck = (
     }
     if (checkInfo && checkInfo.count > 0) {
         if (generalSq === toSq) return isKingInCheckFromState(pieceState, color);
-        // knownChecksResolved=true 表示调用方（alphaBeta pre-check）已经过滤了
-        // 不 resolve 已知将军的着法，无需在此重复 moveResolvesKnownChecks
-        if (!knownChecksResolved &&
-            !moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
+        if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) return true;
         return moveTouchesLineOrUnblockedHorseCheck(
             pieceState, color !== SIDE_RED, generalSq,
             SQ_ROW[generalSq], SQ_COL[generalSq],
@@ -4106,16 +4102,19 @@ const alphaBeta = (
 
     const plyFromRoot = searchDepth - d;
     let checkInfo = null;
-    // generalSq 无条件预先读：避免循环内 if 分支额外开销
-    // JSC 上此只读一次，远少于循环内分支判断开销
-    const generalSq = currentPlayer === SIDE_RED
-        ? stagedPieceState.redGeneralSq
-        : stagedPieceState.blackGeneralSq;
+    let generalSq = 0;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
     const checkStarted = searchProfile ? performance.now() : 0;
     if (knownInCheck) {
+        generalSq = currentPlayer === SIDE_RED
+            ? stagedPieceState.redGeneralSq
+            : stagedPieceState.blackGeneralSq;
         checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
         collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
+    } else {
+        generalSq = currentPlayer === SIDE_RED
+            ? stagedPieceState.redGeneralSq
+            : stagedPieceState.blackGeneralSq;
     }
     if (searchProfile) perfStats.prepareCheckMs += performance.now() - checkStarted;
 
@@ -4206,19 +4205,15 @@ const alphaBeta = (
         // 预检查：被将时着法不解决已知将军 → 必然不合法，直接跳过（省 make/unmake）
         // 注意：如果着法移动己方将（fromSq === generalSq），generalSq 在 make 后变化，
         // moveReceivesCheck 会走不同分支，不能用 make 前的 generalSq 预判断
-        let knownChecksResolved = false;
-        if (knownInCheck && checkInfo && checkInfo.count > 0) {
-            if (fromSq !== generalSq) {
-                if (!moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
-                    continue;
-                }
-                knownChecksResolved = true;
-            }
+        if (knownInCheck && checkInfo && checkInfo.count > 0 &&
+            fromSq !== generalSq &&
+            !moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
+            continue;
         }
         makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC, knownChecksResolved)) {
+        if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
             unmakeSearchMove(
                 stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
                 moverCode, capturedCode, fromR, fromC, toR, toC
