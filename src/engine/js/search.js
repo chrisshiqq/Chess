@@ -672,6 +672,8 @@ const moveReceivesCheck = (
 
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
 // 搜索热路径使用延迟合法性（试走时检测），避免对剪枝未触及的着法做全量过滤
+const EMPTY_MOVE_LIST = [];
+const EMPTY_MOVE_SEQUENCE = [];
 const scratchLegalDests = [];
 const scratchLegalEncoded = [];
 const scratchLegalCheckInfo = createCheckInfo();
@@ -3811,10 +3813,10 @@ const appendScoredQuiescenceCapturesForPiece = (
     }
 };
 
-const generateQuiescenceMoves = (currentPlayer, destination = null) => {
+const generateQuiescenceMoves = (currentPlayer, destination = EMPTY_MOVE_LIST) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.captureGenCount++;
-    const moves = destination || [];
+    const moves = destination ?? EMPTY_MOVE_LIST;
     moves.length = 0;
     const pieceState = activeSearchPieceState;
     const slotCodes = pieceState.slotCodes;
@@ -4386,11 +4388,13 @@ const getBestMove = (
   exactRootScores = false,
   excludedRootMoves = []
 ) => {
-  const excludedRootMoveSet = new Set(
-    excludedRootMoves
-      .filter((move) => move?.from && move?.to)
-      .map((move) => encodeMove(move.from, move.to))
-  );
+  const excludedRootMoveSet = new Set();
+  for (let i = 0; i < excludedRootMoves.length; i++) {
+    const move = excludedRootMoves[i];
+    if (move && move.from != null && move.to != null) {
+      excludedRootMoveSet.add(encodeMove(move.from, move.to));
+    }
+  }
 
   const side = colorToSide(turn);
   const gameStage = getGameStage();
@@ -4736,15 +4740,15 @@ const getBestMove = (
 
   const bestMove = rootMoves.length ? rootMoves[0] : null;
   const secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
-  const bestMoveSequence = bestMove != null ? (rootSeqs[0] || []) : [];
-  const secondMoveSequence = secondBestMove != null ? (rootSeqs[1] || []) : [];
+  const bestMoveSequence = bestMove != null ? (rootSeqs[0] ?? EMPTY_MOVE_SEQUENCE) : EMPTY_MOVE_SEQUENCE;
+  const secondMoveSequence = secondBestMove != null ? (rootSeqs[1] ?? EMPTY_MOVE_SEQUENCE) : EMPTY_MOVE_SEQUENCE;
   const bestMoveScore = bestMove != null ? rootScores[0] : 0;
   const secondBestMoveScore = secondBestMove != null ? rootScores[1] : 0;
 
   const allMovesWithScores = rootMoves.map((move, index) => ({
     move,
     score: rootScores[index],
-    moveSequence: rootSeqs[index] || []
+    moveSequence: rootSeqs[index] ?? EMPTY_MOVE_SEQUENCE
   }));
 
   const result = {
