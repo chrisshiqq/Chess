@@ -4495,7 +4495,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         onChange={(e) => setPlayDepth(parseInt(e.target.value))}
                                         className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
                                     >
-                                        {[8, 9, 10, 11, 12].map((depth) => (
+                                        {[8, 9, 10, 11, 12, 13, 14].map((depth) => (
                                             <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
                                                 Depth {depth}
                                             </option>
@@ -4509,7 +4509,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         onChange={(e) => setAnalysisDepth(parseInt(e.target.value))}
                                         className="flex-1 py-2 px-3 bg-stone-700 hover:bg-stone-600 rounded-lg font-bold text-stone-300 text-xs border border-stone-600 transition-colors appearance-none cursor-pointer"
                                     >
-                                        {[6, 7, 8, 9, 10].map((depth) => (
+                                        {[8, 9, 10, 11, 12, 13, 14].map((depth) => (
                                             <option key={depth} value={depth} className="bg-stone-800 text-stone-300">
                                                 Depth {depth}
                                             </option>
