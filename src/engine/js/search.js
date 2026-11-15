@@ -151,47 +151,14 @@ const SEARCH_POSITION_VALUES = Array.from({ length: 16 }, () => new Int16Array(9
     }
 })();
 
-// 攻击位图：90 格用 3×Uint32。搜索叶只需「是否敌控」；点棋/UI 仍用控制者列表。
-const ATTACK_WORDS = 3;
-// UI 关系图：全盘空控 90 格 / 3×u32。叶评估不用这两块。
-const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
-const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
 // 叶评估专用：每方 1×u32，只记打到对方九宫空格（bit = sq&31，同位原 word0/word2）。
 const scratchLeafPalaceAttack = new Uint32Array(2);
 // Packed destinations/rays and inlined relation writes for search leaves.
 // 搜索期间维护紧凑棋子表，避免叶评估/着法准备反复扫描 10x9 对象棋盘。
 // 仅基准诊断开启：额外 performance.now 会影响绝对耗时，正式对弈保持关闭。
-const clearAttackBits = (bits) => {
-    bits[0] = 0;
-    bits[1] = 0;
-    bits[2] = 0;
-};
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
 let leafRelationScratchFresh = false;
-const scratchAttackMask = new Uint32Array(REL_SQUARES);  // 敌子所在格：谁在打它
-const scratchGuardMask = new Uint32Array(REL_SQUARES);   // 友军所在格：谁在保它
-const scratchControlMask = new Uint32Array(REL_SQUARES); // 空控格：谁控制它（对齐旧 boardInfo）
-
-const clearRelationMasks = (clearControl = true) => {
-    scratchAttackMask.fill(0);
-    scratchGuardMask.fill(0);
-    if (clearControl) scratchControlMask.fill(0);
-};
-
-const createRelationBoardInfo = () => {
-    clearRelationMasks(true);
-    clearAttackBits(scratchRedAttack);
-    clearAttackBits(scratchBlackAttack);
-    return {
-        attackMask: scratchAttackMask,
-        guardMask: scratchGuardMask,
-        controlMask: scratchControlMask,
-        redAttack: scratchRedAttack,
-        blackAttack: scratchBlackAttack
-    };
-};
-
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
 const scratchPinRank = new Int8Array(32);
@@ -4811,7 +4778,6 @@ export {
   collectCheckersFromState,
   collectPinnedGuardSlots,
   colorToSide,
-  createRelationBoardInfo,
   getBestMove,
   getGameStage,
   getValidMovesFromSq,

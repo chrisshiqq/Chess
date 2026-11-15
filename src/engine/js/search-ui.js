@@ -20,7 +20,6 @@ import {
     collectCheckersFromState,
     collectPinnedGuardSlots,
     colorToSide,
-    createRelationBoardInfo,
     getValidMovesFromSq,
     isKingInCheckFromState,
     perfStats,
@@ -30,6 +29,38 @@ import {
     searchMaterialTable,
     sideToColor
 } from './search.js';
+
+const ATTACK_WORDS = 3;
+const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
+const scratchBlackAttack = new Uint32Array(ATTACK_WORDS);
+const scratchAttackMask = new Uint32Array(REL_SQUARES);
+const scratchGuardMask = new Uint32Array(REL_SQUARES);
+const scratchControlMask = new Uint32Array(REL_SQUARES);
+
+const clearAttackBits = (bits) => {
+    bits[0] = 0;
+    bits[1] = 0;
+    bits[2] = 0;
+};
+
+const clearRelationMasks = (clearControl = true) => {
+    scratchAttackMask.fill(0);
+    scratchGuardMask.fill(0);
+    if (clearControl) scratchControlMask.fill(0);
+};
+
+const createRelationBoardInfo = () => {
+    clearRelationMasks(true);
+    clearAttackBits(scratchRedAttack);
+    clearAttackBits(scratchBlackAttack);
+    return {
+        attackMask: scratchAttackMask,
+        guardMask: scratchGuardMask,
+        controlMask: scratchControlMask,
+        redAttack: scratchRedAttack,
+        blackAttack: scratchBlackAttack
+    };
+};
 
 const ADVISOR_SQUARES = {
   red: new Set(['0,3', '0,5', '1,4', '2,3', '2,5']),
