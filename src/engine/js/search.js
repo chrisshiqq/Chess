@@ -717,7 +717,6 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
 const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
-const NO_KILLER_MOVES = [0, 0];
 
 // 未将军：吃子、killer、history。被将：吃子先于走将。
 const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
@@ -755,10 +754,10 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
         }
 
         if (priority >= 0) {
-            if (!hasTarget && move === killers[0]) {
+            if (!hasTarget && killers && move === killers[0]) {
                 priority = 2;
                 score += 8000;
-            } else if (!hasTarget && move === killers[1]) {
+            } else if (!hasTarget && killers && move === killers[1]) {
                 priority = 2;
                 score += 7000;
             }
@@ -801,7 +800,7 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
 
 // 根节点专用：着法与 rootScores / rootSeqs 同步重排。
 const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
-    fillSearchMoveSortKeys(moves, ttMove, NO_KILLER_MOVES, inCheck);
+    fillSearchMoveSortKeys(moves, ttMove, null, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
@@ -3130,7 +3129,7 @@ class TranspositionTable {
         this.data[base + 1] = (v & TT_W1_VALUE_MASK) | ((move & TT_W1_MOVE_MASK) << TT_W1_MOVE_SHIFT);
     }
 
-    store(key, depth, value, flag, bestMove = 0) {
+    store(key, depth, value, flag, bestMove = null) {
         const keyLow = key >>> 0;
         const key16 = keyLow >>> 16;
         const keyHigh = key < 0;
@@ -3142,7 +3141,7 @@ class TranspositionTable {
             ? slotGen === gen
             : slotGen !== 0 && ((gen - slotGen) >>> 0) <= this.retainedGenerations;
         const flagCode = flag;
-        const move = bestMove;
+        const move = bestMove || 0;
 
         if (live && (word0 & TT_W0_KEY_MASK) === key16 &&
             !!(word0 & TT_W0_KEYHIGH) === keyHigh) {
@@ -3481,11 +3480,11 @@ const resetSearchHeuristics = (maxDepth) => {
     fillCheckInfoPool(abCheckInfoPool, need);
     fillCheckInfoPool(qsCheckInfoPool, need);
     for (let i = killerMoves.length; i < need; i++) {
-        killerMoves.push([0, 0]);
+        killerMoves.push([null, null]);
     }
     for (let i = 0; i < need; i++) {
-        killerMoves[i][0] = 0;
-        killerMoves[i][1] = 0;
+        killerMoves[i][0] = null;
+        killerMoves[i][1] = null;
     }
     if (!historyTable || historyTable.length !== HISTORY_TABLE_SIZE) {
         historyTable = new Int32Array(HISTORY_TABLE_SIZE);
@@ -4000,7 +3999,7 @@ const quiescence = (
         : standPat;
 
     if (knownInCheck) {
-        sortSearchMoves(moves, 0, NO_KILLER_MOVES, false);
+        sortSearchMoves(moves, null, null, false);
     } else if (moveCount > 1) {
         sortCaptures(moves);
         if (collectSearchMetrics) perfStats.qsCaptureSortRan++;
@@ -4121,12 +4120,12 @@ const alphaBeta = (
 
     const ttKey = makeSearchTTKey(currentPlayer, boardHash);
     const ttBase = transpositionTable.retrieve(ttKey);
-    let ttMove = 0;
+    let ttMove = null;
     if (ttBase >= 0) {
         const ttData = transpositionTable.data;
         const ttWord0 = ttData[ttBase];
         const ttWord1 = ttData[ttBase + 1];
-        ttMove = ttWord1 >>> TT_W1_MOVE_SHIFT;
+        ttMove = (ttWord1 >>> TT_W1_MOVE_SHIFT) || null;
         if ((ttWord0 >>> TT_W0_DEPTH_SHIFT) >= d) {
             const ttFlag = (ttWord0 >>> TT_W0_FLAG_SHIFT) & 3;
             const ttValue = (ttWord1 << 14) >> 14;
@@ -4212,7 +4211,7 @@ const alphaBeta = (
     }
 
     let bestEval = maximizing ? -SEARCH_INF : SEARCH_INF;
-    let bestMove = 0;
+    let bestMove = null;
     let legalMovesFound = 0;
 
     for (let moveIndex = 0; ; moveIndex++) {
@@ -4649,7 +4648,7 @@ const getBestMove = (
   for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
     // 浅层最佳着 + TT 着排到最前，供本层 PVS 第一着全窗使用
     const ttBase = transpositionTable.retrieve(rootTTKey);
-    const ttMove = ttBase >= 0 ? ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT : 0;
+    const ttMove = ttBase >= 0 ? (ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT) || null : null;
     const prevBest = rootMoves[0];
     sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores, rootSeqs);
     // 上一层最佳着放第一，保证本层 PVS 首着全窗命中热路径
