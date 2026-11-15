@@ -670,6 +670,18 @@ const moveReceivesCheck = (
     return isKingInCheckFromState(pieceState, color);
 };
 
+// generateCheckEvasions 已确认该非将帅着法能解除所有已知将军；这里只检查走子后新暴露的攻击。
+const moveReceivesCheckAfterKnownResolution = (
+    pieceState, color, fromSq, toSq, fromR, fromC, toR, toC
+) => {
+    const generalSq = color === SIDE_RED ? pieceState.redGeneralSq : pieceState.blackGeneralSq;
+    return moveTouchesLineOrUnblockedHorseCheck(
+        pieceState, color !== SIDE_RED, generalSq,
+        SQ_ROW[generalSq], SQ_COL[generalSq],
+        fromR, fromC, toR, toC
+    );
+};
+
 // 从伪合法着法中过滤出不送将/不飞将的合法着法（UI/根节点/开局库校验）
 // 搜索热路径使用延迟合法性（试走时检测），避免对剪枝未触及的着法做全量过滤
 const EMPTY_MOVE_LIST = [];
@@ -3988,6 +4000,9 @@ const quiescence = (
     }
 
     const nextPlayer = currentPlayer ^ 1;
+    const checkedGeneralSq = knownInCheck
+        ? (currentPlayer === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq)
+        : -1;
     let bestEval = knownInCheck ? (maximizing ? -SEARCH_INF : SEARCH_INF) : standPat;
     let legalMovesFound = 0;
     for (let i = 0; i < moveCount; i++) {
@@ -4022,7 +4037,19 @@ const quiescence = (
         makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        if (moveReceivesCheck(state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
+        const knownChecksResolved = knownInCheck &&
+            checkInfo.count > 0 &&
+            fromSq !== checkedGeneralSq &&
+            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
+        const receivesCheck = knownChecksResolved
+            ? moveReceivesCheckAfterKnownResolution(
+                state, currentPlayer, fromSq, toSq, fromR, fromC, toR, toC
+            )
+            : moveReceivesCheck(
+                state, currentPlayer, fromSq, toSq, knownInCheck, checkInfo,
+                fromR, fromC, toR, toC
+            );
+        if (receivesCheck) {
             unmakeSearchMove(
                 state, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
                 moverCode, capturedCode, fromR, fromC, toR, toC
@@ -4102,6 +4129,11 @@ const alphaBeta = (
 
     const plyFromRoot = searchDepth - d;
     let checkInfo = null;
+    const checkedGeneralSq = knownInCheck
+        ? (currentPlayer === SIDE_RED
+            ? stagedPieceState.redGeneralSq
+            : stagedPieceState.blackGeneralSq)
+        : -1;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
     const checkStarted = searchProfile ? performance.now() : 0;
     if (knownInCheck) {
@@ -4197,7 +4229,19 @@ const alphaBeta = (
         makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        if (moveReceivesCheck(stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo, fromR, fromC, toR, toC)) {
+        const knownChecksResolved = knownInCheck &&
+            checkInfo.count > 0 &&
+            fromSq !== checkedGeneralSq &&
+            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
+        const receivesCheck = knownChecksResolved
+            ? moveReceivesCheckAfterKnownResolution(
+                stagedPieceState, currentPlayer, fromSq, toSq, fromR, fromC, toR, toC
+            )
+            : moveReceivesCheck(
+                stagedPieceState, currentPlayer, fromSq, toSq, knownInCheck, checkInfo,
+                fromR, fromC, toR, toC
+            );
+        if (receivesCheck) {
             unmakeSearchMove(
                 stagedPieceState, fromSq, toSq, undoMoverSlot, undoCapturedSlot,
                 moverCode, capturedCode, fromR, fromC, toR, toC
