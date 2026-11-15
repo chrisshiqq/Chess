@@ -4102,11 +4102,19 @@ const alphaBeta = (
 
     const plyFromRoot = searchDepth - d;
     let checkInfo = null;
+    let generalSq = 0;
     // TT 截断后才问是否被将。子节点带 knownInCheck；空步子节点为未将军。
     const checkStarted = searchProfile ? performance.now() : 0;
     if (knownInCheck) {
+        generalSq = currentPlayer === SIDE_RED
+            ? stagedPieceState.redGeneralSq
+            : stagedPieceState.blackGeneralSq;
         checkInfo = acquireCheckInfo(abCheckInfoPool, plyFromRoot);
         collectCheckersFromState(stagedPieceState, currentPlayer, checkInfo);
+    } else {
+        generalSq = currentPlayer === SIDE_RED
+            ? stagedPieceState.redGeneralSq
+            : stagedPieceState.blackGeneralSq;
     }
     if (searchProfile) perfStats.prepareCheckMs += performance.now() - checkStarted;
 
@@ -4194,6 +4202,14 @@ const alphaBeta = (
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const isCapture = capturedCode !== 0;
+        // 预检查：被将时着法不解决已知将军 → 必然不合法，直接跳过（省 make/unmake）
+        // 注意：如果着法移动己方将（fromSq === generalSq），generalSq 在 make 后变化，
+        // moveReceivesCheck 会走不同分支，不能用 make 前的 generalSq 预判断
+        if (knownInCheck && checkInfo && checkInfo.count > 0 &&
+            fromSq !== generalSq &&
+            !moveResolvesKnownChecks(fromSq, toSq, generalSq, checkInfo)) {
+            continue;
+        }
         makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
