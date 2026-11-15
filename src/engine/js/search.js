@@ -830,7 +830,7 @@ const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
     return moves;
 };
 
-const sortRangeStagedMoves = (moves, start, end, killers) => {
+const sortRangeStagedMoves = (moves, start, end) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
     const pieceState = activeSearchPieceState;
@@ -846,10 +846,6 @@ const sortRangeStagedMoves = (moves, start, end, killers) => {
         if (targetCode !== 0) {
             score += materialValues[targetCode & 7] * 16 -
                 materialValues[squareCodes[fromSq] & 7];
-        } else if (move === killers[0]) {
-            score += 8000;
-        } else if (move === killers[1]) {
-            score += 7000;
         }
         sortMoveScoreScratch[index] = score;
     }
@@ -2178,13 +2174,25 @@ const appendTrueStagedMoves = (
     if (stage === 1) {
         appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
         appendValidatedStagedSpecial(moves, killers[1], pieceState, currentPlayer, true);
+        const added = moves.length - start;
+        if (added === 2) {
+            const __t0 = searchProfile ? performance.now() : 0;
+            const first = moves[start];
+            const second = moves[start + 1];
+            if (getHistoryScore(second) + 7000 > getHistoryScore(first) + 8000) {
+                moves[start] = second;
+                moves[start + 1] = first;
+            }
+            if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
+        }
+        return added;
     } else if (stage === 2) {
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, true, false);
     } else if (stage === 3) {
         appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
-    sortRangeStagedMoves(moves, start, moves.length, killers);
+    sortRangeStagedMoves(moves, start, moves.length);
     return moves.length - start;
 };
 
