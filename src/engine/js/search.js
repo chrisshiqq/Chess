@@ -717,10 +717,9 @@ const filterLegalMoves = (fromSq, color, destSquares, wasInCheck, checkInfo) => 
 const sortMovePriorityScratch = [];
 const sortMoveScoreScratch = [];
 const captureSortScoreScratch = [];
-const NO_KILLER_MOVES = [0, 0];
 
 // 未将军：吃子、killer、history。被将：吃子先于走将。
-const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
+const fillSearchMoveSortKeys = (moves, ttMove, killer0, killer1, inCheck) => {
     const pieceState = activeSearchPieceState;
     const squareCodes = pieceState.squareCodes;
     const materialValues = pieceState.materialValues;
@@ -755,10 +754,10 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
         }
 
         if (priority >= 0) {
-            if (!hasTarget && move === killers[0]) {
+            if (!hasTarget && move === killer0) {
                 priority = 2;
                 score += 8000;
-            } else if (!hasTarget && move === killers[1]) {
+            } else if (!hasTarget && move === killer1) {
                 priority = 2;
                 score += 7000;
             }
@@ -770,10 +769,10 @@ const fillSearchMoveSortKeys = (moves, ttMove, killers, inCheck) => {
     }
 };
 
-const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
+const sortSearchMoves = (moves, ttMove, killer0, killer1, inCheck) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.sortMovesCount++;
-    fillSearchMoveSortKeys(moves, ttMove, killers, inCheck);
+    fillSearchMoveSortKeys(moves, ttMove, killer0, killer1, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
@@ -801,7 +800,7 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
 
 // 根节点专用：着法与 rootScores / rootSeqs 同步重排。
 const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
-    fillSearchMoveSortKeys(moves, ttMove, NO_KILLER_MOVES, inCheck);
+    fillSearchMoveSortKeys(moves, ttMove, 0, 0, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
@@ -4000,7 +3999,7 @@ const quiescence = (
         : standPat;
 
     if (knownInCheck) {
-        sortSearchMoves(moves, 0, NO_KILLER_MOVES, false);
+        sortSearchMoves(moves, 0, 0, 0, false);
     } else if (moveCount > 1) {
         sortCaptures(moves);
         if (collectSearchMetrics) perfStats.qsCaptureSortRan++;
@@ -4208,7 +4207,9 @@ const alphaBeta = (
             ttMove, killersAtDepth
         );
     } else {
-        moves = sortSearchMoves(moves, ttMove, killersAtDepth, knownInCheck);
+        moves = sortSearchMoves(
+            moves, ttMove, killersAtDepth[0], killersAtDepth[1], knownInCheck
+        );
     }
 
     let bestEval = maximizing ? -SEARCH_INF : SEARCH_INF;
