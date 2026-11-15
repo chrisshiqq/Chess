@@ -4,12 +4,13 @@ import { PieceMaterial } from './ui/types';
 import { ChessPiece, PieceMaterialDefs } from './components/ChessPiece';
 
 // ClockDisplay component
-const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount }: {
+const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount, onGeneralClick }: {
     color: Color, 
     time: number, 
     isActive: boolean, 
     redStepCount: number, 
-    blackStepCount: number
+    blackStepCount: number,
+    onGeneralClick?: () => void
 }) => {
     const materialIdPrefix = `clock-${useId().replace(/:/g, '')}`;
     return (
@@ -18,19 +19,40 @@ const ClockDisplay = ({ color, time, isActive, redStepCount, blackStepCount }: {
         ${isActive ? 'bg-stone-800 border-amber-500 ring-2 ring-amber-500/30 transform scale-105 z-10' : 'bg-stone-900/60 border-stone-700 opacity-70 grayscale'}
     `}>
         <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center">
-                <svg width="32" height="32" viewBox="-16 -16 32 32" className="overflow-visible">
-                    <PieceMaterialDefs idPrefix={materialIdPrefix} />
-                    <ChessPiece 
-                        type="general" 
-                        color={color} 
-                        size={32} 
-                        variant="normal"
-                        playerColor={color}
-                        materialIdPrefix={materialIdPrefix}
-                    />
-                </svg>
-            </div>
+            {onGeneralClick ? (
+                <button
+                    type="button"
+                    onClick={onGeneralClick}
+                    aria-label="Score"
+                    className="flex items-center justify-center cursor-pointer hover:scale-110 active:scale-95 transition-transform duration-150 touch-manipulation"
+                >
+                    <svg width="32" height="32" viewBox="-16 -16 32 32" className="overflow-visible">
+                        <PieceMaterialDefs idPrefix={materialIdPrefix} />
+                        <ChessPiece 
+                            type="general" 
+                            color={color} 
+                            size={32} 
+                            variant="normal"
+                            playerColor={color}
+                            materialIdPrefix={materialIdPrefix}
+                        />
+                    </svg>
+                </button>
+            ) : (
+                <div className="flex items-center justify-center">
+                    <svg width="32" height="32" viewBox="-16 -16 32 32" className="overflow-visible">
+                        <PieceMaterialDefs idPrefix={materialIdPrefix} />
+                        <ChessPiece 
+                            type="general" 
+                            color={color} 
+                            size={32} 
+                            variant="normal"
+                            playerColor={color}
+                            materialIdPrefix={materialIdPrefix}
+                        />
+                    </svg>
+                </div>
+            )}
             <span className={`text-base font-semibold ${isActive ? 'text-amber-400' : 'text-stone-500'} ml-3`}>
                 # {color === 'red' ? redStepCount : blackStepCount}
             </span>
@@ -84,10 +106,11 @@ const GameClockProvider: React.FC<{
     return <GameClockContext.Provider value={value}>{children}</GameClockContext.Provider>;
 };
 
-const GameClockDisplay = memo(({ color, redStepCount, blackStepCount }: {
+const GameClockDisplay = memo(({ color, redStepCount, blackStepCount, onGeneralClick }: {
     color: Color;
     redStepCount: number;
     blackStepCount: number;
+    onGeneralClick?: () => void;
 }) => {
     const clock = useContext(GameClockContext);
     if (!clock) throw new Error('GameClockDisplay must be rendered inside GameClockProvider');
@@ -98,6 +121,7 @@ const GameClockDisplay = memo(({ color, redStepCount, blackStepCount }: {
             isActive={clock.running && clock.activeColor === color}
             redStepCount={redStepCount}
             blackStepCount={blackStepCount}
+            onGeneralClick={onGeneralClick}
         />
     );
 });

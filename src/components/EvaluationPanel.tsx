@@ -61,58 +61,48 @@ export const EvaluationPanel: React.FC<EvaluationPanelProps> = ({
   
   return (
     <div className="bg-stone-900/50 p-2 rounded-lg border border-stone-700">
-      <div className="space-y-1">
-        {/* Evaluation Header */}
-        <div className="grid grid-cols-4 gap-0.5 text-center">
-          <span className={`text-xs font-bold leading-tight ${netWinScore > 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {netWinScore > 0 ? '+' : ''}{netWinScore.toFixed(1)}
-          </span>
-          <span className="text-xs text-stone-400 leading-tight">Before</span>
-          <span className="text-xs text-stone-400 leading-tight">After</span>
-          <span className="text-xs text-stone-400 leading-tight">Diff</span>
-        </div>
-        
-        {/* Total Score */}
-        <div className="grid grid-cols-4 gap-0.5 items-start">
-          <span className="text-xs font-semibold text-stone-300 leading-none">
-            {color.toUpperCase()}
-          </span>
-          <span className={`text-xs font-bold leading-none ${playerEval.pre.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {playerEval.pre.total.toFixed(1)}
-          </span>
-          <span className={`text-xs font-bold leading-none ${playerEval.post.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {playerEval.post.total.toFixed(1)}
-          </span>
-          <span className={`text-xs font-bold leading-none ${playerEval.diff.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {playerEval.diff.total > 0 ? '+' : ''}{playerEval.diff.total.toFixed(1)}
-          </span>
-        </div>
-        
-        {/* Score Breakdown */}
-        <div className="space-y-0.5 pt-0.5">
-          {/* 按指定顺序渲染评估项 */}
-          {['material', 'position', 'mobility', 'threat', 'safety'].map((key) => {
-            // 确保所有值都是数字类型，添加默认值
-            const preValue = Number(playerEval.pre[key as keyof PlayerEvaluation] || 0);
-            const postValue = Number(playerEval.post[key as keyof PlayerEvaluation] || 0);
-            const diffValue = Number(playerEval.diff[key as keyof PlayerEvaluation] || 0);
-            
-            return (
-              <div key={key} className="grid grid-cols-4 gap-0.5 items-start">
-                <span className="text-xs text-stone-400 capitalize leading-none">{key}</span>
-                <span className={`text-xs font-bold leading-none ${preValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {preValue.toFixed(1)}
-                </span>
-                <span className={`text-xs font-bold leading-none ${postValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {postValue.toFixed(1)}
-                </span>
-                <span className={`text-xs font-bold leading-none ${diffValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {diffValue > 0 ? '+' : ''}{diffValue.toFixed(1)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+      {/* 所有行共用一个 4 列 grid → 列严格对齐 */}
+      <div className="grid grid-cols-4 gap-0.5 text-xs">
+        {/* Header 行 */}
+        <span className={`font-bold leading-tight text-center ${netWinScore > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {netWinScore > 0 ? '+' : ''}{netWinScore.toFixed(1)}
+        </span>
+        <span className="text-stone-400 leading-tight text-center">Before</span>
+        <span className="text-stone-400 leading-tight text-center">After</span>
+        <span className="text-stone-400 leading-tight text-center">Diff</span>
+
+        {/* Total Score 行 */}
+        <span className="font-semibold text-stone-300 leading-none">
+          {color.toUpperCase()}
+        </span>
+        <span className={`font-bold leading-none text-right ${playerEval.pre.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {playerEval.pre.total.toFixed(1)}
+        </span>
+        <span className={`font-bold leading-none text-right ${playerEval.post.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {playerEval.post.total.toFixed(1)}
+        </span>
+        <span className={`font-bold leading-none text-right ${playerEval.diff.total > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {playerEval.diff.total > 0 ? '+' : ''}{playerEval.diff.total.toFixed(1)}
+        </span>
+
+        {/* Score Breakdown 行 */}
+        {(['material', 'position', 'mobility', 'threat', 'safety'] as const).map((key) => {
+          const preValue = Number(playerEval.pre[key] || 0);
+          const postValue = Number(playerEval.post[key] || 0);
+          const diffValue = Number(playerEval.diff[key] || 0);
+          return [
+            <span key={`l-${key}`} className="text-stone-400 capitalize leading-none">{key}</span>,
+            <span key={`p-${key}`} className={`font-bold leading-none text-right ${preValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {preValue.toFixed(1)}
+            </span>,
+            <span key={`o-${key}`} className={`font-bold leading-none text-right ${postValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {postValue.toFixed(1)}
+            </span>,
+            <span key={`d-${key}`} className={`font-bold leading-none text-right ${diffValue > 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {diffValue > 0 ? '+' : ''}{diffValue.toFixed(1)}
+            </span>,
+          ];
+        }).flat()}
       </div>
     </div>
   );

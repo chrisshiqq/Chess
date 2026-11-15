@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { GameClockDisplay } from '../AppUI';
 import { Color, PieceType } from '../domain/types';
 import { PieceMaterial } from '../ui/types';
@@ -127,11 +127,28 @@ export const PlayerSidebar = memo(({
     const ownPieces = topPanelColor === playerColor ? topPanelPieces : bottomPanelPieces;
     const dropFor = (color: Color) => color === 'red' ? onDropRed : onDropBlack;
 
+    // 竖屏时点击将帅图标 toggle 评分面板
+    const [openEvalColor, setOpenEvalColor] = useState<Color | null>(null);
+    const toggleEval = (color: Color) => {
+        setOpenEvalColor(prev => prev === color ? null : color);
+    };
+
     return (
         <div className="contents lg:flex lg:flex-col lg:h-[550px] lg:w-[300px] lg:order-1">
             <div className="order-1 w-full flex flex-col gap-2 lg:h-[275px] lg:justify-end">
-                <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                    <GameClockDisplay color={opponentColor} redStepCount={shownRedSteps} blackStepCount={shownBlackSteps} />
+                <div className={`relative ${isSetupMode ? 'hidden lg:block' : undefined}`}>
+                    <GameClockDisplay
+                        color={opponentColor}
+                        redStepCount={shownRedSteps}
+                        blackStepCount={shownBlackSteps}
+                        onGeneralClick={() => toggleEval(opponentColor)}
+                    />
+                    {/* 竖屏浮层：对手评分面板（在时钟下方） */}
+                    {openEvalColor === opponentColor && (
+                        <div className="lg:hidden absolute top-full left-0 right-0 mt-1 z-50 bg-stone-950/20 rounded-lg shadow-2xl border border-amber-500/40 animate-[fadeIn_0.15s_ease-out]">
+                            <EvaluationPanel color={opponentColor} evaluation={evaluation} />
+                        </div>
+                    )}
                 </div>
                 {!isSetupMode ? (
                     <div ref={opponentPanelRef} className="w-full">
@@ -160,8 +177,19 @@ export const PlayerSidebar = memo(({
                             onDragStart={onDragStart} onDrop={dropFor(bottomPanelColor)} recentlyCaptured={recentlyCaptured} />
                     </div>
                 )}
-                <div className={isSetupMode ? 'hidden lg:block' : undefined}>
-                    <GameClockDisplay color={playerColor} redStepCount={shownRedSteps} blackStepCount={shownBlackSteps} />
+                <div className={`relative ${isSetupMode ? 'hidden lg:block' : undefined}`}>
+                    <GameClockDisplay
+                        color={playerColor}
+                        redStepCount={shownRedSteps}
+                        blackStepCount={shownBlackSteps}
+                        onGeneralClick={() => toggleEval(playerColor)}
+                    />
+                    {/* 竖屏浮层：己方评分面板（在时钟上方） */}
+                    {openEvalColor === playerColor && (
+                        <div className="lg:hidden absolute bottom-full left-0 right-0 mb-1 z-50 bg-stone-950/20 rounded-lg shadow-2xl border border-amber-500/40 animate-[fadeIn_0.15s_ease-out]">
+                            <EvaluationPanel color={playerColor} evaluation={evaluation} />
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
