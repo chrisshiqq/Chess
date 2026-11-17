@@ -893,34 +893,6 @@ const App: React.FC = () => {
         return ensureWorker();
     }).current;
 
-    const stopAnalysis = () => {
-        const running = analysisSearchActiveRef.current;
-        analysisSearchActiveRef.current = false;
-        if (running) {
-            recreateWorker();
-        } else if (aiSearchListenerRef.current && workerRef.current) {
-            workerRef.current.removeEventListener('message', aiSearchListenerRef.current);
-            aiSearchListenerRef.current = null;
-        }
-        setIsThinking(false);
-        setIsAnalyzing(false);
-        setAnalysisMoves([]);
-        setSelectedAnalysisMove(null);
-        setIsPreviewing(false);
-        setOriginalBoardForPreview(null);
-        setIsAnalysisMode(false);
-        setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
-        const stoppedDebug = {
-            ...aiSearchDebugRef.current,
-            active: false,
-            lastEvent: running ? 'SEARCH aborted' : aiSearchDebugRef.current.lastEvent,
-            lastProgressAt: Date.now()
-        };
-        aiSearchDebugRef.current = stoppedDebug;
-        setAiSearchDebug(stoppedDebug);
-    };
-
     // The lobby does not need the 64 MiB TT and 17 MiB eval cache. Keep the
     // worker absent until a game starts, and release it when App unmounts.
     useEffect(() => {
@@ -2335,12 +2307,13 @@ const App: React.FC = () => {
     };
     onNetMessageRef.current = handleNetMessage;
 
-    const leaveToLobby = (message?: string) => {
+    const leaveToLobby = (message?: string | null) => {
+        const statusMessage = typeof message === 'string' ? message : null;
         destroyPeerSession();
         setOnlineInfo(null);
         onlineInfoRef.current = null;
         setConnectionStatus('idle');
-        setLobbyStatusMessage(message ?? null);
+        setLobbyStatusMessage(statusMessage);
         setAppScreen('lobby');
         clearRoomQuery();
         applyingRemoteRef.current = false;

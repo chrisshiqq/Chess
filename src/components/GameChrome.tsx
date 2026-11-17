@@ -47,7 +47,7 @@ export const GameModeNav = memo(({
                     </>
                 ) : 'Local game'}
             </span>
-            <button type="button" onClick={onLeave} className="text-rose-300 hover:text-rose-200 font-semibold">
+            <button type="button" onClick={() => onLeave()} className="text-rose-300 hover:text-rose-200 font-semibold">
                 Leave
             </button>
         </div>
