@@ -2112,11 +2112,9 @@ const matchesStagedPrefix = (moves, start, move) =>
 const appendGeneratedStagedMoves = (
     moves, start, currentPlayer, pieceState, capturesOnly, quietsOnly
 ) => {
-    const stage = capturesOnly ? 2 : 3;
     const slotCodes = pieceState.slotCodes;
     const slotToSquare = pieceState.slotToSquare;
     const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
-    if (collectSearchMetrics) perfStats.stagedStagePieces[stage] += n;
     if (start === 0) {
         for (let i = 0; i < n; i++) {
             const slot = scratchOwnScanSlots[i];
@@ -2148,36 +2146,6 @@ const appendGeneratedStagedMoves = (
     }
 };
 
-const generateAndSplitStagedMoves = (
-    moves, quietMoves, start, currentPlayer, pieceState
-) => {
-    const slotCodes = pieceState.slotCodes;
-    const slotToSquare = pieceState.slotToSquare;
-    const squareCodes = pieceState.squareCodes;
-    const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
-    if (collectSearchMetrics) perfStats.stagedStagePieces[2] += n;
-    quietMoves.length = 0;
-    const special0 = start > 0 ? moves[0] : -1;
-    const special1 = start > 1 ? moves[1] : -1;
-    const special2 = start > 2 ? moves[2] : -1;
-    for (let i = 0; i < n; i++) {
-        const slot = scratchOwnScanSlots[i];
-        const generatedStart = quietMoves.length;
-        appendSearchPseudoMovesForPiece(
-            quietMoves, slotToSquare[slot], slotCodes[slot], pieceState,
-            false, null, false
-        );
-        let quietWrite = generatedStart;
-        for (let read = generatedStart; read < quietMoves.length; read++) {
-            const move = quietMoves[read];
-            if (move === special0 || move === special1 || move === special2) continue;
-            if (squareCodes[move & MOVE_TO_MASK] !== 0) moves.push(move);
-            else quietMoves[quietWrite++] = move;
-        }
-        quietMoves.length = quietWrite;
-    }
-};
-
 const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, quietOnly) => {
     if (!move || matchesStagedPrefix(moves, moves.length, move)) return false;
     const fromSq = move >>> 7;
@@ -2195,16 +2163,13 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
 // Appends exactly one stage: TT, quiet killers, captures, then quiets.
 // Later stages exclude only specials that were actually validated and appended.
 const appendTrueStagedMoves = (
-    moves, quietMoves, stage, currentPlayer, pieceState, ttMove, killers
+    moves, stage, currentPlayer, pieceState, ttMove, killers
 ) => {
     const start = moves.length;
-    if (collectSearchMetrics) perfStats.stagedStageCalls[stage]++;
     if (stage === 0) {
         if (!ttMove) return 0;
         appendValidatedStagedSpecial(moves, ttMove, pieceState, currentPlayer, false);
-        const added = moves.length - start;
-        if (collectSearchMetrics) perfStats.stagedStageMoves[stage] += added;
-        return added;
+        return moves.length - start;
     }
     if (stage === 1) {
         appendValidatedStagedSpecial(moves, killers[0], pieceState, currentPlayer, true);
@@ -2220,37 +2185,25 @@ const appendTrueStagedMoves = (
             }
             if (searchProfile) perfStats.sortMovesMs += performance.now() - __t0;
         }
-        if (collectSearchMetrics) perfStats.stagedStageMoves[stage] += added;
         return added;
     } else if (stage === 2) {
-        if (cacheStagedQuiets) {
-            generateAndSplitStagedMoves(moves, quietMoves, start, currentPlayer, pieceState);
-        } else {
-            appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, true, false);
-        }
+        appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, true, false);
     } else if (stage === 3) {
-        if (collectSearchMetrics) perfStats.stagedQuietStageCalls++;
-        if (cacheStagedQuiets) {
-            for (let i = 0; i < quietMoves.length; i++) moves.push(quietMoves[i]);
-        } else {
-            appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
-        }
+        appendGeneratedStagedMoves(moves, start, currentPlayer, pieceState, false, true);
     }
 
     sortRangeStagedMoves(moves, start, moves.length);
-    const added = moves.length - start;
-    if (collectSearchMetrics) perfStats.stagedStageMoves[stage] += added;
-    return added;
+    return moves.length - start;
 };
 
 const advanceTrueStagedMoves = (
-    moves, quietMoves, nextStage, currentPlayer, pieceState, ttMove, killers
+    moves, nextStage, currentPlayer, pieceState, ttMove, killers
 ) => {
     while (nextStage < 4) {
         const stage = nextStage++;
         const started = searchProfile ? performance.now() : 0;
         const added = appendTrueStagedMoves(
-            moves, quietMoves, stage, currentPlayer, pieceState, ttMove, killers
+            moves, stage, currentPlayer, pieceState, ttMove, killers
         );
         if (searchProfile) perfStats.prepareMoveGenMs += performance.now() - started;
         if (added > 0) break;
@@ -3331,11 +3284,6 @@ let perfStats = {
     legalMovesSearched: 0,
     lmrAttempts: 0,
     lmrReSearches: 0,
-    stagedNodes: 0,
-    stagedStageCalls: [0, 0, 0, 0],
-    stagedStagePieces: [0, 0, 0, 0],
-    stagedStageMoves: [0, 0, 0, 0],
-    stagedQuietStageCalls: 0,
     pvsAttempts: 0,
     pvsReSearches: 0,
     nmpAttempts: 0,
@@ -3374,11 +3322,6 @@ const resetPerfStats = () => {
     perfStats.legalMovesSearched = 0;
     perfStats.lmrAttempts = 0;
     perfStats.lmrReSearches = 0;
-    perfStats.stagedNodes = 0;
-    perfStats.stagedStageCalls.fill(0);
-    perfStats.stagedStagePieces.fill(0);
-    perfStats.stagedStageMoves.fill(0);
-    perfStats.stagedQuietStageCalls = 0;
     perfStats.pvsAttempts = 0;
     perfStats.pvsReSearches = 0;
     perfStats.nmpAttempts = 0;
@@ -3420,18 +3363,6 @@ const snapshotPerfStats = () => {
         profile: searchProfile,
         alphaBetaCalls: perfStats.alphaBetaCalls,
         legalMovesSearched: perfStats.legalMovesSearched,
-        stagedGeneration: {
-            cachedQuiets: cacheStagedQuiets,
-            nodes: perfStats.stagedNodes,
-            stages: perfStats.stagedStageCalls.slice(),
-            stagePieces: perfStats.stagedStagePieces.slice(),
-            generated: perfStats.stagedStageMoves.slice(),
-            quietSkipped: Math.max(0, perfStats.stagedNodes - perfStats.stagedQuietStageCalls),
-            quietSkipRate: perfStats.stagedNodes > 0
-                ? (Math.max(0, perfStats.stagedNodes - perfStats.stagedQuietStageCalls) /
-                    perfStats.stagedNodes * 100).toFixed(2)
-                : '0.00'
-        },
         lmr: collectSearchMetrics ? {
             minDepth: searchLmrMinDepth,
             minMove: searchLmrMinMove,
@@ -3538,8 +3469,6 @@ for (let depth = 1; depth <= LMR_TABLE_DEPTH_MAX; depth++) {
 // Depth always decreases on recursion, including LMR/NMP probes, so siblings
 // and re-searches can safely reuse the list after the previous call returns.
 const playStagedMoveBuffers = [];
-const playStagedQuietBuffers = [];
-let cacheStagedQuiets = false;
 
 // 搜索启发：杀棋表 + 历史启发（每次 getBestMove 重置）
 let killerMoves = [];
@@ -4228,16 +4157,6 @@ const alphaBeta = (
     } else {
         moves.length = 0;
     }
-    let stagedQuietMoves = null;
-    if (cacheStagedQuiets) {
-        stagedQuietMoves = playStagedQuietBuffers[plyFromRoot];
-        if (!stagedQuietMoves) {
-            stagedQuietMoves = [];
-            playStagedQuietBuffers[plyFromRoot] = stagedQuietMoves;
-        } else {
-            stagedQuietMoves.length = 0;
-        }
-    }
     if (knownInCheck) {
         const genStarted = searchProfile ? performance.now() : 0;
         generateCheckEvasions(
@@ -4283,9 +4202,8 @@ const alphaBeta = (
     const killersAtDepth = killerMoves[plyFromRoot];
     let nextTrueStagedStage = 0;
     if (!knownInCheck) {
-        if (collectSearchMetrics) perfStats.stagedNodes++;
         nextTrueStagedStage = advanceTrueStagedMoves(
-            moves, stagedQuietMoves, nextTrueStagedStage, currentPlayer, stagedPieceState,
+            moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
             ttMove, killersAtDepth
         );
     } else {
@@ -4301,7 +4219,7 @@ const alphaBeta = (
             if (knownInCheck) break;
             const before = moves.length;
             nextTrueStagedStage = advanceTrueStagedMoves(
-                moves, stagedQuietMoves, nextTrueStagedStage, currentPlayer, stagedPieceState,
+                moves, nextTrueStagedStage, currentPlayer, stagedPieceState,
                 ttMove, killersAtDepth
             );
             if (moves.length === before) break;
@@ -4595,7 +4513,6 @@ const getBestMove = (
   );
   clearEvalCache();
   const maxDepth = Math.max(1, depth | 0);
-  cacheStagedQuiets = maxDepth <= 10;
   activeSearchInitiator = side;
   resetSearchHeuristics(maxDepth);
   const rootInCheck = isKingInCheckFromState(rootPieceState, side);
