@@ -1197,12 +1197,15 @@ const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
 
 // 垫将：离开钉线会发现对方将。线外失去保护；钉线上仍可反吃。
 // 车/将面对面：整条横/竖线；炮隔两子：只能保那门炮；马腿：只能保那匹马。
-const pinOwnGuardSlot = (squareCodes, squareToSlot, sq, kingIsRed, rank, file, onlySq) => {
+const pinOwnGuardSlot = (
+    squareCodes, squareToSlot, sq, kingIsRed, rank, file, onlySq, guardInterest
+) => {
     const code = squareCodes[sq];
     if (code === 0 || (code & 7) === 1) return;
     if ((code < 8) !== kingIsRed) return;
     const slot = squareToSlot[sq];
     const bit = 1 << slot;
+    if ((guardInterest & bit) === 0) return;
     if ((scratchPinnedGuardBits & bit) === 0) {
         scratchPinRank[slot] = -1;
         scratchPinFile[slot] = -1;
@@ -1220,22 +1223,22 @@ const pinOwnGuardSlot = (squareCodes, squareToSlot, sq, kingIsRed, rank, file, o
 
 const collectPinsOnRay = (
     squareCodes, squareToSlot, first, second, third,
-    firstSq, secondSq, thirdSq, kingIsRed, rank, file
+    firstSq, secondSq, thirdSq, kingIsRed, rank, file, guardInterest
 ) => {
     if (first === 255 || second === 255) return;
     const secondCode = squareCodes[secondSq];
     if (((secondCode < 8) !== kingIsRed) && (secondCode & 7) < 3) {
-        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, rank, file, -1);
+        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, rank, file, -1, guardInterest);
     }
     if (third === 255) return;
     const thirdCode = squareCodes[thirdSq];
     if (((thirdCode < 8) !== kingIsRed) && (thirdCode & 7) === 6) {
-        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, -1, -1, thirdSq);
-        pinOwnGuardSlot(squareCodes, squareToSlot, secondSq, kingIsRed, -1, -1, thirdSq);
+        pinOwnGuardSlot(squareCodes, squareToSlot, firstSq, kingIsRed, -1, -1, thirdSq, guardInterest);
+        pinOwnGuardSlot(squareCodes, squareToSlot, secondSq, kingIsRed, -1, -1, thirdSq, guardInterest);
     }
 };
 
-const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
+const collectPinsFromKing = (pieceState, kingSq, kingIsRed, guardInterest) => {
     if (kingSq < 0) return;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
@@ -1252,7 +1255,7 @@ const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
         collectPinsOnRay(
             squareCodes, squareToSlot, first, second, third,
             rankBase + first, rankBase + second, rankBase + third,
-            kingIsRed, r, -1
+            kingIsRed, r, -1, guardInterest
         );
     }
     first = RANK_FIRST_LOW[rankKey];
@@ -1262,7 +1265,7 @@ const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
         collectPinsOnRay(
             squareCodes, squareToSlot, first, second, third,
             rankBase + first, rankBase + second, rankBase + third,
-            kingIsRed, r, -1
+            kingIsRed, r, -1, guardInterest
         );
     }
     first = FILE_FIRST_HIGH[fileKey];
@@ -1272,7 +1275,7 @@ const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
         collectPinsOnRay(
             squareCodes, squareToSlot, first, second, third,
             first * 9 + c, second * 9 + c, third * 9 + c,
-            kingIsRed, -1, c
+            kingIsRed, -1, c, guardInterest
         );
     }
     first = FILE_FIRST_LOW[fileKey];
@@ -1282,7 +1285,7 @@ const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
         collectPinsOnRay(
             squareCodes, squareToSlot, first, second, third,
             first * 9 + c, second * 9 + c, third * 9 + c,
-            kingIsRed, -1, c
+            kingIsRed, -1, c, guardInterest
         );
     }
 
@@ -1292,17 +1295,20 @@ const collectPinsFromKing = (pieceState, kingSq, kingIsRed) => {
         const horseSq = entry & 127;
         const horseCode = squareCodes[horseSq];
         if ((horseCode & 7) !== 3 || (horseCode < 8) === kingIsRed) continue;
-        pinOwnGuardSlot(squareCodes, squareToSlot, entry >>> 7, kingIsRed, -1, -1, horseSq);
+        pinOwnGuardSlot(
+            squareCodes, squareToSlot, entry >>> 7, kingIsRed,
+            -1, -1, horseSq, guardInterest
+        );
     }
 };
 
 const collectPinnedGuardSlots = (pieceState, guardInterest = 0xFFFFFFFF) => {
     scratchPinnedGuardBits = 0;
     if ((guardInterest & pieceState.redAliveMask) !== 0) {
-        collectPinsFromKing(pieceState, pieceState.redGeneralSq, true);
+        collectPinsFromKing(pieceState, pieceState.redGeneralSq, true, guardInterest);
     }
     if ((guardInterest & pieceState.blackAliveMask) !== 0) {
-        collectPinsFromKing(pieceState, pieceState.blackGeneralSq, false);
+        collectPinsFromKing(pieceState, pieceState.blackGeneralSq, false, guardInterest);
     }
     return scratchPinnedGuardBits >>> 0;
 };
