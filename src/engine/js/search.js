@@ -1041,6 +1041,9 @@ const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 // 数值安全只查询对方将所在九宫的空格。
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
 const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
+const SEARCH_PALACE_ROW_MASK = [0x380, 0x007];
+const SEARCH_PALACE_FILE_MASK = 0x038;
+const SEARCH_PALACE_FIRST_ROW = [7, 0];
 
 (() => {
     const horseCheckerWords = [];
@@ -2410,30 +2413,31 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
-                if (t0 !== 255) {
+                if ((t0 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_FIRST_LOW[rankKey];
-                if (t1 !== 255) {
+                if ((t1 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_FIRST_HIGH[fileKey];
-                if (t2 !== 255) {
+                if ((t2 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t3 = FILE_FIRST_LOW[fileKey];
-                if (t3 !== 255) {
+                if ((t3 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                if (isRed ? r >= 7 : r <= 2) {
+                const palaceRowMask = SEARCH_PALACE_ROW_MASK[colorIdx];
+                if (palaceRowMask & (1 << r)) {
                     const rankControl = RANK_ROOK_CONTROL[rankKey];
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
@@ -2450,11 +2454,10 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         }
                     }
                 }
-                if (c >= 3 && c <= 5) {
+                if (SEARCH_PALACE_FILE_MASK & (1 << c)) {
                     const fileControl = FILE_ROOK_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
+                    if (fileControl & palaceRowMask) {
+                        const firstRow = SEARCH_PALACE_FIRST_ROW[colorIdx];
                         let sq = firstRow * 9 + c;
                         if (fileControl & (1 << firstRow)) {
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
@@ -2480,30 +2483,31 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
-                if (t0 !== 255) {
+                if ((t0 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_SECOND_LOW[rankKey];
-                if (t1 !== 255) {
+                if ((t1 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_SECOND_HIGH[fileKey];
-                if (t2 !== 255) {
+                if ((t2 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t2 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t3 = FILE_SECOND_LOW[fileKey];
-                if (t3 !== 255) {
+                if ((t3 & 0x80) === 0) {
                     attackedTargetMask |= applyOccupiedSliderHit(
                         t3 * 9 + c, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
-                if (isRed ? r >= 7 : r <= 2) {
+                const palaceRowMask = SEARCH_PALACE_ROW_MASK[colorIdx];
+                if (palaceRowMask & (1 << r)) {
                     const rankControl = RANK_CANNON_CONTROL[rankKey];
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
@@ -2520,11 +2524,10 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                         }
                     }
                 }
-                if (c >= 3 && c <= 5) {
+                if (SEARCH_PALACE_FILE_MASK & (1 << c)) {
                     const fileControl = FILE_CANNON_CONTROL[fileKey];
-                    const fileMask = isRed ? 0x380 : 0x7;
-                    if (fileControl & fileMask) {
-                        const firstRow = isRed ? 7 : 0;
+                    if (fileControl & palaceRowMask) {
+                        const firstRow = SEARCH_PALACE_FIRST_ROW[colorIdx];
                         let sq = firstRow * 9 + c;
                         if (fileControl & (1 << firstRow)) {
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
