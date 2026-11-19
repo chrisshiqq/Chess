@@ -557,15 +557,8 @@ const CHECK_KIND_HORSE = 2;
 const CHECK_KIND_SOLDIER = 3;
 const CHECK_KIND_CANNON = 4;
 
-const EVASION_SINGLE_RAY = 1;
-const EVASION_SINGLE_HORSE = 2;
-const EVASION_SINGLE_SOLDIER = 3;
-const EVASION_SINGLE_CANNON = 4;
-const EVASION_COMPLEX = 5;
-
 const createCheckInfo = () => ({
     count: 0,
-    evasionClass: EVASION_COMPLEX,
     sq: [-1, -1, -1, -1],
     kind: [0, 0, 0, 0],
     leg: [-1, -1, -1, -1]
@@ -2076,42 +2069,12 @@ const generateCheckEvasions = (moves, currentPlayer, pieceState, checkInfo) => {
     const slotCodes = pieceState.slotCodes;
     const slotToSquare = pieceState.slotToSquare;
     const resolveCount = fillResolveSquares(pieceState, generalSq, checkInfo, evasionResolveMask);
-    const single = checkInfo.count === 1;
-    const evasionClass = checkInfo.evasionClass;
 
     const n = collectOwnSlotsInScanOrder(pieceState, isRed);
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         const sq = slotToSquare[slot];
-        if (sq === generalSq) {
-            appendSearchPseudoMovesForPiece(moves, sq, slotCodes[slot], pieceState, false);
-        } else if (single && evasionClass === EVASION_SINGLE_HORSE) {
-            if (resolveCount > 0) {
-                appendSearchPseudoMovesForPiece(
-                    moves, sq, slotCodes[slot], pieceState, false, evasionResolveMask
-                );
-            }
-        } else if (single && evasionClass === EVASION_SINGLE_SOLDIER) {
-            // A soldier check can only be removed by capturing the soldier.
-            appendSearchPseudoMovesForPiece(
-                moves, sq, slotCodes[slot], pieceState, false, evasionResolveMask
-            );
-        } else if (single && evasionClass === EVASION_SINGLE_CANNON &&
-            sq !== checkInfo.leg[0]) {
-            if (resolveCount > 0) {
-                appendSearchPseudoMovesForPiece(
-                    moves, sq, slotCodes[slot], pieceState, false, evasionResolveMask
-                );
-            }
-        } else if (single && evasionClass === EVASION_SINGLE_RAY) {
-            if (resolveCount > 0) {
-                appendSearchPseudoMovesForPiece(
-                    moves, sq, slotCodes[slot], pieceState, false, evasionResolveMask
-                );
-            }
-        } else if (isCannonScreenSquare(sq, checkInfo)) {
-            // Moving a cannon screen can expose a new line; keep all pseudo
-            // moves here and let the post-make check validate the destination.
+        if (sq === generalSq || isCannonScreenSquare(sq, checkInfo)) {
             appendSearchPseudoMovesForPiece(moves, sq, slotCodes[slot], pieceState, false);
         } else if (resolveCount > 0) {
             appendSearchPseudoMovesForPiece(
@@ -2846,7 +2809,6 @@ const openingBook = new OpeningBook(
 // 收集全部将军者（最多 4 个）。车/将走第一子，炮走第二子，马走无腿，兵走邻格。
 const collectCheckersFromState = (state, color, out) => {
     out.count = 0;
-    out.evasionClass = EVASION_COMPLEX;
     const ownIsRed = color === SIDE_RED;
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
     if (generalSq < 0) {
@@ -2956,18 +2918,6 @@ const collectCheckersFromState = (state, color, out) => {
         }
     }
 
-    if (out.count === 1) {
-        const kind = out.kind[0];
-        out.evasionClass = kind === CHECK_KIND_RAY
-            ? EVASION_SINGLE_RAY
-            : kind === CHECK_KIND_HORSE
-                ? EVASION_SINGLE_HORSE
-                : kind === CHECK_KIND_SOLDIER
-                    ? EVASION_SINGLE_SOLDIER
-                    : kind === CHECK_KIND_CANNON
-                        ? EVASION_SINGLE_CANNON
-                        : EVASION_COMPLEX;
-    }
     return out;
 };
 
