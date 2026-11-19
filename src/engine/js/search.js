@@ -1935,11 +1935,10 @@ const horseLegDestHas = (destData, destStart, destEnd, toSq, squareCodes) => {
 };
 
 // 与 appendSearchPseudoMovesForPiece 同一套几何，只判单步，不生成整表。
-const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState, quietOnly = false) => {
+const isSearchPseudoLegal = (fromSq, toSq, pieceCode, pieceState) => {
     const squareCodes = pieceState.squareCodes;
     const targetCode = squareCodes[toSq];
     const isRed = pieceCode < 8;
-    if (quietOnly && targetCode !== 0) return false;
     if (targetCode !== 0 && (targetCode < 8) === isRed) return false;
 
     const pieceType = pieceCode & 7;
@@ -2160,7 +2159,9 @@ const appendValidatedStagedSpecial = (moves, move, pieceState, currentPlayer, qu
     const pieceCode = pieceState.squareCodes[fromSq];
     if (!pieceCode) return false;
     if ((pieceCode < 8) !== (currentPlayer === SIDE_RED)) return false;
-    if (!isSearchPseudoLegal(fromSq, toSq, pieceCode, pieceState, quietOnly)) return false;
+    const targetCode = pieceState.squareCodes[toSq];
+    if (quietOnly && targetCode !== 0) return false;
+    if (!isSearchPseudoLegal(fromSq, toSq, pieceCode, pieceState)) return false;
     moves.push(move);
     return true;
 };
