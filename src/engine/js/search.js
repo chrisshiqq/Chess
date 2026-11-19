@@ -215,7 +215,6 @@ const createEmptySearchPieceState = () => ({
     colOccupancy: new Uint16Array(COLS),
     redRowOccupancy: new Uint16Array(ROWS),
     blackRowOccupancy: new Uint16Array(ROWS),
-    pieceBoards: new Uint32Array(16 * 3),
     slotCodes: new Uint8Array(32),
     slotToSquare: new Uint8Array(32),
     redAliveMask: 0,
@@ -233,7 +232,6 @@ const createEmptySearchPieceState = () => ({
 const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const squareToSlot = state.squareToSlot;
     const squareCodes = state.squareCodes;
-    const pieceBoards = state.pieceBoards;
     const rowOccupancy = state.rowOccupancy;
     const colOccupancy = state.colOccupancy;
     const redRowOccupancy = state.redRowOccupancy;
@@ -249,7 +247,6 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     blackRowOccupancy.fill(0);
     slotCodes.fill(0);
     slotToSquare.fill(0);
-    pieceBoards.fill(0);
     state.materialValues = materialValues;
     let slotCount = 0;
     let netMaterial = 0;
@@ -272,7 +269,6 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
             slotToSquare[slot] = sq;
             squareToSlot[sq] = slot;
             squareCodes[sq] = code;
-            pieceBoards[code * 3 + (sq >>> 5)] |= 1 << (sq & 31);
             rowOccupancy[r] |= 1 << c;
             colOccupancy[c] |= 1 << r;
             evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[code][sq];
@@ -334,21 +330,12 @@ const runWithPieceState = (board, fn) => {
     return result;
 };
 
-const updatePieceBoardBit = (pieceBoards, pieceCode, sq, present) => {
-    const index = pieceCode * 3 + (sq >>> 5);
-    const bit = 1 << (sq & 31);
-    pieceBoards[index] = present
-        ? pieceBoards[index] | bit
-        : pieceBoards[index] & ~bit;
-};
-
 const makeSearchMove = (
     state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC
 ) => {
     const moverSlot = state.squareToSlot[fromSq];
     const capturedSlot = state.squareToSlot[toSq];
     const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
-    const pieceBoards = state.pieceBoards;
     scratchSearchUndoMoverSlot = moverSlot;
     scratchSearchUndoCapturedSlot = capturedSlot;
     occupancyScanGen++;
@@ -394,9 +381,6 @@ const makeSearchMove = (
     state.squareToSlot[toSq] = moverSlot;
     state.squareCodes[fromSq] = 0;
     state.squareCodes[toSq] = moverCode;
-    updatePieceBoardBit(pieceBoards, moverCode, fromSq, false);
-    updatePieceBoardBit(pieceBoards, moverCode, toSq, true);
-    if (capturedCode) updatePieceBoardBit(pieceBoards, capturedCode, toSq, false);
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = toSq;
         else state.blackGeneralSq = toSq;
@@ -407,7 +391,6 @@ const unmakeSearchMove = (
     state, fromSq, toSq, moverSlot, capturedSlot, moverCode, capturedCode, fromR, fromC, toR, toC
 ) => {
     const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
-    const pieceBoards = state.pieceBoards;
     occupancyScanGen++;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
@@ -453,9 +436,6 @@ const unmakeSearchMove = (
     state.slotToSquare[moverSlot] = fromSq;
     state.squareToSlot[fromSq] = moverSlot;
     state.squareCodes[fromSq] = moverCode;
-    updatePieceBoardBit(pieceBoards, moverCode, toSq, false);
-    updatePieceBoardBit(pieceBoards, moverCode, fromSq, true);
-    if (capturedCode) updatePieceBoardBit(pieceBoards, capturedCode, toSq, true);
     if ((moverCode & 7) === 1) {
         if (moverCode < 8) state.redGeneralSq = fromSq;
         else state.blackGeneralSq = fromSq;
@@ -1057,8 +1037,6 @@ const SEARCH_HORSE_DEST_OFF = packedHorseDest.offsets;
 const SEARCH_HORSE_DEST_DATA = packedHorseDest.data;
 const SEARCH_HORSE_CHECKER_OFF = new Uint16Array(DEST_OFF_STRIDE);
 let SEARCH_HORSE_CHECKER_DATA = null;
-const SEARCH_HORSE_CHECK_MASK = new Uint32Array(REL_SQUARES * 3);
-const SEARCH_SOLDIER_CHECK_MASK = new Uint32Array(REL_SQUARES * 3);
 const SEARCH_GIVES_CHECK_NEAR = new Uint32Array(REL_SQUARES * 3);
 // 数值安全只查询对方将所在九宫的空格。
 // bit 0: red attack is relevant (black palace); bit 1: black attack is relevant (red palace).
@@ -1090,44 +1068,18 @@ const SEARCH_ATTACK_TARGET = new Uint8Array(REL_SQUARES);
                 const legC = horseC - group.legDc;
                 const entry = (legR * 9 + legC) * 128 + horseR * 9 + horseC;
                 horseCheckerWords.push(entry);
-                const horseSq = entry & 127;
-                SEARCH_HORSE_CHECK_MASK[sq * 3 + (horseSq >>> 5)] |= 1 << (horseSq & 31);
                 markGiveCheckNear(sq, entry & 127);
                 markGiveCheckNear(sq, entry >>> 7);
             }
         }
         if (r <= 2) {
-            if (r + 1 < ROWS) {
-                const source = (r + 1) * 9 + c;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
-            if (c > 0) {
-                const source = sq - 1;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
-            if (c < COLS - 1) {
-                const source = sq + 1;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
+            if (r + 1 < ROWS) markGiveCheckNear(sq, (r + 1) * 9 + c);
+            if (c > 0) markGiveCheckNear(sq, sq - 1);
+            if (c < COLS - 1) markGiveCheckNear(sq, sq + 1);
         } else if (r >= 7) {
-            if (r > 0) {
-                const source = (r - 1) * 9 + c;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
-            if (c > 0) {
-                const source = sq - 1;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
-            if (c < COLS - 1) {
-                const source = sq + 1;
-                markGiveCheckNear(sq, source);
-                SEARCH_SOLDIER_CHECK_MASK[sq * 3 + (source >>> 5)] |= 1 << (source & 31);
-            }
+            if (r > 0) markGiveCheckNear(sq, (r - 1) * 9 + c);
+            if (c > 0) markGiveCheckNear(sq, sq - 1);
+            if (c < COLS - 1) markGiveCheckNear(sq, sq + 1);
         }
     }
     SEARCH_HORSE_CHECKER_OFF[REL_SQUARES] = horseCheckerWords.length;
@@ -2865,7 +2817,6 @@ const collectCheckersFromState = (state, color, out) => {
     }
 
     const squareCodes = state.squareCodes;
-    const pieceBoards = state.pieceBoards;
     const enemyIsRed = !ownIsRed;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
@@ -2930,21 +2881,13 @@ const collectCheckersFromState = (state, color, out) => {
     }
 
     const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
-    const horseCode = enemyIsRed ? 3 : 11;
-    const horseBase = horseCode * 3;
-    const horseMaskBase = generalSq * 3;
-    if (
-        (pieceBoards[horseBase] & SEARCH_HORSE_CHECK_MASK[horseMaskBase]) !== 0 ||
-        (pieceBoards[horseBase + 1] & SEARCH_HORSE_CHECK_MASK[horseMaskBase + 1]) !== 0 ||
-        (pieceBoards[horseBase + 2] & SEARCH_HORSE_CHECK_MASK[horseMaskBase + 2]) !== 0
-    ) {
-        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
-            const entry = horseCheckerData[i];
-            const horseSq = entry & 127;
-            if ((pieceBoards[horseBase + (horseSq >>> 5)] & (1 << (horseSq & 31))) === 0) continue;
-            if (squareCodes[entry >>> 7] === 0) {
-                addChecker(out, horseSq, CHECK_KIND_HORSE, entry >>> 7);
-            }
+    for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+        const entry = horseCheckerData[i];
+        if (squareCodes[entry >>> 7] !== 0) continue;
+        const horseSq = entry & 127;
+        const pieceCode = squareCodes[horseSq];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) {
+            addChecker(out, horseSq, CHECK_KIND_HORSE, entry >>> 7);
         }
     }
 
@@ -2952,8 +2895,8 @@ const collectCheckersFromState = (state, color, out) => {
     const forwardR = gr - enemyForward;
     if (forwardR >= 0 && forwardR < ROWS) {
         const soldierSq = forwardR * 9 + gc;
-        const soldierCode = enemyIsRed ? 7 : 15;
-        if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) {
+        const pieceCode = squareCodes[soldierSq];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
             addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
         }
     }
@@ -2961,15 +2904,15 @@ const collectCheckersFromState = (state, color, out) => {
     if (crossedRiver) {
         if (gc < COLS - 1) {
             const soldierSq = generalSq + 1;
-            const soldierCode = enemyIsRed ? 7 : 15;
-            if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) {
+            const pieceCode = squareCodes[soldierSq];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
                 addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
             }
         }
         if (gc > 0) {
             const soldierSq = generalSq - 1;
-            const soldierCode = enemyIsRed ? 7 : 15;
-            if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) {
+            const pieceCode = squareCodes[soldierSq];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) {
                 addChecker(out, soldierSq, CHECK_KIND_SOLDIER);
             }
         }
@@ -2985,7 +2928,6 @@ const isKingInCheckFromState = (state, color) => {
     if (generalSq < 0) return true;
 
     const squareCodes = state.squareCodes;
-    const pieceBoards = state.pieceBoards;
     const enemyIsRed = !ownIsRed;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
@@ -3033,41 +2975,29 @@ const isKingInCheckFromState = (state, color) => {
         }
     }
 
-    const horseCode = enemyIsRed ? 3 : 11;
-    const horseBase = horseCode * 3;
-    const horseMaskBase = generalSq * 3;
-    if (
-        (pieceBoards[horseBase] & SEARCH_HORSE_CHECK_MASK[horseMaskBase]) !== 0 ||
-        (pieceBoards[horseBase + 1] & SEARCH_HORSE_CHECK_MASK[horseMaskBase + 1]) !== 0 ||
-        (pieceBoards[horseBase + 2] & SEARCH_HORSE_CHECK_MASK[horseMaskBase + 2]) !== 0
-    ) {
-        const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
-        for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
-            const entry = horseCheckerData[i];
-            if (squareCodes[entry >>> 7] !== 0) continue;
-            const horseSq = entry & 127;
-            if (pieceBoards[horseBase + (horseSq >>> 5)] & (1 << (horseSq & 31))) return true;
-        }
+    const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
+    for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
+        const entry = horseCheckerData[i];
+        if (squareCodes[entry >>> 7] !== 0) continue;
+        const pieceCode = squareCodes[entry & 127];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 3) return true;
     }
 
     const enemyForward = enemyIsRed ? 1 : -1;
     const forwardR = gr - enemyForward;
     if (forwardR >= 0 && forwardR < ROWS) {
-        const soldierSq = forwardR * 9 + gc;
-        const soldierCode = enemyIsRed ? 7 : 15;
-        if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) return true;
+        const pieceCode = squareCodes[forwardR * 9 + gc];
+        if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
     }
     const crossedRiver = enemyIsRed ? gr >= 5 : gr <= 4;
     if (crossedRiver) {
         if (gc < COLS - 1) {
-            const soldierSq = generalSq + 1;
-            const soldierCode = enemyIsRed ? 7 : 15;
-            if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) return true;
+            const pieceCode = squareCodes[generalSq + 1];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
         }
         if (gc > 0) {
-            const soldierSq = generalSq - 1;
-            const soldierCode = enemyIsRed ? 7 : 15;
-            if (pieceBoards[soldierCode * 3 + (soldierSq >>> 5)] & (1 << (soldierSq & 31))) return true;
+            const pieceCode = squareCodes[generalSq - 1];
+            if (pieceCode !== 0 && (pieceCode < 8) === enemyIsRed && (pieceCode & 7) === 7) return true;
         }
     }
 
