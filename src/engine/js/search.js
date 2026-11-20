@@ -833,22 +833,6 @@ const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
 const sortRangeStagedMoves = (moves, start, end) => {
     if (end - start <= 1) return;
     const __t0 = searchProfile ? performance.now() : 0;
-    const pieceState = activeSearchPieceState;
-    const squareCodes = pieceState.squareCodes;
-    const materialValues = pieceState.materialValues;
-
-    for (let index = start; index < end; index++) {
-        const move = moves[index];
-        const fromSq = move >>> 7;
-        const toSq = move & MOVE_TO_MASK;
-        const targetCode = squareCodes[toSq];
-        let score = getHistoryScore(move);
-        if (targetCode !== 0) {
-            score += materialValues[targetCode & 7] * 16 -
-                materialValues[squareCodes[fromSq] & 7];
-        }
-        sortMoveScoreScratch[index] = score;
-    }
 
     for (let i = start + 1; i < end; i++) {
         const move = moves[i];
@@ -2120,14 +2104,27 @@ const appendGeneratedStagedMoves = (
 ) => {
     const slotCodes = pieceState.slotCodes;
     const slotToSquare = pieceState.slotToSquare;
+    const squareCodes = pieceState.squareCodes;
+    const materialValues = pieceState.materialValues;
     const n = collectOwnSlotsInScanOrder(pieceState, currentPlayer === SIDE_RED);
     if (start === 0) {
         for (let i = 0; i < n; i++) {
             const slot = scratchOwnScanSlots[i];
+            const pieceStart = moves.length;
+            const pieceCode = slotCodes[slot];
             appendSearchPseudoMovesForPiece(
-                moves, slotToSquare[slot], slotCodes[slot], pieceState,
+                moves, slotToSquare[slot], pieceCode, pieceState,
                 capturesOnly, null, quietsOnly
             );
+            const moverValue = materialValues[pieceCode & 7];
+            for (let index = pieceStart; index < moves.length; index++) {
+                const move = moves[index];
+                let score = getHistoryScore(move);
+                if (capturesOnly) {
+                    score += materialValues[squareCodes[move & MOVE_TO_MASK] & 7] * 16 - moverValue;
+                }
+                sortMoveScoreScratch[index] = score;
+            }
         }
         return;
     }
@@ -2137,15 +2134,26 @@ const appendGeneratedStagedMoves = (
     for (let i = 0; i < n; i++) {
         const slot = scratchOwnScanSlots[i];
         const pieceStart = moves.length;
+        const pieceCode = slotCodes[slot];
         appendSearchPseudoMovesForPiece(
-            moves, slotToSquare[slot], slotCodes[slot], pieceState,
+            moves, slotToSquare[slot], pieceCode, pieceState,
             capturesOnly, null, quietsOnly
         );
+        const moverValue = materialValues[pieceCode & 7];
+        for (let index = pieceStart; index < moves.length; index++) {
+            const move = moves[index];
+            let score = getHistoryScore(move);
+            if (capturesOnly) {
+                score += materialValues[squareCodes[move & MOVE_TO_MASK] & 7] * 16 - moverValue;
+            }
+            sortMoveScoreScratch[index] = score;
+        }
         let write = pieceStart;
         for (let read = pieceStart; read < moves.length; read++) {
             const move = moves[read];
             if (move !== special0 && move !== special1 && move !== special2) {
                 moves[write++] = move;
+                sortMoveScoreScratch[write - 1] = sortMoveScoreScratch[read];
             }
         }
         moves.length = write;
@@ -3873,9 +3881,8 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const slotCodes = pieceState.slotCodes;
     const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
-    const ownCount = collectOwnSlotsInScanOrder(pieceState, isRed);
-    const ownerMask = scratchOwnScanMask >>> 0;
-    if (ownerMask === 0 || ownCount === 0) {
+    const ownerMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
+    if (ownerMask === 0) {
         if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
         return;
     }
