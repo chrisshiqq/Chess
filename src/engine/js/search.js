@@ -159,8 +159,9 @@ const scratchLeafPalaceAttack = new Uint32Array(2);
 
 // 关系 mask：最多 32 子（中国象棋满盘），bit i = piecesInfo[i]
 let leafRelationScratchFresh = false;
-const scratchLeafAttackBySlot = new Uint32Array(32);
-const scratchLeafGuardBySlot = new Uint32Array(32);
+const scratchLeafRelations = new Uint32Array(64);
+const scratchLeafAttackBySlot = scratchLeafRelations.subarray(0, 32);
+const scratchLeafGuardBySlot = scratchLeafRelations.subarray(32);
 const scratchPinRank = new Int8Array(32);
 const scratchPinFile = new Int8Array(32);
 const scratchPinOnlySq = new Int8Array(32);
@@ -2250,8 +2251,7 @@ const calculatePackedSearchLeafRelations = (pieceState) => {
     const elephantDestData = SEARCH_ELEPHANT_DEST_DATA;
     const horseDestOff = SEARCH_HORSE_DEST_OFF;
     const horseDestData = SEARCH_HORSE_DEST_DATA;
-    attackBySlot.fill(0);
-    guardBySlot.fill(0);
+    scratchLeafRelations.fill(0);
     scratchLeafPalaceAttack[0] = 0;
     scratchLeafPalaceAttack[1] = 0;
     const leafPalaceAttack = scratchLeafPalaceAttack;
