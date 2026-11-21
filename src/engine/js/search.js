@@ -3074,6 +3074,7 @@ const zobristHasher = new ZobristHasher();
 // 定长槽位 TT：8 字节 AoS + generation O(1) clear。
 // 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
 const TT_DEFAULT_SIZE = 1 << 22; // 4194304
+const TT_SMALL_SIZE = 1 << 21; // 2097152
 const TT_FLAG_EXACT = 0;
 const TT_FLAG_LOWER = 1;
 const TT_FLAG_UPPER = 2;
@@ -3128,6 +3129,22 @@ class TranspositionTable {
             historicalHits: 0,
             historicalReplacements: 0
         };
+    }
+
+    resize(size) {
+        let n = size | 0;
+        if (n < 1024) n = 1024;
+        n = 1 << (32 - Math.clz32(n - 1));
+        if (n === this.size) return false;
+        this.size = n;
+        this.mask = n - 1;
+        this.generation = 1;
+        this.retainedGenerations = 0;
+        this.reuseScope = null;
+        this.lastSearchPly = null;
+        this.occupiedApprox = 0;
+        this.data = new Uint32Array(n << 1);
+        return true;
     }
 
     _writeSlot(base, key16, gen, flagCode, keyHigh, depth, value, move) {
@@ -4496,11 +4513,13 @@ const getBestMove = (
   // 根节点：迭代加深 + PVS；TT/killer/history 跨深度保留（仅开局清空一次）
   resetPerfStats();
   snapshotLeafWeights();
+  const maxDepth = Math.max(1, depth | 0);
+  transpositionTable.resize(maxDepth <= 10 ? TT_SMALL_SIZE : TT_DEFAULT_SIZE);
   const startTime = Date.now();
   searchContext.reportSearchProgress({
     phase: 'root-eval',
     turn,
-    maxDepth: Math.max(1, depth | 0),
+    maxDepth,
     completedDepth: -1,
     elapsedMs: 0
   });
@@ -4525,7 +4544,6 @@ const getBestMove = (
     searchContext.ttSearchPly
   );
   clearEvalCache();
-  const maxDepth = Math.max(1, depth | 0);
   activeSearchInitiator = side;
   resetSearchHeuristics(maxDepth);
   const rootInCheck = isKingInCheckFromState(rootPieceState, side);
