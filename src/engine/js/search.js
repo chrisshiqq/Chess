@@ -218,9 +218,6 @@ const createEmptySearchPieceState = () => ({
     blackRowOccupancy: new Uint16Array(ROWS),
     slotCodes: new Uint8Array(32),
     slotToSquare: new Uint8Array(32),
-    alivePacked: new Uint16Array(32),
-    slotToAliveIndex: new Uint8Array(32),
-    aliveCount: 0,
     redAliveMask: 0,
     blackAliveMask: 0,
     nullMoveMaterialMask: 0,
@@ -242,8 +239,6 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     const blackRowOccupancy = state.blackRowOccupancy;
     const slotCodes = state.slotCodes;
     const slotToSquare = state.slotToSquare;
-    const alivePacked = state.alivePacked;
-    const slotToAliveIndex = state.slotToAliveIndex;
     const materialValues = searchMaterialTable(gameStage);
     squareToSlot.fill(-1);
     squareCodes.fill(0);
@@ -273,8 +268,6 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
             const slotBit = 1 << slot;
             slotCodes[slot] = code;
             slotToSquare[slot] = sq;
-            alivePacked[slot] = (slot << 11) | (code << 7) | sq;
-            slotToAliveIndex[slot] = slot;
             squareToSlot[sq] = slot;
             squareCodes[sq] = code;
             rowOccupancy[r] |= 1 << c;
@@ -310,7 +303,6 @@ const loadSearchPieceState = (state, board, gameStage = 'mid') => {
     state.blackGeneralSq = blackGeneralSq;
     state.evalVerificationHash = evalVerificationHash;
     state.slotCount = slotCount;
-    state.aliveCount = slotCount;
     occupancyScanGen++;
     return state;
 };
@@ -358,13 +350,6 @@ const makeSearchMove = (
     if (moverCode < 8) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
-        const capturedAliveIndex = state.slotToAliveIndex[capturedSlot];
-        const lastAliveIndex = state.aliveCount - 1;
-        const lastAlivePacked = state.alivePacked[lastAliveIndex];
-        const lastAliveSlot = lastAlivePacked >>> 11;
-        state.alivePacked[capturedAliveIndex] = lastAlivePacked;
-        state.slotToAliveIndex[lastAliveSlot] = capturedAliveIndex;
-        state.aliveCount = lastAliveIndex;
         const capturedBit = 1 << capturedSlot;
         if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
         else state.blackAliveMask = (state.blackAliveMask & ~capturedBit) >>> 0;
@@ -392,8 +377,6 @@ const makeSearchMove = (
         state.colOccupancy[toC] ^= 1 << toR;
         moverRowOccupancy[toR] ^= 1 << toC;
     }
-    state.alivePacked[state.slotToAliveIndex[moverSlot]] =
-        (moverSlot << 11) | (moverCode << 7) | toSq;
     state.slotToSquare[moverSlot] = toSq;
     state.squareToSlot[fromSq] = -1;
     state.squareToSlot[toSq] = moverSlot;
@@ -420,16 +403,6 @@ const unmakeSearchMove = (
     if (moverCode < 8) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
-        const capturedAliveIndex = state.slotToAliveIndex[capturedSlot];
-        const aliveCount = state.aliveCount;
-        const displacedPacked = state.alivePacked[capturedAliveIndex];
-        const displacedSlot = displacedPacked >>> 11;
-        state.alivePacked[aliveCount] = displacedPacked;
-        state.slotToAliveIndex[displacedSlot] = aliveCount;
-        state.alivePacked[capturedAliveIndex] =
-            (capturedSlot << 11) | (capturedCode << 7) | toSq;
-        state.slotToAliveIndex[capturedSlot] = capturedAliveIndex;
-        state.aliveCount = aliveCount + 1;
         const capturedBit = 1 << capturedSlot;
         if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
         else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
@@ -461,8 +434,6 @@ const unmakeSearchMove = (
         state.squareToSlot[toSq] = -1;
         state.squareCodes[toSq] = 0;
     }
-    state.alivePacked[state.slotToAliveIndex[moverSlot]] =
-        (moverSlot << 11) | (moverCode << 7) | fromSq;
     state.slotToSquare[moverSlot] = fromSq;
     state.squareToSlot[fromSq] = moverSlot;
     state.squareCodes[fromSq] = moverCode;
@@ -2263,7 +2234,8 @@ const calculatePackedSearchLeafRelations = (pieceState) => {
     const relationStart = profileRelations ? performance.now() : 0;
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
-    const alivePacked = pieceState.alivePacked;
+    const slotCodes = pieceState.slotCodes;
+    const slotToSquare = pieceState.slotToSquare;
     const rowOccupancy = pieceState.rowOccupancy;
     const colOccupancy = pieceState.colOccupancy;
     const attackBySlot = scratchLeafAttackBySlot;
@@ -2287,13 +2259,13 @@ const calculatePackedSearchLeafRelations = (pieceState) => {
     let blackMobility = 0;
     let attackedTargetMask = 0;
 
-    const aliveCount = pieceState.aliveCount;
-    for (let aliveIndex = 0; aliveIndex < aliveCount; aliveIndex++) {
-        const packedPiece = alivePacked[aliveIndex];
-        const slot = packedPiece >>> 11;
-        const bit = 1 << slot;
-        const fromSq = packedPiece & 127;
-        const pieceCode = (packedPiece >>> 7) & 15;
+    let aliveMask = (pieceState.redAliveMask | pieceState.blackAliveMask) >>> 0;
+    while (aliveMask !== 0) {
+        const bit = aliveMask & -aliveMask;
+        aliveMask ^= bit;
+        const slot = 31 - Math.clz32(bit);
+        const fromSq = slotToSquare[slot];
+        const pieceCode = slotCodes[slot];
         const pieceType = pieceCode & 7;
         const isRed = pieceCode < 8;
         const colorIdx = isRed ? 0 : 1;
