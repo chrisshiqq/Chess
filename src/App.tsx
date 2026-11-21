@@ -1497,6 +1497,8 @@ const App: React.FC = () => {
         // 检查单个走法是否会导致重复
         const checkMoveRepetition = async (move: Move): Promise<{
             violation: boolean;
+            repeated: boolean;
+            isCheck: boolean;
             type?: string;
         }> => {
             const testBoard = currentBoard.map(row => [...row]);
@@ -1504,9 +1506,19 @@ const App: React.FC = () => {
             testBoard[move.from.r][move.from.c] = null;
             const nextTurn = currentTurn === 'red' ? 'black' : 'red';
             const hash = generatePositionHash(testBoard, nextTurn);
-            const result = await checkRepetition(hash, positionHistory, move, currentBoard, currentTurn);
+            const isCheck = await isBoardInCheck(testBoard, nextTurn);
+            const result = await checkRepetition(
+                hash,
+                positionHistory,
+                move,
+                currentBoard,
+                currentTurn,
+                { isCheck }
+            );
             return {
                 violation: result.violation,
+                repeated: positionHistory.some(entry => entry.hash === hash),
+                isCheck,
                 type: result.type ?? undefined,
             };
         };
@@ -1645,7 +1657,7 @@ const App: React.FC = () => {
                             if (!isUsableMove(candidate)) continue;
                             const idle = await checkMoveRepetition(candidate);
                             if (searchToken.aborted) return;
-                            if (!idle.violation) {
+                    if (!idle.violation && !(idle.repeated && idle.isCheck)) {
                                 idleFallback = candidate;
                                 break;
                             }
@@ -1676,9 +1688,12 @@ const App: React.FC = () => {
 
                     const repetition = await checkMoveRepetition(bestMove);
                     if (searchToken.aborted) return;
-                    if (repetition.violation) {
+                    const repeatedCheck = repetition.repeated && repetition.isCheck;
+                    if (repetition.violation || repeatedCheck) {
                         console.log(
-                            '⚠️ 最优着违反重复规则，禁着后重新搜索:',
+                            repeatedCheck
+                                ? '⚠️ AI 将军会重复历史局面，提前换招:'
+                                : '⚠️ 最优着违反重复规则，禁着后重新搜索:',
                             bestMove,
                             repetition.type
                         );
