@@ -1172,7 +1172,8 @@ const App: React.FC = () => {
         cached?: {
             isCheck?: boolean;
             capturingResult?: { isThreat: boolean; targetPiece?: { type: PieceType; position: Position } };
-        }
+        },
+        repeatLimit = 4
     ): Promise<{ violation: boolean; type: 'chase' | 'check' | null }> => {
         const enemyColor = turn === 'red' ? 'black' : 'red';
         // 调用方可传入已算好的将军/捉子，避免同一步内重复 Worker RPC
@@ -1200,8 +1201,8 @@ const App: React.FC = () => {
         // 确定发起方：如果构成将军或捉子，当前走棋方是发起方
         const initiator = turn;
 
-        // 三个完整循环后不立即判和；同一将军局面第4次出现时，发起方必须变招。
-        if (violatesRepeatedCheckCycle(history, newHash, isCheck)) {
+        // 默认规则：同一将军局面第4次出现时，发起方必须变招。
+        if (repeatLimit > 2 && violatesRepeatedCheckCycle(history, newHash, isCheck)) {
             console.log('⚠️ 长将检测：' + turn + '方试图第4次发起相同将军循环，必须变招');
             return { violation: true, type: 'check' };
         }
@@ -1216,8 +1217,8 @@ const App: React.FC = () => {
         // 加上当前局面
         initiatorRepeatCount++;
         
-        // 发起方第4次重复（即连续重复3次后）才违规
-        if (initiatorRepeatCount >= 4) {
+        // repeatLimit=4 是手动走棋规则；AI 传入 2，首次再次进入同一将军局面即变招。
+        if (initiatorRepeatCount >= repeatLimit) {
             if (isCheck) {
                 console.log('⚠️ 长将检测：发起方连续将军' + initiatorRepeatCount + '次（发起方：' + initiator + '）');
                 return { violation: true, type: 'check' };
@@ -1497,8 +1498,6 @@ const App: React.FC = () => {
         // 检查单个走法是否会导致重复
         const checkMoveRepetition = async (move: Move): Promise<{
             violation: boolean;
-            repeated: boolean;
-            isCheck: boolean;
             type?: string;
         }> => {
             const testBoard = currentBoard.map(row => [...row]);
@@ -1513,12 +1512,11 @@ const App: React.FC = () => {
                 move,
                 currentBoard,
                 currentTurn,
-                { isCheck }
+                { isCheck },
+                isAutoMode ? 2 : 4
             );
             return {
                 violation: result.violation,
-                repeated: positionHistory.some(entry => entry.hash === hash),
-                isCheck,
                 type: result.type ?? undefined,
             };
         };
@@ -1657,7 +1655,7 @@ const App: React.FC = () => {
                             if (!isUsableMove(candidate)) continue;
                             const idle = await checkMoveRepetition(candidate);
                             if (searchToken.aborted) return;
-                    if (!idle.violation && !(idle.repeated && idle.isCheck)) {
+                    if (!idle.violation) {
                                 idleFallback = candidate;
                                 break;
                             }
@@ -1688,12 +1686,9 @@ const App: React.FC = () => {
 
                     const repetition = await checkMoveRepetition(bestMove);
                     if (searchToken.aborted) return;
-                    const repeatedCheck = repetition.repeated && repetition.isCheck;
-                    if (repetition.violation || repeatedCheck) {
+                    if (repetition.violation) {
                         console.log(
-                            repeatedCheck
-                                ? '⚠️ AI 将军会重复历史局面，提前换招:'
-                                : '⚠️ 最优着违反重复规则，禁着后重新搜索:',
+                            '⚠️ 最优着违反重复规则，禁着后重新搜索:',
                             bestMove,
                             repetition.type
                         );
