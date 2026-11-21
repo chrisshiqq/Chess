@@ -751,13 +751,13 @@ const App: React.FC = () => {
     }).current;
 
     // 获取详细的局面评估分数
-    const workerGetDetailedEval = useRef((board: Board, turn: Color, isReplay: boolean = false): Promise<any> => {
+    const workerGetDetailedEval = useRef((board: Board, turn: Color, isReplay: boolean = false, depthOverride?: number): Promise<any> => {
         const worker = workerRef.current;
         if (!worker) return Promise.reject(new Error('Worker not initialized'));
         return requestWorker(
             worker,
             'evaluateBoard',
-            { board: encodeBoard(board), turn, isReplay, depth: playDepth },
+            { board: encodeBoard(board), turn, isReplay, depth: depthOverride ?? playDepth },
             'detailedEvaluation',
             data => data.evaluation
         );
@@ -1865,7 +1865,7 @@ const App: React.FC = () => {
         const cachedPre = cachedBoardEvalRef.current;
         const preMoveEval = (cachedPre && cachedPre.hash === preHash)
             ? { red: cachedPre.red, black: cachedPre.black }
-            : await workerGetDetailedEval(board, turn, isReplaying);
+            : await workerGetDetailedEval(board, turn, isReplaying, playDepth);
         
         const targetPiece = board[move.to.r][move.to.c];
         //console.log('executeMove: targetPiece:', targetPiece);
@@ -2035,7 +2035,7 @@ const App: React.FC = () => {
         setAnalysisSecondBestMove(null);
         
         // 本步只算 post；结果写入缓存供下一手作 pre
-        const postMoveEval = await workerGetDetailedEval(newBoard, nextTurn, isReplaying);
+        const postMoveEval = await workerGetDetailedEval(newBoard, nextTurn, isReplaying, playDepth);
         cachedBoardEvalRef.current = {
             hash: newHash,
             red: postMoveEval.red,
@@ -3137,7 +3137,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             const currentBoard = allReplayBoards[replayIndex];
             
             // 计算当前局面的评估分数
-            const currentEval = await workerGetDetailedEval(currentBoard, currentTurn, isReplaying);
+            const currentEval = await workerGetDetailedEval(currentBoard, currentTurn, isReplaying, isAnalysisMode ? analysisDepth : playDepth);
             
             let preEvalRed, preEvalBlack;
             let postEvalRed, postEvalBlack;
@@ -3193,7 +3193,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 const previousBoard = allReplayBoards[replayIndex - 1];
                 
                 // 计算上一步局面的评估分数（即Before分数）
-                const previousEval = await workerGetDetailedEval(previousBoard, previousTurn, isReplaying);
+                const previousEval = await workerGetDetailedEval(previousBoard, previousTurn, isReplaying, isAnalysisMode ? analysisDepth : playDepth);
                 
                 // Before是上一步局面的分数
                 preEvalRed = previousEval.red;
@@ -3386,7 +3386,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             // 对于Setup模式，我们还需要获取详细的局面评估并更新EVALUATION
             if (isSetupMode) {
                 try {
-                    const evaluation = await workerGetDetailedEval(currentBoard, currentTurn, false);
+                    const evaluation = await workerGetDetailedEval(currentBoard, currentTurn, false, analysisDepth);
                     // 将worker返回的评估结果转换为moveEvaluation期望的格式
                     const formattedEvaluation = {
                         pre: evaluation,
@@ -3427,6 +3427,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const startReplay = async () => {
         setIsReplaying(true);
         setActiveTab('replay'); // 切换到Replay页签
+        // Replay 使用独立的棋局浏览状态，不显示普通 Auto/对弈搜索留下的候选着法。
+        setIsAnalysisMode(false);
+        setIsAnalyzing(false);
+        setAnalysisMoves([]);
+        setSelectedAnalysisMove(null);
+        setAnalysisPreviewIndex(-1);
+        setAnalysisBestMove(null);
+        setAnalysisSecondBestMove(null);
+        setIsPreviewing(false);
+        setOriginalBoardForPreview(null);
         setReplayIndex(0);
         void showReplayCheck(0);
         setSelectedPos(null);
@@ -3888,7 +3898,12 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
     const isFlipped = playerColor === 'black';
 
     const applyPreviewEvaluation = async (previewBoard: Board, previewTurn: Color) => {
-        const evaluation = await workerGetDetailedEval(previewBoard, previewTurn, isReplaying);
+        const evaluation = await workerGetDetailedEval(
+            previewBoard,
+            previewTurn,
+            isReplaying,
+            isAnalysisMode ? analysisDepth : playDepth
+        );
         const formatted = {
             pre: evaluation,
             post: evaluation,
@@ -4920,7 +4935,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                                                         // 重新评估局面并更新 EVALUATION 面板
                                                                                         try {
                                                                                             const nextTurn = (seqIndex + 1) % 2 === 0 ? turn : (turn === 'red' ? 'black' : 'red');
-                                                                                            const evaluation = await workerGetDetailedEval(tempBoard, nextTurn, false);
+                                                                                            const evaluation = await workerGetDetailedEval(tempBoard, nextTurn, false, analysisDepth);
                                                                                             // 将评估结果转换为 moveEvaluation 期望的格式
                                                                                             const formattedEvaluation = {
                                                                                                 pre: evaluation,
