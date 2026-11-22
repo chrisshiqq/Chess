@@ -2157,21 +2157,16 @@ const appendGeneratedStagedMoves = (
             capturesOnly, null, quietsOnly
         );
         const moverValue = materialValues[pieceCode & 7];
-        for (let index = pieceStart; index < moves.length; index++) {
-            const move = moves[index];
+        let write = pieceStart;
+        for (let read = pieceStart; read < moves.length; read++) {
+            const move = moves[read];
+            if (move === special0 || move === special1 || move === special2) continue;
             let score = getHistoryScore(move);
             if (capturesOnly) {
                 score += materialValues[squareCodes[move & MOVE_TO_MASK] & 7] * 16 - moverValue;
             }
-            sortMoveScoreScratch[index] = score;
-        }
-        let write = pieceStart;
-        for (let read = pieceStart; read < moves.length; read++) {
-            const move = moves[read];
-            if (move !== special0 && move !== special1 && move !== special2) {
-                moves[write++] = move;
-                sortMoveScoreScratch[write - 1] = sortMoveScoreScratch[read];
-            }
+            moves[write] = move;
+            sortMoveScoreScratch[write++] = score;
         }
         moves.length = write;
     }
@@ -3692,10 +3687,6 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
     const ownerMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
-    if (ownerMask === 0) {
-        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
-        return;
-    }
 
     // Walk only attacked targets and their actual attackers. This avoids the
     // previous O(ownPieces * attackedTargets) scan where each own slot re-checked
@@ -3838,14 +3829,8 @@ const quiescence = (
     let legalMovesFound = 0;
     for (let i = 0; i < moveCount; i++) {
         const move = moves[i];
-        const fromSq = move >>> 7;
         const toSq = move & MOVE_TO_MASK;
-        const moverCode = state.squareCodes[fromSq];
         const capturedCode = state.squareCodes[toSq];
-        const fromR = SQ_ROW[fromSq];
-        const fromC = SQ_COL[fromSq];
-        const toR = SQ_ROW[toSq];
-        const toC = SQ_COL[toSq];
         // delta pruning —— 仅吃子循环（!knownInCheck）剪枝。标准 alpha-based 公式：
         //   maximizing: standPat + capturedValue + margin < alpha ⇒ 无法提升 alpha
         //   minimizing: standPat - capturedValue - margin > beta  ⇒ 无法压低 beta
@@ -3865,6 +3850,12 @@ const quiescence = (
                 }
             }
         }
+        const fromSq = move >>> 7;
+        const moverCode = state.squareCodes[fromSq];
+        const fromR = SQ_ROW[fromSq];
+        const fromC = SQ_COL[fromSq];
+        const toR = SQ_ROW[toSq];
+        const toC = SQ_COL[toSq];
         const knownChecksResolved = knownInCheck &&
             fromSq !== checkedGeneralSq &&
             (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
