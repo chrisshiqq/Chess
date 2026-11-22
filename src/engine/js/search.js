@@ -453,7 +453,7 @@ const unmakeSearchMove = (
     }
 };
 
-// 将未动：只看 from/to 是否改变将的横竖线（车/将/炮，含落点成炮架）或腾出马腿。
+// 完整检查 = 同线车炮/兵闪将 + 腾马腿闪将。保留原函数名避免大范围修改。
 const moveTouchesLineOrUnblockedHorseCheck = (
     state, attackerIsRed, generalSq, gr, gc,
     fromR, fromC, toR, toC
@@ -464,6 +464,7 @@ const moveTouchesLineOrUnblockedHorseCheck = (
     const toOnRank = toR === gr;
     const toOnFile = toC === gc;
 
+    // --- 直线段：车/炮/兵在将同线打将（含闪将、炮架翻转） ---
     if (fromOnRank || toOnRank) {
         const rankKey = gc * RANK_OCC_COUNT + state.rowOccupancy[gr];
         if ((fromOnRank && fromC > gc) || (toOnRank && toC > gc)) {
@@ -519,6 +520,7 @@ const moveTouchesLineOrUnblockedHorseCheck = (
         }
     }
 
+    // --- 马段：腾马腿闪将（fromSq 必须是 general 斜对角邻居） ---
     if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
         const fromSq = fromR * 9 + fromC;
         const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
@@ -3846,13 +3848,12 @@ const quiescence = (
                 }
             }
         }
+        const knownChecksResolved = knownInCheck &&
+            fromSq !== checkedGeneralSq &&
+            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
         makeSearchMove(state, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        const knownChecksResolved = knownInCheck &&
-            checkInfo.count > 0 &&
-            fromSq !== checkedGeneralSq &&
-            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
         const receivesCheck = knownChecksResolved
             ? moveReceivesCheckAfterKnownResolution(
                 state, currentPlayer, fromSq, toSq, fromR, fromC, toR, toC
@@ -4038,13 +4039,12 @@ const alphaBeta = (
         const toR = SQ_ROW[toSq];
         const toC = SQ_COL[toSq];
         const isCapture = capturedCode !== 0;
+        const knownChecksResolved = knownInCheck &&
+            fromSq !== checkedGeneralSq &&
+            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
         makeSearchMove(stagedPieceState, fromSq, toSq, moverCode, capturedCode, fromR, fromC, toR, toC);
         const undoMoverSlot = scratchSearchUndoMoverSlot;
         const undoCapturedSlot = scratchSearchUndoCapturedSlot;
-        const knownChecksResolved = knownInCheck &&
-            checkInfo.count > 0 &&
-            fromSq !== checkedGeneralSq &&
-            (checkInfo.count === 1 || !isCannonScreenSquare(fromSq, checkInfo));
         const receivesCheck = knownChecksResolved
             ? moveReceivesCheckAfterKnownResolution(
                 stagedPieceState, currentPlayer, fromSq, toSq, fromR, fromC, toR, toC
@@ -4288,7 +4288,8 @@ const getBestMove = (
   resetPerfStats();
   snapshotLeafWeights();
   const maxDepth = Math.max(1, depth | 0);
-  transpositionTable.resize(maxDepth <= 10 ? TT_SMALL_SIZE : TT_DEFAULT_SIZE);
+  const useSmallTt = maxDepth <= 10 && !exactRootScores;
+  transpositionTable.resize(useSmallTt ? TT_SMALL_SIZE : TT_DEFAULT_SIZE);
   const startTime = Date.now();
   searchContext.reportSearchProgress({
     phase: 'root-eval',
