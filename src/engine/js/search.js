@@ -2431,21 +2431,20 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             }
             case 2: {
                 const r = SQ_ROW[fromSq];
-                const rowBase = r * 9;
-                const c = fromSq - rowBase;
+                const c = SQ_COL[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_FIRST_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        rowBase + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_FIRST_LOW[rankKey];
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        rowBase + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_FIRST_HIGH[fileKey];
@@ -2464,15 +2463,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     const rankControl = RANK_ROOK_CONTROL[rankKey];
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
-                            const sq = rowBase + 3;
+                            const sq = r * 9 + 3;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 16) {
-                            const sq = rowBase + 4;
+                            const sq = r * 9 + 4;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 32) {
-                            const sq = rowBase + 5;
+                            const sq = r * 9 + 5;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
@@ -2502,21 +2501,20 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             }
             case 6: {
                 const r = SQ_ROW[fromSq];
-                const rowBase = r * 9;
-                const c = fromSq - rowBase;
+                const c = SQ_COL[fromSq];
                 const rankKey = c * RANK_OCC_COUNT + rowOccupancy[r];
                 const fileKey = r * FILE_OCC_COUNT + colOccupancy[c];
                 mobilityValue = RANK_MOBILITY[rankKey] + FILE_MOBILITY[fileKey];
                 const t0 = RANK_SECOND_HIGH[rankKey];
                 if (t0 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        rowBase + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t0, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t1 = RANK_SECOND_LOW[rankKey];
                 if (t1 !== 255) {
                     attackedTargetMask |= applyOccupiedSliderHit(
-                        rowBase + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
+                        r * 9 + t1, isRed, bit, squareCodes, squareToSlot, attackBySlot, guardBySlot
                     );
                 }
                 const t2 = FILE_SECOND_HIGH[fileKey];
@@ -2535,15 +2533,15 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     const rankControl = RANK_CANNON_CONTROL[rankKey];
                     if (rankControl & 0x38) {
                         if (rankControl & 8) {
-                            const sq = rowBase + 3;
+                            const sq = r * 9 + 3;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 16) {
-                            const sq = rowBase + 4;
+                            const sq = r * 9 + 4;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                         if (rankControl & 32) {
-                            const sq = rowBase + 5;
+                            const sq = r * 9 + 5;
                             leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
                         }
                     }
@@ -2705,7 +2703,7 @@ class ZobristHasher {
     evalInitiatorKeys;
 
     constructor() {
-        this.hashTableFlat = new Int32Array(90 * 16);
+        this.hashTableFlat = new Int32Array(90 * 14);
         this.evalInitiatorKeys = new Int32Array(2);
         const MAX_SAFE = 0x1FFFFFFFFFFFFF; // 2^53 - 1
 
@@ -2718,7 +2716,7 @@ class ZobristHasher {
 
         for (let sq = 0; sq < 90; sq++) {
             for (let p = 0; p < 14; p++) {
-                this.hashTableFlat[(sq << 4) + p] = Math.floor(seededRandom() * MAX_SAFE);
+                this.hashTableFlat[sq * 14 + p] = Math.floor(seededRandom() * MAX_SAFE);
             }
         }
 
@@ -2750,7 +2748,7 @@ class ZobristHasher {
             for (let c = 0; c < 9; c++) {
                 const code = cellToSearchCode(board[r][c]);
                 if (!code) continue;
-                h ^= table[((r * 9 + c) << 4) + SEARCH_CODE_TO_ZOBRIST[code]];
+                h ^= table[(r * 9 + c) * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
             }
         }
         return h;
@@ -2762,7 +2760,7 @@ class ZobristHasher {
         for (let sq = 0; sq < REL_SQUARES; sq++) {
             const code = squareCodes[sq];
             if (!code) continue;
-            h ^= table[(sq << 4) + SEARCH_CODE_TO_ZOBRIST[code]];
+            h ^= table[sq * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
         }
         return h;
     }
@@ -2774,7 +2772,7 @@ class ZobristHasher {
             const code = squareCodes[sq];
             if (!code) continue;
             const mirroredSq = ((sq / 9) | 0) * 9 + (8 - (sq % 9));
-            h ^= table[(mirroredSq << 4) + SEARCH_CODE_TO_ZOBRIST[code]];
+            h ^= table[mirroredSq * 14 + SEARCH_CODE_TO_ZOBRIST[code]];
         }
         return h;
     }
@@ -2809,10 +2807,10 @@ class ZobristHasher {
     updateHash(currentHash, move, movingPiece, capturedPiece) {
         let newHash = currentHash;
         const movingIdx = SEARCH_CODE_TO_ZOBRIST[movingPiece];
-        newHash ^= this.hashTableFlat[((move.from.r * 9 + move.from.c) << 4) + movingIdx];
-        newHash ^= this.hashTableFlat[((move.to.r * 9 + move.to.c) << 4) + movingIdx];
+        newHash ^= this.hashTableFlat[(move.from.r * 9 + move.from.c) * 14 + movingIdx];
+        newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + movingIdx];
         if (capturedPiece) {
-            newHash ^= this.hashTableFlat[((move.to.r * 9 + move.to.c) << 4) + SEARCH_CODE_TO_ZOBRIST[capturedPiece]];
+            newHash ^= this.hashTableFlat[(move.to.r * 9 + move.to.c) * 14 + SEARCH_CODE_TO_ZOBRIST[capturedPiece]];
         }
         return newHash;
     }
@@ -3345,10 +3343,10 @@ const childBoardHash = (boardHash, from, to, moverCode, capturedCode) => {
     let newHash = boardHash;
     const hashTableFlat = zobristHasher.hashTableFlat;
     const movingIdx = SEARCH_CODE_TO_ZOBRIST[moverCode];
-    newHash ^= hashTableFlat[(from << 4) + movingIdx];
-    newHash ^= hashTableFlat[(to << 4) + movingIdx];
+    newHash ^= hashTableFlat[from * 14 + movingIdx];
+    newHash ^= hashTableFlat[to * 14 + movingIdx];
     if (capturedCode) {
-        newHash ^= hashTableFlat[(to << 4) + SEARCH_CODE_TO_ZOBRIST[capturedCode]];
+        newHash ^= hashTableFlat[to * 14 + SEARCH_CODE_TO_ZOBRIST[capturedCode]];
     }
     return newHash;
 };
