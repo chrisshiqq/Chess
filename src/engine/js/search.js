@@ -346,7 +346,8 @@ const makeSearchMove = (
 ) => {
     const moverSlot = state.squareToSlot[fromSq];
     const capturedSlot = state.squareToSlot[toSq];
-    const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
+    const moverIsRed = moverCode < 8;
+    const moverRowOccupancy = moverIsRed ? state.redRowOccupancy : state.blackRowOccupancy;
     scratchSearchUndoMoverSlot = moverSlot;
     scratchSearchUndoCapturedSlot = capturedSlot;
     occupancyScanGen++;
@@ -357,16 +358,17 @@ const makeSearchMove = (
     const moverPosition = SEARCH_POSITION_VALUES[moverCode];
     state.evalVerificationHash ^= moverVerify[fromSq] ^ moverVerify[toSq];
     const moverPositionDelta = moverPosition[toSq] - moverPosition[fromSq];
-    if (moverCode < 8) state.netPosition += moverPositionDelta;
+    if (moverIsRed) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
+        const capturedIsRed = capturedCode < 8;
         const capturedBit = 1 << capturedSlot;
-        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
+        if (capturedIsRed) state.redAliveMask = (state.redAliveMask & ~capturedBit) >>> 0;
         else state.blackAliveMask = (state.blackAliveMask & ~capturedBit) >>> 0;
         state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
-        if (capturedCode < 8) {
+        if (capturedIsRed) {
             state.netMaterial -= capturedMaterial;
             state.netPosition -= capturedPosition;
         } else {
@@ -374,10 +376,10 @@ const makeSearchMove = (
             state.netPosition += capturedPosition;
         }
         if ((capturedCode & 7) === 1) {
-            if (capturedCode < 8) state.redGeneralSq = -1;
+            if (capturedIsRed) state.redGeneralSq = -1;
             else state.blackGeneralSq = -1;
         }
-        const capturedRowOccupancy = capturedCode < 8
+        const capturedRowOccupancy = capturedIsRed
             ? state.redRowOccupancy
             : state.blackRowOccupancy;
         capturedRowOccupancy[toR] ^= 1 << toC;
@@ -393,7 +395,7 @@ const makeSearchMove = (
     state.squareCodes[fromSq] = 0;
     state.squareCodes[toSq] = moverCode;
     if ((moverCode & 7) === 1) {
-        if (moverCode < 8) state.redGeneralSq = toSq;
+        if (moverIsRed) state.redGeneralSq = toSq;
         else state.blackGeneralSq = toSq;
     }
 };
@@ -401,7 +403,8 @@ const makeSearchMove = (
 const unmakeSearchMove = (
     state, fromSq, toSq, moverSlot, capturedSlot, moverCode, capturedCode, fromR, fromC, toR, toC
 ) => {
-    const moverRowOccupancy = moverCode < 8 ? state.redRowOccupancy : state.blackRowOccupancy;
+    const moverIsRed = moverCode < 8;
+    const moverRowOccupancy = moverIsRed ? state.redRowOccupancy : state.blackRowOccupancy;
     occupancyScanGen++;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
@@ -410,16 +413,17 @@ const unmakeSearchMove = (
     const moverPosition = SEARCH_POSITION_VALUES[moverCode];
     state.evalVerificationHash ^= moverVerify[fromSq] ^ moverVerify[toSq];
     const moverPositionDelta = moverPosition[fromSq] - moverPosition[toSq];
-    if (moverCode < 8) state.netPosition += moverPositionDelta;
+    if (moverIsRed) state.netPosition += moverPositionDelta;
     else state.netPosition -= moverPositionDelta;
     if (capturedSlot >= 0) {
+        const capturedIsRed = capturedCode < 8;
         const capturedBit = 1 << capturedSlot;
-        if (capturedCode < 8) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
+        if (capturedIsRed) state.redAliveMask = (state.redAliveMask | capturedBit) >>> 0;
         else state.blackAliveMask = (state.blackAliveMask | capturedBit) >>> 0;
         state.evalVerificationHash ^= EVAL_VERIFY_HASH_BY_CODE[capturedCode][toSq];
         const capturedMaterial = state.materialValues[capturedCode & 7];
         const capturedPosition = SEARCH_POSITION_VALUES[capturedCode][toSq];
-        if (capturedCode < 8) {
+        if (capturedIsRed) {
             state.netMaterial += capturedMaterial;
             state.netPosition += capturedPosition;
         } else {
@@ -429,10 +433,10 @@ const unmakeSearchMove = (
         state.squareToSlot[toSq] = capturedSlot;
         state.squareCodes[toSq] = capturedCode;
         if ((capturedCode & 7) === 1) {
-            if (capturedCode < 8) state.redGeneralSq = toSq;
+            if (capturedIsRed) state.redGeneralSq = toSq;
             else state.blackGeneralSq = toSq;
         }
-        const capturedRowOccupancy = capturedCode < 8
+        const capturedRowOccupancy = capturedIsRed
             ? state.redRowOccupancy
             : state.blackRowOccupancy;
         moverRowOccupancy[toR] ^= 1 << toC;
@@ -448,7 +452,7 @@ const unmakeSearchMove = (
     state.squareToSlot[fromSq] = moverSlot;
     state.squareCodes[fromSq] = moverCode;
     if ((moverCode & 7) === 1) {
-        if (moverCode < 8) state.redGeneralSq = fromSq;
+        if (moverIsRed) state.redGeneralSq = fromSq;
         else state.blackGeneralSq = fromSq;
     }
 };
@@ -3038,6 +3042,8 @@ const isKingInCheckForSetupState = (state, color) => {
 const moveGivesCheck = (state, checkedColor, fromSq, toSq, fromR, fromC, toR, toC) => {
     const checkedIsRed = checkedColor === SIDE_RED;
     const generalSq = checkedColor === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
+    // Capturing a general leaves a terminal child without that king.
+    if (generalSq < 0) return true;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
     if (
@@ -3399,6 +3405,9 @@ const evaluateLeaf = (pieceState) => {
     let redSafety = 0;
     let blackSafety = 0;
     const redGeneralSq = pieceState.redGeneralSq;
+    // Search can inspect a terminal child immediately after a general capture.
+    // Keep the guards here; unlike ordinary playable-state checks, these values
+    // are intentionally allowed to be -1 by makeSearchMove.
     if (redGeneralSq >= 0) {
         const destStart = SEARCH_GENERAL_DEST_OFF[redGeneralSq];
         const destEnd = SEARCH_GENERAL_DEST_OFF[redGeneralSq + 1];
