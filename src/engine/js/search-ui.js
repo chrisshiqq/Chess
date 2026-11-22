@@ -17,11 +17,11 @@ import {
     activePieceStateFor,
     activeSearchPieceState,
     calculateStaticExchangeScoreFromMasks,
-    collectCheckersFromState,
+    collectCheckersForSetupState,
     collectPinnedGuardSlots,
     colorToSide,
     getValidMovesFromSq,
-    isKingInCheckFromState,
+    isKingInCheckForSetupState,
     perfStats,
     pinnedCanGuardSquare,
     runWithPieceState,
@@ -488,7 +488,7 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
         if (inCheck) {
             const state = activeSearchPieceState;
             if (state) {
-                collectCheckersFromState(state, currentPlayer, scratchLegalCheckInfo);
+                collectCheckersForSetupState(state, currentPlayer, scratchLegalCheckInfo);
                 checkInfo = scratchLegalCheckInfo;
             }
         }
@@ -690,10 +690,10 @@ export const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
         return side === SIDE_RED ? piecesInfo[0].redIsInCheck : piecesInfo[0].blackIsInCheck;
     }
     const state = activePieceStateFor(board);
-    if (state) return isKingInCheckFromState(state, side);
+    if (state) return isKingInCheckForSetupState(state, side);
     return runWithPieceState(board, () => {
         const created = activeSearchPieceState;
-        return created ? isKingInCheckFromState(created, side) : true;
+        return created ? isKingInCheckForSetupState(created, side) : true;
     });
 };
 
@@ -712,10 +712,10 @@ export const checkGameState = (board, turn, piecesInfo = null, boardInfo = null)
     const side = colorToSide(turn);
     runWithPieceState(board, () => {
         const state = activeSearchPieceState;
-        inCheck = isKingInCheckFromState(state, side);
+        inCheck = isKingInCheckForSetupState(state, side);
         let checkInfo = null;
         if (inCheck) {
-            collectCheckersFromState(state, side, scratchLegalCheckInfo);
+            collectCheckersForSetupState(state, side, scratchLegalCheckInfo);
             checkInfo = scratchLegalCheckInfo;
         }
         const wantRed = side === SIDE_RED;

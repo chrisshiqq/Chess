@@ -2832,11 +2832,6 @@ const collectCheckersFromState = (state, color, out) => {
     out.count = 0;
     const ownIsRed = color === SIDE_RED;
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) {
-        addChecker(out, -1, CHECK_KIND_RAY);
-        return out;
-    }
-
     const squareCodes = state.squareCodes;
     const enemyIsRed = !ownIsRed;
     const gr = SQ_ROW[generalSq];
@@ -2946,8 +2941,6 @@ const collectCheckersFromState = (state, color, out) => {
 const isKingInCheckFromState = (state, color) => {
     const ownIsRed = color === SIDE_RED;
     const generalSq = ownIsRed ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) return true;
-
     const squareCodes = state.squareCodes;
     const enemyIsRed = !ownIsRed;
     const gr = SQ_ROW[generalSq];
@@ -3025,11 +3018,26 @@ const isKingInCheckFromState = (state, color) => {
     return false;
 };
 
+// Setup positions may intentionally omit one or both generals.
+const collectCheckersForSetupState = (state, color, out) => {
+    const generalSq = color === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
+    if (generalSq < 0) {
+        out.count = 0;
+        addChecker(out, -1, CHECK_KIND_RAY);
+        return out;
+    }
+    return collectCheckersFromState(state, color, out);
+};
+
+const isKingInCheckForSetupState = (state, color) => {
+    const generalSq = color === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
+    return generalSq < 0 || isKingInCheckFromState(state, color);
+};
+
 // 已 make：增量判断本步是否将军。先按将线/马位腿/兵位快速否证。
 const moveGivesCheck = (state, checkedColor, fromSq, toSq, fromR, fromC, toR, toC) => {
     const checkedIsRed = checkedColor === SIDE_RED;
     const generalSq = checkedColor === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) return true;
     const gr = SQ_ROW[generalSq];
     const gc = SQ_COL[generalSq];
     if (
@@ -3062,11 +3070,11 @@ const getValidMovesFromSq = (fromSq, wasInCheck = null, checkInfo = null) => {
   let inCheck = wasInCheck;
   let info = checkInfo;
   if (inCheck == null) {
-    inCheck = isKingInCheckFromState(state, side);
+    inCheck = isKingInCheckForSetupState(state, side);
     info = null;
   }
   if (inCheck && !info) {
-    collectCheckersFromState(state, side, scratchLegalCheckInfo);
+    collectCheckersForSetupState(state, side, scratchLegalCheckInfo);
     info = scratchLegalCheckInfo;
   }
   const encoded = scratchLegalEncoded;
@@ -4638,12 +4646,14 @@ export {
   activeSearchPieceState,
   calculateStaticExchangeScoreFromMasks,
   collectCheckersFromState,
+  collectCheckersForSetupState,
   collectPinnedGuardSlots,
   colorToSide,
   getBestMove,
   getGameStage,
   getValidMovesFromSq,
   isKingInCheckFromState,
+  isKingInCheckForSetupState,
   logPerfStats,
   openingBook,
   perfStats,

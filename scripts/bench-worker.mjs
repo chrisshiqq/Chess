@@ -41,7 +41,7 @@ parentPort.on('message', ({ type, payload }) => {
       fromBook,
       thinkingTime,
       perf: snapshotPerfStats(),
-      gc
+      gc,
     }
   });
 });
