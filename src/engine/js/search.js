@@ -1196,31 +1196,6 @@ const FILE_THIRD_LOW = SEARCH_FILE_LOOKUP.thirdLow;
 const FILE_ROOK_CONTROL = SEARCH_FILE_LOOKUP.rookControl;
 const FILE_CANNON_CONTROL = SEARCH_FILE_LOOKUP.cannonControl;
 
-// Expand the three relevant rank/file control bits into the board's sq&31
-// palace layout so leaf evaluation can merge all destinations with one OR.
-const PALACE_RANK_BITS = new Uint32Array(ROWS * 8);
-for (let r = 0; r < ROWS; r++) {
-    for (let mask = 0; mask < 8; mask++) {
-        const base = (r * COLS + 3) & 31;
-        PALACE_RANK_BITS[r * 8 + mask] =
-            ((mask & 1) << base) |
-            ((mask & 2) << base) |
-            ((mask & 4) << base);
-    }
-}
-const PALACE_FILE_BITS = new Uint32Array(2 * COLS * 8);
-for (let c = 0; c < COLS; c++) {
-    for (let palace = 0; palace < 2; palace++) {
-        const firstRow = palace === 0 ? 7 : 0;
-        for (let mask = 0; mask < 8; mask++) {
-            PALACE_FILE_BITS[(palace * COLS + c) * 8 + mask] =
-                ((mask & 1) ? (1 << ((c + firstRow * COLS) & 31)) : 0) |
-                ((mask & 2) ? (1 << ((c + (firstRow + 1) * COLS) & 31)) : 0) |
-                ((mask & 4) ? (1 << ((c + (firstRow + 2) * COLS) & 31)) : 0);
-        }
-    }
-}
-
 // 垫将：离开钉线会发现对方将。线外失去保护；钉线上仍可反吃。
 // 车/将面对面：整条横/竖线；炮隔两子：只能保那门炮；马腿：只能保那匹马。
 const pinOwnGuardSlot = (
@@ -2481,14 +2456,39 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 }
                 if (isRed ? r >= 7 : r <= 2) {
                     const rankControl = RANK_ROOK_CONTROL[rankKey];
-                    leafPalaceAttack[colorIdx] |=
-                        PALACE_RANK_BITS[r * 8 + ((rankControl >>> 3) & 7)];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                    }
                 }
                 if (c >= 3 && c <= 5) {
                     const fileControl = FILE_ROOK_CONTROL[fileKey];
-                    const compact = isRed ? (fileControl >>> 7) & 7 : fileControl & 7;
-                    leafPalaceAttack[colorIdx] |=
-                        PALACE_FILE_BITS[(isRed ? c : COLS + c) * 8 + compact];
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                    }
                 }
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
@@ -2526,14 +2526,39 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                 }
                 if (isRed ? r >= 7 : r <= 2) {
                     const rankControl = RANK_CANNON_CONTROL[rankKey];
-                    leafPalaceAttack[colorIdx] |=
-                        PALACE_RANK_BITS[r * 8 + ((rankControl >>> 3) & 7)];
+                    if (rankControl & 0x38) {
+                        if (rankControl & 8) {
+                            const sq = r * 9 + 3;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 16) {
+                            const sq = r * 9 + 4;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        if (rankControl & 32) {
+                            const sq = r * 9 + 5;
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                    }
                 }
                 if (c >= 3 && c <= 5) {
                     const fileControl = FILE_CANNON_CONTROL[fileKey];
-                    const compact = isRed ? (fileControl >>> 7) & 7 : fileControl & 7;
-                    leafPalaceAttack[colorIdx] |=
-                        PALACE_FILE_BITS[(isRed ? c : COLS + c) * 8 + compact];
+                    const fileMask = isRed ? 0x380 : 0x7;
+                    if (fileControl & fileMask) {
+                        const firstRow = isRed ? 7 : 0;
+                        let sq = firstRow * 9 + c;
+                        if (fileControl & (1 << firstRow)) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 1))) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                        sq += 9;
+                        if (fileControl & (1 << (firstRow + 2))) {
+                            leafPalaceAttack[colorIdx] |= 1 << (sq & 31);
+                        }
+                    }
                 }
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
