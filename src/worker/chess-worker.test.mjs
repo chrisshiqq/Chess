@@ -13,6 +13,41 @@ const request = (message) => new Promise((resolve, reject) => {
   });
 });
 
+const search = (board, exactRootScores) => new Promise((resolve, reject) => {
+  handleWorkerRequest({
+    type: 'SEARCH',
+    payload: { board, turn: 'red', depth: 2, gameId: 1, openingBookEnabled: false, exactRootScores }
+  }, (response) => {
+    if (response.type === 'WORKER_ERROR') reject(new Error(response.error));
+    if (response.type === 'SEARCH_COMPLETE') resolve(response.payload);
+  });
+});
+
+test('play omits variations and analysis returns a variation for each root move', async () => {
+  const board = createInitialSearchBoard();
+  const play = await search(board, false);
+  const analysis = await search(board, true);
+
+  assert.notEqual(play.bestMove, null);
+  assert.deepEqual(play.moveSequence, []);
+  assert.ok(play.allMovesWithScores.every(({ moveSequence }) => moveSequence.length === 0));
+  assert.equal(analysis.moveSequence[0], analysis.bestMove);
+  assert.ok(analysis.allMovesWithScores.length > 0);
+  assert.ok(analysis.allMovesWithScores.every(({ move, moveSequence }) => moveSequence[0] === move));
+});
+
+test('setup inspection handles a side without a general', async () => {
+  const board = createInitialSearchBoard();
+  board[0][4] = 0;
+  const payload = { board, requestId: 'setup' };
+  const check = await request({ type: 'isCheck', payload: { ...payload, color: 'red' } });
+  const moves = await request({ type: 'getValidMoves', payload: { ...payload, pos: { r: 2, c: 1 } } });
+  const state = await request({ type: 'checkGameState', payload: { ...payload, turn: 'red' } });
+  assert.equal(check.isCheck, true);
+  assert.deepEqual(moves.moves, []);
+  assert.deepEqual(state.state, { status: 'checkmate', winner: 'black' });
+});
+
 test('Worker 点棋/合法着/评估直接吃搜索码盘', async () => {
   const board = createInitialSearchBoard();
   const cannon = { r: 2, c: 1 };

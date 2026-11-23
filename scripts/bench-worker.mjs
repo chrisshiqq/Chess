@@ -1,7 +1,7 @@
 import { parentPort } from 'node:worker_threads';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
 import { configureSearch } from '../src/engine/js/search-context.js';
-import { getBestMove, openingBook, snapshotPerfStats } from '../src/engine/js/search.js';
+import { getAnalysisMove, getPlayMove, openingBook, snapshotPerfStats } from '../src/engine/js/search.js';
 
 console.log = () => {};
 
@@ -20,12 +20,13 @@ parentPort.on('message', ({ type, payload }) => {
   observer.observe({ entryTypes: ['gc'], buffered: false });
   gc.heapBefore = process.memoryUsage().heapUsed;
   const started = performance.now();
-  const result = getBestMove(
+  const search = payload.exactRootScores ? getAnalysisMove : getPlayMove;
+  const result = search(
     payload.board,
     payload.turn,
     payload.depth,
     payload.ply ?? 0,
-    payload.exactRootScores ?? false
+    payload.excludedRootMoves ?? []
   );
   const thinkingTime = Math.round(performance.now() - started);
   gc.heapAfter = process.memoryUsage().heapUsed;

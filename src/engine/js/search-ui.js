@@ -11,17 +11,18 @@ import {
     HORSE_DEST,
     ORTH_DIRS,
     SEARCH_POSITION_VALUES,
+    SIDE_BLACK,
     SIDE_RED,
     SOLDIER_DEST,
     VALUE_WEIGHTS,
     activePieceStateFor,
     activeSearchPieceState,
     calculateStaticExchangeScoreFromMasks,
-    collectCheckersForSetupState,
+    collectCheckersFromState,
     collectPinnedGuardSlots,
     colorToSide,
     getValidMovesFromSq,
-    isKingInCheckForSetupState,
+    isKingInCheckFromState,
     perfStats,
     pinnedCanGuardSquare,
     runWithPieceState,
@@ -29,6 +30,13 @@ import {
     searchMaterialTable,
     sideToColor
 } from './search.js';
+
+const setupGeneralSquare = (state, side) =>
+    side === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
+
+// Setup positions may intentionally omit one or both generals.
+const isKingInCheckForSetupState = (state, side) =>
+    setupGeneralSquare(state, side) < 0 || isKingInCheckFromState(state, side);
 
 const ATTACK_WORDS = 3;
 const scratchRedAttack = new Uint32Array(ATTACK_WORDS);
@@ -487,9 +495,8 @@ const calculateDerivedValues = (board, piecesInfo, currentPlayer = null, boardIn
         let checkInfo = null;
         if (inCheck) {
             const state = activeSearchPieceState;
-            if (state) {
-                collectCheckersForSetupState(state, currentPlayer, scratchLegalCheckInfo);
-                checkInfo = scratchLegalCheckInfo;
+            if (state && setupGeneralSquare(state, currentPlayer) >= 0) {
+                checkInfo = collectCheckersFromState(state, currentPlayer, scratchLegalCheckInfo);
             }
         }
         let hasMoves = false;
@@ -698,9 +705,19 @@ export const isCheck = (board, color, piecesInfo = null, boardInfo = null) => {
 };
 
 export const getValidMoves = (board, pos, wasInCheck = null, checkInfo = null) =>
-    runWithPieceState(board, () =>
-        getValidMovesFromSq(pos.r * 9 + pos.c, wasInCheck, checkInfo)
-    );
+    runWithPieceState(board, () => {
+        const state = activeSearchPieceState;
+        const fromSq = pos.r * COLS + pos.c;
+        const code = state.squareCodes[fromSq];
+        if (!code) return [];
+        const side = code < 8 ? SIDE_RED : SIDE_BLACK;
+        const inCheck = wasInCheck ?? isKingInCheckForSetupState(state, side);
+        if (!inCheck) return getValidMovesFromSq(fromSq, false, null);
+        if (setupGeneralSquare(state, side) < 0) return [];
+        const info = (wasInCheck == null ? null : checkInfo) ??
+            collectCheckersFromState(state, side, scratchLegalCheckInfo);
+        return getValidMovesFromSq(fromSq, true, info);
+    });
 
 export const checkGameState = (board, turn, piecesInfo = null, boardInfo = null) => {
     if (boardInfo && boardInfo.gameState) {
@@ -713,10 +730,10 @@ export const checkGameState = (board, turn, piecesInfo = null, boardInfo = null)
     runWithPieceState(board, () => {
         const state = activeSearchPieceState;
         inCheck = isKingInCheckForSetupState(state, side);
+        if (setupGeneralSquare(state, side) < 0) return;
         let checkInfo = null;
         if (inCheck) {
-            collectCheckersForSetupState(state, side, scratchLegalCheckInfo);
-            checkInfo = scratchLegalCheckInfo;
+            checkInfo = collectCheckersFromState(state, side, scratchLegalCheckInfo);
         }
         const wantRed = side === SIDE_RED;
         for (let r = 0; r < ROWS; r++) {

@@ -180,7 +180,6 @@ let scratchPinnedGuardBits = 0;
 const scratchLeafTotals = new Int32Array(6);
 let scratchLeafAttackedTargetMask = 0;
 const scratchOwnScanSlots = new Uint8Array(32);
-let scratchOwnScanMask = 0;
 let occupancyScanGen = 0;
 let ownScanCacheGen = -1;
 let ownScanCacheRed = -1;
@@ -816,13 +815,12 @@ const sortSearchMoves = (moves, ttMove, killers, inCheck) => {
 };
 
 // 根节点专用：着法与 rootScores / rootSeqs 同步重排。
-const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
+const sortRootSearchMoves = (moves, ttMove, inCheck, scores) => {
     fillSearchMoveSortKeys(moves, ttMove, null, inCheck);
     const moveCount = moves.length;
     for (let i = 1; i < moveCount; i++) {
         const move = moves[i];
         const scoreVal = scores[i];
-        const seqVal = seqs[i];
         const priority = sortMovePriorityScratch[i];
         const score = sortMoveScoreScratch[i];
         let j = i - 1;
@@ -833,14 +831,12 @@ const sortRootSearchMoves = (moves, ttMove, inCheck, scores, seqs) => {
         ) {
             moves[j + 1] = moves[j];
             scores[j + 1] = scores[j];
-            seqs[j + 1] = seqs[j];
             sortMovePriorityScratch[j + 1] = sortMovePriorityScratch[j];
             sortMoveScoreScratch[j + 1] = sortMoveScoreScratch[j];
             j--;
         }
         moves[j + 1] = move;
         scores[j + 1] = scoreVal;
-        seqs[j + 1] = seqVal;
         sortMovePriorityScratch[j + 1] = priority;
         sortMoveScoreScratch[j + 1] = score;
     }
@@ -1389,7 +1385,6 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
     const squareToSlot = pieceState.squareToSlot;
     const rowOccupancy = isRed ? pieceState.redRowOccupancy : pieceState.blackRowOccupancy;
     const slots = scratchOwnScanSlots;
-    scratchOwnScanMask = 0;
     let n = 0;
     if (isRed) {
         for (let r = 0; r < ROWS; r++) {
@@ -1401,7 +1396,6 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
                 bits ^= bit;
                 const slot = squareToSlot[row + (31 - Math.clz32(bit))];
                 slots[n++] = slot;
-                scratchOwnScanMask |= 1 << slot;
             }
         }
     } else {
@@ -1414,7 +1408,6 @@ const collectOwnSlotsInScanOrder = (pieceState, isRed) => {
                 bits ^= bit;
                 const slot = squareToSlot[row + (31 - Math.clz32(bit))];
                 slots[n++] = slot;
-                scratchOwnScanMask |= 1 << slot;
             }
         }
     }
@@ -3017,22 +3010,6 @@ const isKingInCheckFromState = (state, color) => {
     return false;
 };
 
-// Setup positions may intentionally omit one or both generals.
-const collectCheckersForSetupState = (state, color, out) => {
-    const generalSq = color === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
-    if (generalSq < 0) {
-        out.count = 0;
-        addChecker(out, -1, CHECK_KIND_RAY);
-        return out;
-    }
-    return collectCheckersFromState(state, color, out);
-};
-
-const isKingInCheckForSetupState = (state, color) => {
-    const generalSq = color === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;
-    return generalSq < 0 || isKingInCheckFromState(state, color);
-};
-
 // 已 make：增量判断本步是否将军。先按将线/马位腿/兵位快速否证。
 const moveGivesCheck = (state, checkedColor, fromSq, toSq, fromR, fromC, toR, toC) => {
     const checkedIsRed = checkedColor === SIDE_RED;
@@ -3063,26 +3040,16 @@ const moveGivesCheck = (state, checkedColor, fromSq, toSq, fromR, fromC, toR, to
 
 
 // 合法着法：伪合法 + 不送将/不飞将。返回落点格号（r * 9 + c），UI 再解码。
-const getValidMovesFromSq = (fromSq, wasInCheck = null, checkInfo = null) => {
+const getValidMovesFromSq = (fromSq, inCheck, checkInfo) => {
   const state = activeSearchPieceState;
   const pieceCode = state.squareCodes[fromSq];
   if (!pieceCode) return [];
   const side = pieceCode < 8 ? SIDE_RED : SIDE_BLACK;
-  let inCheck = wasInCheck;
-  let info = checkInfo;
-  if (inCheck == null) {
-    inCheck = isKingInCheckForSetupState(state, side);
-    info = null;
-  }
-  if (inCheck && !info) {
-    collectCheckersForSetupState(state, side, scratchLegalCheckInfo);
-    info = scratchLegalCheckInfo;
-  }
   const encoded = scratchLegalEncoded;
   encoded.length = 0;
   appendSearchPseudoMovesForPiece(encoded, fromSq, pieceCode, state, false);
   for (let i = 0; i < encoded.length; i++) encoded[i] &= MOVE_TO_MASK;
-  return filterLegalMoves(fromSq, side, encoded, inCheck, info);
+  return filterLegalMoves(fromSq, side, encoded, inCheck, checkInfo);
 };
 
 
@@ -3652,11 +3619,9 @@ const appendScoredQuiescenceCapturesForPiece = (
     }
 };
 
-const generateQuiescenceMoves = (currentPlayer, destination = EMPTY_MOVE_LIST) => {
+const generateQuiescenceMoves = (currentPlayer, moves) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.captureGenCount++;
-    const moves = destination ?? EMPTY_MOVE_LIST;
-    moves.length = 0;
     const pieceState = activeSearchPieceState;
     const slotCodes = pieceState.slotCodes;
     const slotToSquare = pieceState.slotToSquare;
@@ -3669,29 +3634,20 @@ const generateQuiescenceMoves = (currentPlayer, destination = EMPTY_MOVE_LIST) =
         );
     }
     if (searchProfile) perfStats.captureGenMs += performance.now() - __t0;
-    return moves;
 };
 
 // 叶关系 attackBySlot 直接展开吃子；外层扫描顺序与 generateQuiescenceMoves 一致。
 const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
     const __t0 = searchProfile ? performance.now() : 0;
     if (searchProfile) perfStats.emitCapturesFromRelCount++;
-    const attacked = scratchLeafAttackedTargetMask >>> 0;
-    if (attacked === 0) {
-        if (searchProfile) perfStats.emitCapturesFromRelMs += performance.now() - __t0;
-        return;
-    }
-    const isRed = currentPlayer === SIDE_RED;
+    const enemyMask = currentPlayer === SIDE_RED ? pieceState.blackAliveMask : pieceState.redAliveMask;
     const slotToSquare = pieceState.slotToSquare;
     const slotCodes = pieceState.slotCodes;
     const materialValues = pieceState.materialValues;
     const attackBySlot = scratchLeafAttackBySlot;
-    const ownerMask = (isRed ? pieceState.redAliveMask : pieceState.blackAliveMask) >>> 0;
 
-    // Walk only attacked targets and their actual attackers. This avoids the
-    // previous O(ownPieces * attackedTargets) scan where each own slot re-checked
-    // every target bit even when that slot could not possibly attack it.
-    let targetBits = attacked;
+    // Leaf attack masks contain only opponents of their target.
+    let targetBits = scratchLeafAttackedTargetMask & enemyMask;
     while (targetBits !== 0) {
         const targetBit = targetBits & -targetBits;
         targetBits ^= targetBit;
@@ -3699,16 +3655,15 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         // These values are shared by every attacker of this target. Keep the
         // inner loop focused on attacker-specific state and move emission.
         const toSq = slotToSquare[targetSlot];
-        const victimValue = materialValues[slotCodes[targetSlot] & 7];
-        let attackerMask = attackBySlot[targetSlot] >>> 0;
-        attackerMask &= ownerMask;
+        const victimScore = materialValues[slotCodes[targetSlot] & 7] * 16;
+        let attackerMask = attackBySlot[targetSlot];
         while (attackerMask !== 0) {
             const attackerBit = attackerMask & -attackerMask;
             attackerMask ^= attackerBit;
             const attackerSlot = 31 - Math.clz32(attackerBit);
             const fromSq = slotToSquare[attackerSlot];
             const moverValue = materialValues[slotCodes[attackerSlot] & 7];
-            captureSortScoreScratch[moves.length] = victimValue * 16 - moverValue;
+            captureSortScoreScratch[moves.length] = victimScore - moverValue;
             moves.push((fromSq << 7) | toSq);
         }
     }
@@ -4245,14 +4200,90 @@ const appendPvFromTt = (sequence, turn, boardHash, maxPly) => {
 
 const scratchRootCheckInfo = createCheckInfo();
 
-// exactRootScores: true=Analysis 根着法精确分（数量由 exactRootLimit 限制，0=不限制）；false=对弈标准 PVS（fail-low 不回搜）
-const getBestMove = (
+const searchPlayRootMove = (scores, index, depth, alpha, side, hash, inCheck) => {
+  const remaining = depth - 1;
+  if (index === 0 || alpha === -SEARCH_INF) {
+    scores[index] = alphaBeta(remaining, -SEARCH_INF, SEARCH_INF, side, depth, hash, true, inCheck);
+    return Math.max(alpha, scores[index]);
+  }
+  const probe = alphaBeta(remaining, alpha, alpha + NULL_WINDOW, side, depth, hash, true, inCheck);
+  if (probe > alpha) {
+    const score = alphaBeta(remaining, alpha, SEARCH_INF, side, depth, hash, true, inCheck);
+    scores[index] = score;
+    return Math.max(alpha, score);
+  }
+  // A fail-low gives an upper bound. Keep the previous iteration's ordering score.
+  if (scores[index] > alpha) scores[index] = alpha - 1;
+  return alpha;
+};
+
+const readExactRootScore = (ttKey, remaining, alpha) => {
+  const base = transpositionTable.retrieve(ttKey);
+  if (base < 0) return null;
+  const data = transpositionTable.data;
+  const word0 = data[base];
+  if (((word0 >>> TT_W0_FLAG_SHIFT) & 3) !== TT_FLAG_EXACT ||
+      (word0 >>> TT_W0_DEPTH_SHIFT) < remaining) return null;
+  const score = (data[base + 1] << 14) >> 14;
+  return score <= alpha ? score : null;
+};
+
+const createAnalysisRootMoveSearcher = (sequences, exactRootLimit) => (
+  scores, index, depth, alpha, side, hash, inCheck, move
+) => {
+  const remaining = depth - 1;
+  if (index === 0 || alpha === -SEARCH_INF || (exactRootLimit > 0 && index >= exactRootLimit)) {
+    alpha = searchPlayRootMove(scores, index, depth, alpha, side, hash, inCheck);
+  } else {
+    const ttKey = makeSearchTTKey(side, hash);
+    let score = readExactRootScore(ttKey, remaining, alpha);
+    if (score == null) {
+      const probe = alphaBeta(remaining, alpha, alpha + NULL_WINDOW, side, depth, hash, true, inCheck);
+      if (probe > alpha) {
+        score = alphaBeta(remaining, alpha, SEARCH_INF, side, depth, hash, true, inCheck);
+      } else {
+        score = readExactRootScore(ttKey, remaining, alpha);
+        if (score == null) {
+          score = alphaBeta(remaining, -SEARCH_INF, alpha + NULL_WINDOW, side, depth, hash, true, inCheck);
+          // Tight windows can disagree with the probe when NMP or TT cutoffs are involved.
+          if (score > alpha) score = probe;
+        }
+      }
+    }
+    scores[index] = score;
+    alpha = Math.max(alpha, score);
+  }
+  const sequence = [move];
+  appendPvFromTt(sequence, side, hash, remaining);
+  sequences.set(move, sequence);
+  return alpha;
+};
+
+const sortAnalysisRootTies = (moves, scores, sequences) => {
+  for (let i = 1; i < moves.length; i++) {
+    const score = scores[i];
+    if (score === 0 || score !== scores[i - 1]) continue;
+    const move = moves[i];
+    const length = sequences.get(move).length;
+    let j = i - 1;
+    while (j >= 0 && scores[j] === score) {
+      const previousLength = sequences.get(moves[j]).length;
+      if (score > 0 ? previousLength <= length : previousLength >= length) break;
+      moves[j + 1] = moves[j];
+      j--;
+    }
+    moves[j + 1] = move;
+  }
+};
+
+const searchBestMove = (
   board,
   turn,
-  depth = 10,
-  ply = 0,
-  exactRootScores = false,
-  excludedRootMoves = []
+  depth,
+  ply,
+  excludedRootMoves,
+  searchFinalRootMove,
+  analysisSequences
 ) => {
   const excludedRootMoveSet = new Set();
   for (let i = 0; i < excludedRootMoves.length; i++) {
@@ -4272,10 +4303,15 @@ const getBestMove = (
     const toSq = bookMove.to.r * 9 + bookMove.to.c;
     const moverCode = rootPieceState.squareCodes[fromSq];
     const encodedBook = (fromSq << 7) | toSq;
-    if (moverCode && ((moverCode < 8) === (side === SIDE_RED)) &&
+    const generalSq = side === SIDE_RED ? rootPieceState.redGeneralSq : rootPieceState.blackGeneralSq;
+    if (generalSq >= 0 && moverCode && ((moverCode < 8) === (side === SIDE_RED)) &&
         !excludedRootMoveSet.has(encodedBook)) {
-      const validDestinations = getValidMovesFromSq(fromSq);
-      if (validDestinations.some((dest) => dest === toSq)) {
+      const inCheck = isKingInCheckFromState(rootPieceState, side);
+      const checkInfo = inCheck
+        ? collectCheckersFromState(rootPieceState, side, scratchRootCheckInfo)
+        : null;
+      const validDestinations = getValidMovesFromSq(fromSq, inCheck, checkInfo);
+      if (validDestinations.includes(toSq)) {
         resetPerfStats();
         activeSearchPieceState = null;
         return {
@@ -4298,7 +4334,7 @@ const getBestMove = (
   resetPerfStats();
   snapshotLeafWeights();
   const maxDepth = Math.max(1, depth | 0);
-  const useSmallTt = maxDepth <= 10 && !exactRootScores;
+  const useSmallTt = maxDepth <= 10 && !analysisSequences;
   transpositionTable.resize(useSmallTt ? TT_SMALL_SIZE : TT_DEFAULT_SIZE);
   const startTime = Date.now();
   searchContext.reportSearchProgress({
@@ -4314,7 +4350,7 @@ const getBestMove = (
     : [
         searchContext.ttReuseScope,
         turn,
-        exactRootScores ? 'analysis' : 'play',
+        analysisSequences ? 'analysis' : 'play',
         gameStage,
         VALUE_WEIGHTS.material,
         VALUE_WEIGHTS.position,
@@ -4335,10 +4371,9 @@ const getBestMove = (
   if (rootInCheck) collectCheckersFromState(rootPieceState, side, scratchRootCheckInfo);
   const rootCheckInfo = rootInCheck ? scratchRootCheckInfo : null;
 
-  // 收集根节点走法（只做一次）：编码整数 + 平行分数/PV
+  // 收集根节点走法（只做一次）：编码整数 + 平行分数
   const rootMoves = [];
   const rootScores = [];
-  const rootSeqs = [];
 
   const wantRed = side === SIDE_RED;
   if (rootInCheck) {
@@ -4349,7 +4384,6 @@ const getBestMove = (
       if (excludedRootMoveSet.has(encoded)) continue;
       rootMoves.push(encoded);
       rootScores.push(0);
-      rootSeqs.push(null);
     }
   } else {
     for (let scanRow = 0; scanRow < ROWS; scanRow++) {
@@ -4368,7 +4402,6 @@ const getBestMove = (
           if (excludedRootMoveSet.has(encoded)) continue;
           rootMoves.push(encoded);
           rootScores.push(0);
-          rootSeqs.push(null);
         }
       }
     }
@@ -4406,51 +4439,30 @@ const getBestMove = (
     for (let i = 1; i < n; i++) {
       const move = rootMoves[i];
       const score = rootScores[i];
-      const seq = rootSeqs[i];
-      const seqLen = seq ? seq.length : 0;
       let j = i - 1;
       while (j >= 0) {
-        const scoreDiff = rootScores[j] - score;
-        let shouldShift = scoreDiff < 0;
-        if (scoreDiff === 0) {
-          const otherLen = rootSeqs[j] ? rootSeqs[j].length : 0;
-          if (score > 0) shouldShift = otherLen > seqLen;
-          else if (score < 0) shouldShift = otherLen < seqLen;
-          else shouldShift = false;
-        }
-        if (!shouldShift) break;
+        if (rootScores[j] >= score) break;
         rootMoves[j + 1] = rootMoves[j];
         rootScores[j + 1] = rootScores[j];
-        rootSeqs[j + 1] = rootSeqs[j];
         j--;
       }
       rootMoves[j + 1] = move;
       rootScores[j + 1] = score;
-      rootSeqs[j + 1] = seq;
     }
   };
 
   const promoteRootMove = (preferred) => {
     if (!preferred) return;
-    let idx = -1;
-    for (let i = 0; i < rootMoves.length; i++) {
-      if (rootMoves[i] === preferred) {
-        idx = i;
-        break;
-      }
-    }
+    const idx = rootMoves.indexOf(preferred);
     if (idx <= 0) return;
     const move = rootMoves[idx];
     const score = rootScores[idx];
-    const seq = rootSeqs[idx];
     for (let i = idx; i > 0; i--) {
       rootMoves[i] = rootMoves[i - 1];
       rootScores[i] = rootScores[i - 1];
-      rootSeqs[i] = rootSeqs[i - 1];
     }
     rootMoves[0] = move;
     rootScores[0] = score;
-    rootSeqs[0] = seq;
   };
 
   const nextSide = side ^ 1;
@@ -4466,26 +4478,25 @@ const getBestMove = (
     const ttBase = transpositionTable.retrieve(rootTTKey);
     const ttMove = ttBase >= 0 ? (ttData[ttBase + 1] >>> TT_W1_MOVE_SHIFT) || null : null;
     const prevBest = rootMoves[0];
-    sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores, rootSeqs);
+    sortRootSearchMoves(rootMoves, ttMove, rootInCheck, rootScores);
     // 上一层最佳着放第一，保证本层 PVS 首着全窗命中热路径
     promoteRootMove(prevBest);
 
-    const useExactRoot = exactRootScores && currentDepth === maxDepth;
-    const exactRootLimit = searchContext.exactRootLimit | 0;
+    const searchRootMove = currentDepth === maxDepth ? searchFinalRootMove : searchPlayRootMove;
     let rootAlpha = -SEARCH_INF;
 
     for (let i = 0; i < rootMoves.length; i++) {
       const encodedRootMove = rootMoves[i];
       const rootFromSq = encodedRootMove >>> 7;
       const rootToSq = encodedRootMove & MOVE_TO_MASK;
-      const moverCode = activeSearchPieceState.squareCodes[rootFromSq];
-      const capturedCode = activeSearchPieceState.squareCodes[rootToSq];
+      const moverCode = rootPieceState.squareCodes[rootFromSq];
+      const capturedCode = rootPieceState.squareCodes[rootToSq];
       const rootFromR = SQ_ROW[rootFromSq];
       const rootFromC = SQ_COL[rootFromSq];
       const rootToR = SQ_ROW[rootToSq];
       const rootToC = SQ_COL[rootToSq];
       makeSearchMove(
-        activeSearchPieceState, rootFromSq, rootToSq,
+        rootPieceState, rootFromSq, rootToSq,
         moverCode, capturedCode, rootFromR, rootFromC, rootToR, rootToC
       );
       const rootUndoMoverSlot = scratchSearchUndoMoverSlot;
@@ -4494,99 +4505,25 @@ const getBestMove = (
         rootHash, rootFromSq, rootToSq, moverCode, capturedCode
       );
       const childInCheck = moveGivesCheck(
-        activeSearchPieceState, nextSide, rootFromSq, rootToSq,
+        rootPieceState, nextSide, rootFromSq, rootToSq,
         rootFromR, rootFromC, rootToR, rootToC
       );
 
-      let score;
-      let scoreIsExact = true;
-      const remaining = currentDepth - 1;
-      const exactThisMove = useExactRoot && (exactRootLimit <= 0 || i < exactRootLimit);
-      const childTTKey = exactThisMove ? makeSearchTTKey(nextSide, childHash) : 0;
-      if (i === 0 || rootAlpha === -SEARCH_INF) {
-        score = alphaBeta(
-          remaining, -SEARCH_INF, SEARCH_INF,
-          nextSide, currentDepth, childHash, true, childInCheck
-        );
-      } else {
-        let cachedExact = null;
-        if (exactThisMove) {
-          // TT 值为整数，只采用 ≤α 的 exact，避免截断后误超当前最优
-          const childBase = transpositionTable.retrieve(childTTKey);
-          if (childBase >= 0) {
-            const childWord0 = ttData[childBase];
-            const childWord1 = ttData[childBase + 1];
-            const childValue = (childWord1 << 14) >> 14;
-            if (((childWord0 >>> TT_W0_FLAG_SHIFT) & 3) === TT_FLAG_EXACT &&
-                (childWord0 >>> TT_W0_DEPTH_SHIFT) >= remaining && childValue <= rootAlpha) {
-              cachedExact = childValue;
-            }
-          }
-        }
-        if (cachedExact != null) {
-          score = cachedExact;
-        } else {
-          const probe = alphaBeta(
-            remaining, rootAlpha, rootAlpha + NULL_WINDOW,
-            nextSide, currentDepth, childHash, true, childInCheck
-          );
-          if (probe > rootAlpha) {
-            score = alphaBeta(
-              remaining, rootAlpha, SEARCH_INF,
-              nextSide, currentDepth, childHash, true, childInCheck
-            );
-          } else if (exactThisMove) {
-            const childBase = transpositionTable.retrieve(childTTKey);
-            const childWord0 = childBase >= 0 ? ttData[childBase] : 0;
-            const childWord1 = childBase >= 0 ? ttData[childBase + 1] : 0;
-            const childValue = (childWord1 << 14) >> 14;
-            if (childBase >= 0 &&
-                ((childWord0 >>> TT_W0_FLAG_SHIFT) & 3) === TT_FLAG_EXACT &&
-                (childWord0 >>> TT_W0_DEPTH_SHIFT) >= remaining && childValue <= rootAlpha) {
-              score = childValue;
-            } else {
-              // 已 fail-low，精确分 ≤ α；用紧 β 回搜，不再开 (+∞)
-              score = alphaBeta(
-                remaining, -SEARCH_INF, rootAlpha + NULL_WINDOW,
-                nextSide, currentDepth, childHash, true, childInCheck
-              );
-              if (score > rootAlpha) {
-                // NMP/TT 下紧窗可能不稳定 fail-high，不当更好着
-                score = probe;
-              }
-            }
-          } else {
-            // fail-low：探测分只是上界，不能当精确分写入（否则 ID 下层排序被污染，易反复走炮）
-            score = probe;
-            scoreIsExact = false;
-          }
-        }
-      }
-
-      if (useExactRoot) {
-        const sequence = [encodedRootMove];
-        appendPvFromTt(sequence, nextSide, childHash, currentDepth - 1);
-        rootSeqs[i] = sequence;
-      }
+      rootAlpha = searchRootMove(
+        rootScores, i, currentDepth, rootAlpha, nextSide, childHash, childInCheck, encodedRootMove
+      );
 
       unmakeSearchMove(
-        activeSearchPieceState, rootFromSq, rootToSq,
+        rootPieceState, rootFromSq, rootToSq,
         rootUndoMoverSlot, rootUndoCapturedSlot, moverCode, capturedCode,
         rootFromR, rootFromC, rootToR, rootToC
       );
-
-      if (scoreIsExact) {
-        rootScores[i] = score;
-        if (score > rootAlpha) {
-          rootAlpha = score;
-        }
-      } else if (rootScores[i] > rootAlpha) {
-        // 保留上一层分数；若仍高于当前 α（异常），降 1 分以免挤掉真最优
-        rootScores[i] = rootAlpha - 1;
-      }
     }
 
     sortRootMovesByScore();
+    if (analysisSequences && currentDepth === maxDepth) {
+      sortAnalysisRootTies(rootMoves, rootScores, analysisSequences);
+    }
     completedDepth = currentDepth;
     emitSearchProgress({
       phase: 'depth',
@@ -4608,15 +4545,15 @@ const getBestMove = (
 
   const bestMove = rootMoves.length ? rootMoves[0] : null;
   const secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
-  const bestMoveSequence = bestMove != null ? (rootSeqs[0] ?? EMPTY_MOVE_SEQUENCE) : EMPTY_MOVE_SEQUENCE;
-  const secondMoveSequence = secondBestMove != null ? (rootSeqs[1] ?? EMPTY_MOVE_SEQUENCE) : EMPTY_MOVE_SEQUENCE;
+  const bestMoveSequence = analysisSequences?.get(bestMove) ?? EMPTY_MOVE_SEQUENCE;
+  const secondMoveSequence = analysisSequences?.get(secondBestMove) ?? EMPTY_MOVE_SEQUENCE;
   const bestMoveScore = bestMove != null ? rootScores[0] : 0;
   const secondBestMoveScore = secondBestMove != null ? rootScores[1] : 0;
 
   const allMovesWithScores = rootMoves.map((move, index) => ({
     move,
     score: rootScores[index],
-    moveSequence: rootSeqs[index] ?? EMPTY_MOVE_SEQUENCE
+    moveSequence: analysisSequences?.get(move) ?? EMPTY_MOVE_SEQUENCE
   }));
 
   const result = {
@@ -4635,6 +4572,20 @@ const getBestMove = (
   return result;
 };
 
+const getPlayMove = (board, turn, depth = 10, ply = 0, excludedRootMoves = []) =>
+  searchBestMove(board, turn, depth, ply, excludedRootMoves, searchPlayRootMove, null);
+
+const getAnalysisMove = (board, turn, depth = 10, ply = 0, excludedRootMoves = []) => {
+  const sequences = new Map();
+  const searchRootMove = createAnalysisRootMoveSearcher(sequences, searchContext.exactRootLimit);
+  return searchBestMove(board, turn, depth, ply, excludedRootMoves, searchRootMove, sequences);
+};
+
+const getBestMove = (board, turn, depth, ply, exactRootScores = false, excludedRootMoves) => {
+  const search = exactRootScores ? getAnalysisMove : getPlayMove;
+  return search(board, turn, depth, ply, excludedRootMoves);
+};
+
 export {
   ADVISOR_DEST,
   ELEPHANT_DEST,
@@ -4642,20 +4593,21 @@ export {
   HORSE_DEST,
   ORTH_DIRS,
   SEARCH_POSITION_VALUES,
+  SIDE_BLACK,
   SIDE_RED,
   SOLDIER_DEST,
   activePieceStateFor,
   activeSearchPieceState,
   calculateStaticExchangeScoreFromMasks,
   collectCheckersFromState,
-  collectCheckersForSetupState,
   collectPinnedGuardSlots,
   colorToSide,
+  getAnalysisMove,
   getBestMove,
   getGameStage,
+  getPlayMove,
   getValidMovesFromSq,
   isKingInCheckFromState,
-  isKingInCheckForSetupState,
   logPerfStats,
   openingBook,
   perfStats,

@@ -32,7 +32,7 @@ import {
 } from '../engine/js/search-ui.js';
 
 import { configureSearch, noopSearchProgress, searchContext } from '../engine/js/search-context.js';
-import { getBestMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
+import { getAnalysisMove, getPlayMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
 
 type Emit = (message: WorkerResponse) => void;
 
@@ -139,12 +139,12 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
 
         let result;
         try {
-          result = getBestMove(
+          const search = payload.exactRootScores ? getAnalysisMove : getPlayMove;
+          result = search(
             board,
             payload.turn,
             payload.depth,
             payload.ply ?? 0,
-            payload.exactRootScores ?? false,
             payload.excludedRootMoves ?? []
           );
         } finally {
