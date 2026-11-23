@@ -3696,6 +3696,10 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
         const targetBit = targetBits & -targetBits;
         targetBits ^= targetBit;
         const targetSlot = 31 - Math.clz32(targetBit);
+        // These values are shared by every attacker of this target. Keep the
+        // inner loop focused on attacker-specific state and move emission.
+        const toSq = slotToSquare[targetSlot];
+        const victimValue = materialValues[slotCodes[targetSlot] & 7];
         let attackerMask = attackBySlot[targetSlot] >>> 0;
         attackerMask &= ownerMask;
         while (attackerMask !== 0) {
@@ -3704,9 +3708,7 @@ const emitCapturesFromLeafRelations = (moves, currentPlayer, pieceState) => {
             const attackerSlot = 31 - Math.clz32(attackerBit);
             const fromSq = slotToSquare[attackerSlot];
             const moverValue = materialValues[slotCodes[attackerSlot] & 7];
-            const toSq = slotToSquare[targetSlot];
-            captureSortScoreScratch[moves.length] =
-                materialValues[slotCodes[targetSlot] & 7] * 16 - moverValue;
+            captureSortScoreScratch[moves.length] = victimValue * 16 - moverValue;
             moves.push((fromSq << 7) | toSq);
         }
     }
