@@ -2,14 +2,17 @@ import type { Board, Color, CompactBoard, Move, PieceType, Position } from '../d
 
 /** Worker 线上盘面：App 发搜索码 Compact。引擎入口仍可用 cellToSearchCode 读对象盘。 */
 export type WireBoard = Board | CompactBoard;
+export type SearchMode = 'play' | 'analysis';
 
 export interface SearchOptions {
   board: WireBoard;
   turn: Color;
   depth: number;
   gameId: number;
+  mode?: SearchMode;
   openingBookEnabled?: boolean;
   ply?: number;
+  /** @deprecated Use mode: 'analysis'. Kept for older clients. */
   exactRootScores?: boolean;
   exactRootLimit?: number;
   excludedRootMoves?: Move[];

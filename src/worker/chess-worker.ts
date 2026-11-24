@@ -18,9 +18,7 @@ const evaluatePieceInfo = (pieceInfo) => ({
 });
 
 import {
-  VALUE_WEIGHTS,
-  getGameStage,
-  setValueWeights
+  getGameStage
 } from '../engine/js/search.js';
 
 
@@ -31,10 +29,16 @@ import {
   isValidPlacement
 } from '../engine/js/search-ui.js';
 
-import { configureSearch, noopSearchProgress, searchContext } from '../engine/js/search-context.js';
-import { getAnalysisMove, getPlayMove, logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
+import {
+  createSearchEngine,
+  searchContext,
+  VALUE_WEIGHTS,
+  setValueWeights
+} from '../engine/core/index.js';
+import { logPerfStats, openingBook, snapshotPerfStats } from '../engine/js/search.js';
 
 type Emit = (message: WorkerResponse) => void;
+const searchEngine = createSearchEngine();
 
 const gameStage = (): 'early' | 'mid' | 'late' => getGameStage();
 
@@ -107,9 +111,6 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
     switch (type) {
       case 'SEARCH': {
         const board = payload.board;
-        configureSearch(payload);
-        openingBook.setEnabled(payload.openingBookEnabled ?? true);
-
         emit({
           type: 'SEARCH_STARTED',
           payload: {
@@ -120,7 +121,7 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
           }
         });
 
-        searchContext.reportSearchProgress = (info: Record<string, unknown>) => {
+        const reportSearchProgress = (info: Record<string, unknown>) => {
           emit({
             type: 'SEARCH_PROGRESS',
             payload: {
@@ -137,19 +138,14 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
           });
         };
 
-        let result;
-        try {
-          const search = payload.exactRootScores ? getAnalysisMove : getPlayMove;
-          result = search(
-            board,
-            payload.turn,
-            payload.depth,
-            payload.ply ?? 0,
-            payload.excludedRootMoves ?? []
-          );
-        } finally {
-          searchContext.reportSearchProgress = noopSearchProgress;
-        }
+        const mode = payload.mode === 'analysis' || payload.exactRootScores
+          ? 'analysis'
+          : 'play';
+        const result = searchEngine.search(mode, {
+          ...payload,
+          board,
+          progress: reportSearchProgress
+        });
         const fromBook = !!result.fromBook;
         const thinkingTime = fromBook ? 0 : (result.thinkingTime ?? 0);
         const collectPerf = searchContext.collectMetrics || searchContext.profile;

@@ -3,7 +3,7 @@
 // UI 路径：点棋、评估面板、合法着、终局。不进入搜索热路径。
 
 import { COLS, REL_SQUARES, ROWS, SQ_COL, SQ_ROW } from './board.js';
-import { searchProfile } from './search-context.js';
+import { searchProfile } from '../core/search-config.js';
 import {
     ADVISOR_DEST,
     ELEPHANT_DEST,
@@ -14,7 +14,6 @@ import {
     SIDE_BLACK,
     SIDE_RED,
     SOLDIER_DEST,
-    VALUE_WEIGHTS,
     activePieceStateFor,
     activeSearchPieceState,
     calculateStaticExchangeScoreFromMasks,
@@ -30,6 +29,7 @@ import {
     searchMaterialTable,
     sideToColor
 } from './search.js';
+import { VALUE_WEIGHTS } from '../core/evaluation-config.js';
 
 const setupGeneralSquare = (state, side) =>
     side === SIDE_RED ? state.redGeneralSq : state.blackGeneralSq;

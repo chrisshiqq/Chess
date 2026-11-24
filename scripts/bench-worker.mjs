@@ -1,15 +1,13 @@
 import { parentPort } from 'node:worker_threads';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
-import { configureSearch } from '../src/engine/js/search-context.js';
-import { getAnalysisMove, getPlayMove, openingBook, snapshotPerfStats } from '../src/engine/js/search.js';
+import { createSearchEngine } from '../src/engine/core/index.js';
 
 console.log = () => {};
+const searchEngine = createSearchEngine();
 
 parentPort.on('message', ({ type, payload }) => {
   if (type !== 'SEARCH') return;
 
-  configureSearch(payload);
-  openingBook.setEnabled(payload.openingBookEnabled ?? true);
   const gc = { count: 0, durationMs: 0, heapBefore: 0, heapAfter: 0 };
   const observer = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
@@ -20,19 +18,17 @@ parentPort.on('message', ({ type, payload }) => {
   observer.observe({ entryTypes: ['gc'], buffered: false });
   gc.heapBefore = process.memoryUsage().heapUsed;
   const started = performance.now();
-  const search = payload.exactRootScores ? getAnalysisMove : getPlayMove;
-  const result = search(
-    payload.board,
-    payload.turn,
-    payload.depth,
-    payload.ply ?? 0,
-    payload.excludedRootMoves ?? []
-  );
+  const mode = payload.mode === 'analysis' || payload.exactRootScores
+    ? 'analysis'
+    : 'play';
+  const result = searchEngine.search(mode, {
+    ...payload,
+    progress: () => {}
+  });
   const thinkingTime = Math.round(performance.now() - started);
   gc.heapAfter = process.memoryUsage().heapUsed;
   observer.disconnect();
-  const bookMove = openingBook.getBookMove(payload.board, payload.ply ?? 0);
-  const fromBook = !!bookMove && JSON.stringify(bookMove) === JSON.stringify(result.bestMove);
+  const fromBook = !!result.fromBook;
 
   parentPort.postMessage({
     type: 'SEARCH_COMPLETE',
@@ -41,7 +37,7 @@ parentPort.on('message', ({ type, payload }) => {
       gameId: payload.gameId,
       fromBook,
       thinkingTime,
-      perf: snapshotPerfStats(),
+      perf: searchEngine.snapshotPerfStats(),
       gc,
     }
   });

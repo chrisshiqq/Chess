@@ -1,4 +1,4 @@
-import { collectSearchMetrics, searchProfile } from './search-context.js';
+import { collectSearchMetrics, searchProfile } from '../core/search-config.js';
 
 // 定长槽位 TT：8 字节 AoS + generation O(1) clear。
 // 长度取 2^22：d8 约 110 万独特局面时负载~0.27，显著低于 2^21 下的冲突覆盖率。
