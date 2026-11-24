@@ -514,7 +514,9 @@ const moveTouchesLineOrUnblockedHorseCheck = (
     }
 
     // --- 马段：腾马腿闪将（fromSq 必须是 general 斜对角邻居） ---
-    if (Math.abs(fromR - gr) === 1 && Math.abs(fromC - gc) === 1) {
+    const dr = fromR - gr;
+    const dc = fromC - gc;
+    if ((dr === 1 || dr === -1) && (dc === 1 || dc === -1)) {
         const fromSq = fromR * 9 + fromC;
         const horseCheckerData = SEARCH_HORSE_CHECKER_DATA;
         for (let i = SEARCH_HORSE_CHECKER_OFF[generalSq], n = SEARCH_HORSE_CHECKER_OFF[generalSq + 1]; i < n; i++) {
@@ -2253,6 +2255,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     let redMobility = 0;
     let blackMobility = 0;
     let attackedTargetMask = 0;
+    let localPalaceSaved = 0;
 
     const slotCount = pieceState.slotCount;
     for (let slot = 0; slot < slotCount; slot++) {
@@ -2286,7 +2289,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics) localPalaceSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2310,7 +2313,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics) localPalaceSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2359,7 +2362,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = openCount - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics) localPalaceSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2555,6 +2558,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+    if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += localPalaceSaved;
     applyPinnedGuardFilterToLeaf(pieceState);
     if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
     leafRelationScratchFresh = true;
@@ -3049,6 +3053,7 @@ const getGameStage = () => 'early';
 
 // 实例化ZobristHasher
 const zobristHasher = new ZobristHasher();
+const ZOBRIST_HASH_TABLE_FLAT = zobristHasher.hashTableFlat;
 
 
 // bench / profile 用。对弈默认不采集。
@@ -3287,18 +3292,16 @@ const hasNullMoveMaterial = (pieceState, color) => {
     return (aliveMask & pieceState.nullMoveMaterialMask) !== 0;
 };
 
-const makeSearchTTKey = (currentPlayer, boardHash) =>
-    zobristHasher.ttKeyFromHash(boardHash, currentPlayer);
+const makeSearchTTKey = (currentPlayer, boardHash) => ((boardHash | 0) * 2) + currentPlayer;
 
 // 走子后的子节点局面哈希（仅增量模式有意义；须在 make 前保存 movingPiece）
 const childBoardHash = (boardHash, from, to, moverCode, capturedCode) => {
     let newHash = boardHash;
-    const hashTableFlat = zobristHasher.hashTableFlat;
     const movingIdx = SEARCH_CODE_TO_ZOBRIST[moverCode];
-    newHash ^= hashTableFlat[from * 14 + movingIdx];
-    newHash ^= hashTableFlat[to * 14 + movingIdx];
+    newHash ^= ZOBRIST_HASH_TABLE_FLAT[from * 14 + movingIdx];
+    newHash ^= ZOBRIST_HASH_TABLE_FLAT[to * 14 + movingIdx];
     if (capturedCode) {
-        newHash ^= hashTableFlat[to * 14 + SEARCH_CODE_TO_ZOBRIST[capturedCode]];
+        newHash ^= ZOBRIST_HASH_TABLE_FLAT[to * 14 + SEARCH_CODE_TO_ZOBRIST[capturedCode]];
     }
     return newHash;
 };
@@ -3424,7 +3427,7 @@ const evaluateLeaf = (pieceState) => {
 
 // 搜索用净分：完整形势评估（关系/威胁/安全/机动），仅跳过终局着法枚举；带 Zobrist 缓存
 const staticSearchEval = (boardHash, state) => {
-    const cacheKey = zobristHasher.evalCacheKeyFromHash(boardHash);
+    const cacheKey = boardHash ^ zobristHasher.evalInitiatorKeys[activeSearchInitiator];
     const verificationKey = state.evalVerificationHash;
     const combinedKey = cacheKey ^ verificationKey;
     const cacheSlot = (cacheKey >>> 0) & EVAL_CACHE_MASK;
@@ -3669,13 +3672,14 @@ const QUIESCENCE_DELTA_MARGIN = 200;
 
 const maxQuiescenceVictimValue = (state, currentPlayer) => {
     if (!leafRelationScratchFresh) return state.materialValues[1];
-    const slotCodes = state.slotCodes;
-    const materialValues = state.materialValues;
-    let maxVictim = 0;
     const enemyAliveMask = currentPlayer === SIDE_RED
         ? state.blackAliveMask
         : state.redAliveMask;
     let attacked = (scratchLeafAttackedTargetMask & enemyAliveMask) >>> 0;
+    if (attacked === 0) return 0;
+    const slotCodes = state.slotCodes;
+    const materialValues = state.materialValues;
+    let maxVictim = 0;
     while (attacked !== 0) {
         const bit = attacked & -attacked;
         attacked ^= bit;
@@ -3937,8 +3941,8 @@ const alphaBeta = (
         !knownInCheck &&
         d >= searchNmpMinDepth &&
         (beta - alpha) <= NULL_WINDOW &&
-        Math.abs(alpha) < 90000 &&
-        Math.abs(beta) < 90000 &&
+        alpha > -90000 && alpha < 90000 &&
+        beta > -90000 && beta < 90000 &&
         hasNullMoveMaterial(stagedPieceState, currentPlayer);
     if (canNmp) {
         const reduction = Math.min(searchNmpReduction, d - 1);
