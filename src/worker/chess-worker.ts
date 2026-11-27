@@ -9,7 +9,13 @@ import {
   hydrateRelationsFromMasks
 } from '../engine/js/search-ui.js';
 
-const evaluatePieceInfo = (pieceInfo) => ({
+const evaluatePieceInfo = (pieceInfo: {
+  materialValue: number;
+  positionValue: number;
+  mobilityValue: number;
+  threatValue: number;
+  safetyValue: number;
+}) => ({
   material: pieceInfo.materialValue * VALUE_WEIGHTS.material,
   position: pieceInfo.positionValue * VALUE_WEIGHTS.position,
   mobility: pieceInfo.mobilityValue * VALUE_WEIGHTS.mobility,
@@ -153,21 +159,18 @@ export const handleWorkerRequest = (request: WorkerRequest, emit: Emit): void =>
         console.log(
           `Search complete: game=${payload.gameId}, time=${thinkingTime}ms, ` +
           `best=${formatMove(result.bestMove)} score=${result.bestMoveScore}, ` +
-          `second=${formatMove(result.secondBestMove)}, book=${fromBook}`
+          `book=${fromBook}`
         );
 
         emit({
           type: 'SEARCH_COMPLETE',
           payload: {
             bestMove: result.bestMove,
-            secondBestMove: result.secondBestMove,
             gameId: payload.gameId,
             fromBook,
             thinkingTime,
-            moveSequence: result.moveSequence,
-            secondMoveSequence: result.secondMoveSequence,
+            bestMoveSequence: result.bestMoveSequence,
             bestMoveScore: result.bestMoveScore,
-            secondBestMoveScore: result.secondBestMoveScore,
             allMovesWithScores: result.allMovesWithScores || [],
             completedDepth: result.completedDepth,
             perf: collectPerf ? snapshotPerfStats() : null

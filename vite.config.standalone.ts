@@ -9,8 +9,6 @@ export default defineConfig({
     outDir: 'dist-standalone',
     emptyOutDir: true,
   },
-  define: {
-  },
   resolve: {
     alias: {
       '@chess-worker': path.resolve(__dirname, 'src/worker/chess-worker-constructor-inline.ts'),

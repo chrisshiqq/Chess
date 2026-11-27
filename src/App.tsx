@@ -585,11 +585,9 @@ const App: React.FC = () => {
     const [analysisDepth, setAnalysisDepth] = useState<number>(10);
     const [analysisScale, setAnalysisScale] = useState<number>(20);
     const [lastSearchBench, setLastSearchBench] = useState<SearchBench | null>(null);
-    // 隐藏最优着法和次优着法
+    // 隐藏最优着法
     const [hiddenBestMove, setHiddenBestMove] = useState<Move | null>(null);
-    const [suboptimalMove, setSuboptimalMove] = useState<Move | null>(null);
     const [analysisBestMove, setAnalysisBestMove] = useState<Move | null>(null);
-    const [analysisSecondBestMove, setAnalysisSecondBestMove] = useState<Move | null>(null);
     // 最近被吃的棋子
     const [recentlyCaptured, setRecentlyCaptured] = useState<{ color: Color; type: PieceType } | null>(null);
     // 保存原始棋盘状态用于预览未来局面
@@ -603,7 +601,6 @@ const App: React.FC = () => {
         if (!autoTurn) return;
         setAnalysisMoves([]);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setSelectedAnalysisMove(null);
         setIsAnalyzing(false);
         setIsPreviewing(false);
@@ -671,9 +668,7 @@ const App: React.FC = () => {
         setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
         setSelectedPieceEval(null);
         setHiddenBestMove(null);
-        setSuboptimalMove(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setFlyingPiece(null);
     };
     
@@ -1425,9 +1420,7 @@ const App: React.FC = () => {
         // 清掉上一手分析箭头，避免误判为“正在考虑非法应将”
         setAnalysisMoves([]);
         setHiddenBestMove(null);
-        setSuboptimalMove(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setHintMove(null);
         const postedAt = Date.now();
         const postedDebug = {
@@ -1633,9 +1626,8 @@ const App: React.FC = () => {
                             depthTimes
                         });
                     }
-                    // 设置隐藏最优着法和次优着法
+                    // 设置隐藏最优着法
                     setHiddenBestMove(decodeMove(payload.bestMove));
-                    setSuboptimalMove(decodeMove(payload.secondBestMove));
                     
                     const formattedAnalysisMoves = decodeAnalysisMoves(payload.allMovesWithScores);
                     // 对弈路径只保留 best/次优到 React state；全量仍用于本地变招选择
@@ -2042,7 +2034,6 @@ const App: React.FC = () => {
         setHintMove(null);
         setSelectedPieceEval(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         
         // 本步只算 post；结果写入缓存供下一手作 pre
         const postMoveEval = await workerGetDetailedEval(newBoard, nextTurn, isReplaying, playDepth);
@@ -2517,9 +2508,7 @@ const App: React.FC = () => {
         setMoveAnimation(null);
         setRecentlyCaptured(null);
         setHiddenBestMove(null);
-        setSuboptimalMove(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setIsSetupMode(false);
         setClockResetKey(previous => previous + 1);
         setHasStarted(false);
@@ -2690,9 +2679,7 @@ const App: React.FC = () => {
             setPieceRelations(emptyPieceRelations);
             setSelectedPieceEval(null);
             setHiddenBestMove(null);
-            setSuboptimalMove(null);
             setAnalysisBestMove(null);
-            setAnalysisSecondBestMove(null);
         }
     };
 
@@ -2741,9 +2728,7 @@ const App: React.FC = () => {
         setCheckAlert(false);
         setRecentlyCaptured(null);
         setHiddenBestMove(null);
-        setSuboptimalMove(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setRepetitionWarning(null);
         setSelectedPos(null);
         setValidMoves([]);
@@ -3265,7 +3250,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setIsAnalyzing(true);
         setAnalysisMoves([]);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         
         try {
             let currentBoard: Board;
@@ -3297,19 +3281,15 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             // 使用与searchAndExecuteMove相同的方式向Worker发送SEARCH消息
             const searchResult = await new Promise<{
                 bestMove: Move | null;
-                secondMove: Move | null;
-                moveSequence: Move[];
+                bestMoveSequence: Move[];
                 bestMoveScore: number;
-                secondBestMoveScore: number;
                 allMovesWithScores: Array<{ move: Move; score: number; moveSequence: Move[] }>;
             }>((resolve) => {
                 if (!workerRef.current) {
                     resolve({
                         bestMove: null,
-                        secondMove: null,
-                        moveSequence: [],
+                        bestMoveSequence: [],
                         bestMoveScore: 0,
-                        secondBestMoveScore: 0,
                         allMovesWithScores: []
                     });
                     return;
@@ -3320,20 +3300,16 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         workerRef.current?.removeEventListener('message', handleWorkerMessage);
                         resolve({
                             bestMove: decodeMove(e.data.payload.bestMove),
-                            secondMove: decodeMove(e.data.payload.secondBestMove),
-                            moveSequence: decodeMoves(e.data.payload.moveSequence),
+                            bestMoveSequence: decodeMoves(e.data.payload.bestMoveSequence),
                             bestMoveScore: e.data.payload.bestMoveScore || 0,
-                            secondBestMoveScore: e.data.payload.secondBestMoveScore || 0,
                             allMovesWithScores: decodeAnalysisMoves(e.data.payload.allMovesWithScores)
                         });
                     } else if (e.data.type === 'bestMove') {
                         workerRef.current?.removeEventListener('message', handleWorkerMessage);
                         resolve({
                             bestMove: decodeMove(e.data.move),
-                            secondMove: decodeMove(e.data.secondMove),
-                            moveSequence: decodeMoves(e.data.moveSequence),
+                            bestMoveSequence: decodeMoves(e.data.bestMoveSequence),
                             bestMoveScore: e.data.bestMoveScore || 0,
-                            secondBestMoveScore: e.data.secondBestMoveScore || 0,
                             allMovesWithScores: []
                         });
                     }
@@ -3367,10 +3343,10 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 let moveSequence = item.moveSequence || [];
                 
                 // 如果moveSequence为空，尝试从最佳着法序列中获取
-                if (moveSequence.length === 0 && searchResult.moveSequence && searchResult.moveSequence.length > 0) {
+                if (moveSequence.length === 0 && searchResult.bestMoveSequence.length > 0) {
                     // 对于最佳着法，使用完整的序列
                     if (index === 0) {
-                        moveSequence = searchResult.moveSequence;
+                        moveSequence = searchResult.bestMoveSequence;
                     } else if (item.move) {
                         // 对于其他着法，创建一个包含当前着法的基本序列
                         moveSequence = [item.move];
@@ -3391,7 +3367,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
             setAnalysisMoves(movesWithScores);
             setSelectedAnalysisMove(null);
             setAnalysisBestMove(searchResult.bestMove ?? movesWithScores[0]?.move ?? null);
-            setAnalysisSecondBestMove(searchResult.secondMove ?? movesWithScores[1]?.move ?? null);
             
             // 对于Setup模式，我们还需要获取详细的局面评估并更新EVALUATION
             if (isSetupMode) {
@@ -3444,7 +3419,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setSelectedAnalysisMove(null);
         setAnalysisPreviewIndex(-1);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setIsPreviewing(false);
         setOriginalBoardForPreview(null);
         setReplayIndex(0);
@@ -3544,9 +3518,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
         setClockResetKey(previous => previous + 1);
         // 重置指示器
         setHiddenBestMove(null);
-        setSuboptimalMove(null);
         setAnalysisBestMove(null);
-        setAnalysisSecondBestMove(null);
         setPositionHistory([]);
         setRepetitionWarning(null);
         setSelectedPos(null);
@@ -4116,9 +4088,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                         pieceEval={selectedPieceEval}
                         isCheck={checkAlert}
                         hiddenBestMove={isSetupMode ? null : hiddenBestMove}
-                        suboptimalMove={isSetupMode ? null : suboptimalMove}
                         analysisBestMove={isSetupMode ? null : analysisBestMove}
-                        analysisSecondBestMove={isSetupMode ? null : analysisSecondBestMove}
                     />
 
                     {isSetupMode && (
@@ -4314,7 +4284,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                 {/* Settings Tab Content */}
                 {activeTab === 'settings' && (
                     <div className="flex flex-col gap-3">
-                        {/* Board Skin and Piece Material */}
+                        {/* Board Skin and Piece Skin */}
                         <div className="bg-stone-900/50 p-3 rounded-lg border border-stone-700">
                             <div className="flex items-center gap-2 mb-3">
                                 <PaletteIcon className="w-5 h-5 text-amber-400" />
@@ -4370,7 +4340,7 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                 >
                                     <div className="flex items-center gap-2">
                                         <AdjustmentsIcon className="w-4 h-4" />
-                                        <span className="text-xs">Piece Material</span>
+                                        <span className="text-xs">Piece Skin</span>
                                     </div>
                                     <span className="text-xs font-bold">{getMaterialDisplayName(material)}</span>
                                 </button>
@@ -4700,7 +4670,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                         // 进入Analysis模式，触发分析（分析中禁用，与 Replay 一致）
                                         setIsAnalysisMode(true);
                                         setAnalysisBestMove(null);
-                                        setAnalysisSecondBestMove(null);
                                         setIsThinking(true);
                                         const newGameId = gameId + 1;
                                         setGameId(newGameId);
@@ -4799,7 +4768,6 @@ ${otherProps}${otherProps ? ',\n' : ''}  "initialBoard": ${initialBoardStr}
                                                     setIsPreviewing(false);
                                                     setOriginalBoardForPreview(null);
                                                     setAnalysisBestMove(decodeMove(payload.bestMove) ?? formattedAnalysisMoves[0]?.move ?? null);
-                                                    setAnalysisSecondBestMove(decodeMove(payload.secondBestMove) ?? formattedAnalysisMoves[1]?.move ?? null);
                                                     setIsThinking(false);
                                                 }
                                             };

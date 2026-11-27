@@ -16,8 +16,6 @@ export default defineConfig({
     emptyOutDir: true,
   },
   plugins: [react()],
-  define: {
-  },
   resolve: {
     alias: {
       '@chess-worker': path.resolve(__dirname, 'src/worker/chess-worker-constructor.ts'),

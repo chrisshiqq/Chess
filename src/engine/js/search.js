@@ -4307,11 +4307,8 @@ const searchBestMove = (
         activeSearchPieceState = null;
         return {
           bestMove: encodedBook,
-          secondBestMove: null,
-          moveSequence: [],
-          secondMoveSequence: [],
+          bestMoveSequence: [],
           bestMoveScore: 0,
-          secondBestMoveScore: 0,
           allMovesWithScores: [],
           completedDepth: 0,
           fromBook: true,
@@ -4402,11 +4399,8 @@ const searchBestMove = (
     activeSearchPieceState = null;
     return {
       bestMove: null,
-      secondBestMove: null,
-      moveSequence: [],
-      secondMoveSequence: [],
+      bestMoveSequence: [],
       bestMoveScore: 0,
-      secondBestMoveScore: 0,
       allMovesWithScores: [],
       completedDepth: 0,
       fromBook: false,
@@ -4535,11 +4529,8 @@ const searchBestMove = (
   }
 
   const bestMove = rootMoves.length ? rootMoves[0] : null;
-  const secondBestMove = rootMoves.length > 1 ? rootMoves[1] : null;
   const bestMoveSequence = analysisSequences?.get(bestMove) ?? EMPTY_MOVE_SEQUENCE;
-  const secondMoveSequence = analysisSequences?.get(secondBestMove) ?? EMPTY_MOVE_SEQUENCE;
   const bestMoveScore = bestMove != null ? rootScores[0] : 0;
-  const secondBestMoveScore = secondBestMove != null ? rootScores[1] : 0;
 
   const allMovesWithScores = rootMoves.map((move, index) => ({
     move,
@@ -4549,11 +4540,8 @@ const searchBestMove = (
 
   const result = {
     bestMove,
-    secondBestMove,
-    moveSequence: bestMoveSequence,
-    secondMoveSequence,
+    bestMoveSequence,
     bestMoveScore,
-    secondBestMoveScore,
     allMovesWithScores,
     completedDepth,
     fromBook: false,

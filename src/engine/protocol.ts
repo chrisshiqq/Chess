@@ -61,14 +61,11 @@ export interface SearchMoveScore {
 
 export interface SearchCompletePayload {
   bestMove: EncodedMove | null;
-  secondBestMove: EncodedMove | null;
   gameId: number;
   fromBook: boolean;
   thinkingTime: number;
-  moveSequence: EncodedMove[];
-  secondMoveSequence: EncodedMove[];
+  bestMoveSequence: EncodedMove[];
   bestMoveScore: number;
-  secondBestMoveScore: number;
   allMovesWithScores: SearchMoveScore[];
   completedDepth?: number;
   perf?: unknown;

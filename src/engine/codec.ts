@@ -22,7 +22,7 @@ export const decodeBoard = (board: WireBoard): Board => {
 
 const MOVE_TO_MASK = 0x7f;
 
-export const decodeSquare = (sq: number): { r: number; c: number } => ({
+const decodeSquare = (sq: number): { r: number; c: number } => ({
   r: (sq / 9) | 0,
   c: sq % 9
 });

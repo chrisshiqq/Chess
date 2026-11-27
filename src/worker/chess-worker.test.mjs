@@ -29,9 +29,9 @@ test('play omits variations and analysis returns a variation for each root move'
   const analysis = await search(board, true);
 
   assert.notEqual(play.bestMove, null);
-  assert.deepEqual(play.moveSequence, []);
+  assert.deepEqual(play.bestMoveSequence, []);
   assert.ok(play.allMovesWithScores.every(({ moveSequence }) => moveSequence.length === 0));
-  assert.equal(analysis.moveSequence[0], analysis.bestMove);
+  assert.equal(analysis.bestMoveSequence[0], analysis.bestMove);
   assert.ok(analysis.allMovesWithScores.length > 0);
   assert.ok(analysis.allMovesWithScores.every(({ move, moveSequence }) => moveSequence[0] === move));
 });
