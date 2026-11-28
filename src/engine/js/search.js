@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 
 import { COLS, REL_SQUARES, ROWS, SQ_COL, SQ_ROW } from './board.js';
+import { createLeafCheckpoint, indexLeafCheckpoint } from './leaf-checkpoint.js';
 import {
     SEARCH_CODE_TO_ZOBRIST,
     cellToSearchCode
@@ -162,6 +163,10 @@ const scratchLeafPalaceAttack = new Uint32Array(2);
 let leafRelationScratchFresh = false;
 const scratchLeafAttackBySlot = new Uint32Array(32);
 const scratchLeafGuardBySlot = new Uint32Array(32);
+const leafCheckpoints = [createLeafCheckpoint(), createLeafCheckpoint()];
+const leafDirtySlots = new Uint32Array(64);
+const leafFrameAtPly = new Uint8Array(leafDirtySlots.length);
+let leafPly = -1; // Active only during the play search loop.
 const scratchPinRank = new Int8Array(32);
 const scratchPinFile = new Int8Array(32);
 const scratchPinOnlySq = new Int8Array(32);
@@ -339,6 +344,12 @@ const makeSearchMove = (
     const moverRowOccupancy = moverIsRed ? state.redRowOccupancy : state.blackRowOccupancy;
     scratchSearchUndoMoverSlot = moverSlot;
     scratchSearchUndoCapturedSlot = capturedSlot;
+    if (leafPly >= 0 && ++leafPly < leafDirtySlots.length) {
+        const frame = leafFrameAtPly[leafPly - 1];
+        const watches = leafCheckpoints[frame].watches;
+        leafFrameAtPly[leafPly] = frame;
+        leafDirtySlots[leafPly] = leafDirtySlots[leafPly - 1] | watches[fromSq] | watches[toSq];
+    }
     occupancyScanGen++;
     state.rowOccupancy[fromR] ^= 1 << fromC;
     state.colOccupancy[fromC] ^= 1 << fromR;
@@ -392,6 +403,7 @@ const makeSearchMove = (
 const unmakeSearchMove = (
     state, fromSq, toSq, moverSlot, capturedSlot, moverCode, capturedCode, fromR, fromC, toR, toC
 ) => {
+    if (leafPly >= 0) leafPly--;
     const moverIsRed = moverCode < 8;
     const moverRowOccupancy = moverIsRed ? state.redRowOccupancy : state.blackRowOccupancy;
     occupancyScanGen++;
@@ -2223,9 +2235,7 @@ const advanceTrueStagedMoves = (
 
 // SoA 关系构建。占位目标关系按目标索引，攻击关系用稳定的 piece-state 槽（最多 32）。
 // 跳过空槽以保持初始槽的攻击方顺序。
-const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
-    const profileRelations = searchProfile;
-    const relationStart = profileRelations ? performance.now() : 0;
+const buildLeafContributions = (pieceState, sourceMask, snapshot = null) => {
     const squareCodes = pieceState.squareCodes;
     const squareToSlot = pieceState.squareToSlot;
     const slotCodes = pieceState.slotCodes;
@@ -2254,10 +2264,10 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
     let blackMobility = 0;
     let attackedTargetMask = 0;
 
-    const slotCount = pieceState.slotCount;
-    for (let slot = 0; slot < slotCount; slot++) {
-        const bit = 1 << slot;
-        if ((aliveMask & bit) === 0) continue;
+    while (sourceMask) {
+        const bit = sourceMask & -sourceMask;
+        sourceMask ^= bit;
+        const slot = 31 - Math.clz32(bit);
         const fromSq = slotToSquare[slot];
         const pieceCode = slotCodes[slot];
         const pieceType = pieceCode & 7;
@@ -2265,6 +2275,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
         const colorIdx = isRed ? 0 : 1;
         const attackTargetBit = isRed ? 1 : 2;
         let mobilityValue = 0;
+        if (snapshot) leafPalaceAttack[colorIdx] = 0;
 
         switch (pieceType) {
             case 1: {
@@ -2286,7 +2297,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics && !snapshot) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2310,7 +2321,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = destEnd - destStart - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics && !snapshot) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2359,7 +2370,7 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
                     }
                 }
                 mobilityValue = openCount - occupied;
-                if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobilityValue;
+                if (collectSearchMetrics && !snapshot) perfStats.palaceMobilityAddsSaved += mobilityValue;
                 if (isRed) redMobility += mobilityValue;
                 else blackMobility += mobilityValue;
                 break;
@@ -2550,13 +2561,62 @@ const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
             default:
                 break;
         }
-        // 各兵种的合法空落点均计入机动；吃子只进入威胁关系。
+        if (snapshot) {
+            snapshot.mobility[slot] = mobilityValue;
+            snapshot.palace[slot] = leafPalaceAttack[colorIdx];
+        }
     }
     scratchLeafTotals[2] = redMobility;
     scratchLeafTotals[5] = blackMobility;
     scratchLeafAttackedTargetMask = attackedTargetMask >>> 0;
+};
+
+const leafDestinations = [null, GENERAL_DEST, null, HORSE_DEST, ELEPHANT_DEST, ADVISOR_DEST, null, SOLDIER_DEST];
+
+const refreshLeafCheckpoint = (state, frameIndex) => {
+    const frame = leafCheckpoints[frameIndex];
+    buildLeafContributions(state, state.redAliveMask | state.blackAliveMask, frame);
+    frame.attacks.set(scratchLeafAttackBySlot);
+    frame.guards.set(scratchLeafGuardBySlot); // Pins depend on the final child position.
+    indexLeafCheckpoint(frame, state, leafDestinations, collectSearchMetrics);
+    leafFrameAtPly[leafPly] = frameIndex;
+    leafDirtySlots[leafPly] = 0;
+    leafRelationScratchFresh = false;
+};
+
+const calculatePackedSearchLeafRelations = (pieceState, aliveMask) => {
+    const relationStart = searchProfile ? performance.now() : 0;
+    if (leafPly < 0 || leafPly >= leafDirtySlots.length) {
+        buildLeafContributions(pieceState, aliveMask);
+    } else {
+        const dirty = leafDirtySlots[leafPly];
+        const keep = aliveMask & ~dirty;
+        const frame = leafCheckpoints[leafFrameAtPly[leafPly]];
+        buildLeafContributions(pieceState, aliveMask & dirty);
+        let targets = scratchLeafAttackedTargetMask;
+        for (let i = 0; i < frame.targetCount; i++) {
+            const slot = frame.targets[i];
+            const retained = frame.attacks[slot] & keep;
+            scratchLeafAttackBySlot[slot] |= retained;
+            scratchLeafGuardBySlot[slot] |= frame.guards[slot] & keep;
+            if (retained) targets |= 1 << slot;
+        }
+        scratchLeafAttackedTargetMask = targets >>> 0;
+        let bits = keep, mobility = 0, red = 0, black = 0;
+        for (let base = 0; bits; base += 16, bits >>>= 4) {
+            const index = base + (bits & 15);
+            mobility += frame.mobilityTable[index];
+            red |= frame.redPalaceTable[index];
+            black |= frame.blackPalaceTable[index];
+        }
+        scratchLeafTotals[2] += mobility & 1023;
+        scratchLeafTotals[5] += (mobility >>> 10) & 1023;
+        scratchLeafPalaceAttack[0] |= red;
+        scratchLeafPalaceAttack[1] |= black;
+        if (collectSearchMetrics) perfStats.palaceMobilityAddsSaved += mobility >>> 20;
+    }
     applyPinnedGuardFilterToLeaf(pieceState);
-    if (profileRelations) perfStats.leafRelationsMs += performance.now() - relationStart;
+    if (searchProfile) perfStats.leafRelationsMs += performance.now() - relationStart;
     leafRelationScratchFresh = true;
 };
 
@@ -3960,6 +4020,9 @@ const alphaBeta = (
         }
     }
 
+    if (d === 3 && leafPly >= 0 && leafPly < leafDirtySlots.length && leafFrameAtPly[leafPly] === 0) {
+        refreshLeafCheckpoint(stagedPieceState, 1);
+    }
     const killersAtDepth = killerMoves[plyFromRoot];
     let nextTrueStagedStage = 0;
     if (!knownInCheck) {
@@ -4458,6 +4521,10 @@ const searchBestMove = (
 
   let completedDepth = 0;
 
+  if (!analysisSequences) {
+    leafPly = 0;
+    refreshLeafCheckpoint(rootPieceState, 0);
+  }
   for (let currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
     // 浅层最佳着 + TT 着排到最前，供本层 PVS 第一着全窗使用
     const ttBase = transpositionTable.retrieve(rootTTKey);
@@ -4551,8 +4618,13 @@ const searchBestMove = (
   return result;
 };
 
-const getPlayMove = (board, turn, depth = 10, ply = 0, excludedRootMoves = []) =>
-  searchBestMove(board, turn, depth, ply, excludedRootMoves, searchPlayRootMove, null);
+const getPlayMove = (board, turn, depth = 10, ply = 0, excludedRootMoves = []) => {
+  try {
+    return searchBestMove(board, turn, depth, ply, excludedRootMoves, searchPlayRootMove, null);
+  } finally {
+    leafPly = -1;
+  }
+};
 
 const getAnalysisMove = (board, turn, depth = 10, ply = 0, excludedRootMoves = []) => {
   const sequences = new Map();
