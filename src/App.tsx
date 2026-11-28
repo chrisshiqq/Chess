@@ -416,13 +416,13 @@ const App: React.FC = () => {
     const [validMoves, setValidMoves] = useState<Position[]>([]);
     // 棋子关系状态
     const [pieceRelations, setPieceRelations] = useState<{
-        threat: Position[]; // 当前棋子威胁的敌方棋子位置
-        threatenedBy: Position[]; // 威胁当前棋子的敌方棋子位置
+        attack: Position[]; // 当前棋子威胁的敌方棋子位置
+        attackedBy: Position[]; // 威胁当前棋子的敌方棋子位置
         guard: Position[]; // 当前棋子保护的友方棋子位置
         guardedBy: Position[]; // 保护当前棋子的友方棋子位置
         control?: Position[]; // 当前棋子控制的位置
         controllers?: Position[]; // 控制当前位置的棋子位置
-    }>({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+    }>({ attack: [], attackedBy: [], guard: [], guardedBy: [] });
 
     // 选中棋子的评估值
     const [selectedPieceEval, setSelectedPieceEval] = useState<{
@@ -665,7 +665,7 @@ const App: React.FC = () => {
     const resetBoardIndicators = () => {
         setSelectedPos(null);
         setValidMoves([]);
-        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+        setPieceRelations({ attack: [], attackedBy: [], guard: [], guardedBy: [] });
         setSelectedPieceEval(null);
         setHiddenBestMove(null);
         setAnalysisBestMove(null);
@@ -722,8 +722,8 @@ const App: React.FC = () => {
     const selectInspectIdRef = useRef(0);
     const selectInspectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const emptyPieceRelations = useRef({
-        threat: [] as Position[],
-        threatenedBy: [] as Position[],
+        attack: [] as Position[],
+        attackedBy: [] as Position[],
         guard: [] as Position[],
         guardedBy: [] as Position[],
         control: [] as Position[],
@@ -2732,7 +2732,7 @@ const App: React.FC = () => {
         setRepetitionWarning(null);
         setSelectedPos(null);
         setValidMoves([]);
-        setPieceRelations({ threat: [], threatenedBy: [], guard: [], guardedBy: [] });
+        setPieceRelations({ attack: [], attackedBy: [], guard: [], guardedBy: [] });
         setSelectedPieceEval(null);
         setRedStepCount(0);
         setBlackStepCount(0);

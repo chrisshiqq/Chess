@@ -2587,15 +2587,15 @@ const hasAnySeeMaterial = (counts) => {
 };
 
 // mask 路径 SEE：按棋子类别计数，按材料值消费。
-const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, attackMask, guardMask) => {
+const calculateStaticExchangeScoreFromMasks = (attackedPiece, piecesInfo, attackMask, guardMask) => {
     const attackerCounts = seeAttackerTypeCounts;
     const guardCounts = seeGuardTypeCounts;
     attackerCounts.fill(0);
     guardCounts.fill(0);
     seeMaterialByType.fill(0);
-    const sq = threatenedPiece.sq == null
-        ? threatenedPiece.r * 9 + threatenedPiece.c
-        : threatenedPiece.sq;
+    const sq = attackedPiece.sq == null
+        ? attackedPiece.r * 9 + attackedPiece.c
+        : attackedPiece.sq;
     let am = attackMask[sq] >>> 0;
     while (am !== 0) {
         const bit = am & -am;
@@ -2617,7 +2617,7 @@ const calculateStaticExchangeScoreFromMasks = (threatenedPiece, piecesInfo, atta
 
     let exchangeScore = 0;
     let isFirstExchange = true;
-    const targetValue = threatenedPiece.materialValue;
+    const targetValue = attackedPiece.materialValue;
 
     while (true) {
         const attackerValue = takeLowestSeeMaterial(attackerCounts, seeMaterialByType);
@@ -3321,7 +3321,7 @@ const evaluateLeaf = (pieceState) => {
     const redPalaceAttack = leafPalaceAttack[0];
     let redThreat = 0;
     let blackThreat = 0;
-    const tacticalStart = searchProfile ? performance.now() : 0;
+    const threatStart = searchProfile ? performance.now() : 0;
     let attackedTargets = scratchLeafAttackedTargetMask >>> 0;
     while (attackedTargets !== 0) {
         const targetBit = attackedTargets & -attackedTargets;
@@ -3352,7 +3352,7 @@ const evaluateLeaf = (pieceState) => {
         if (stateCodes[attackerIndex] < 8) redThreat += threatValue;
         else blackThreat += threatValue;
     }
-    if (searchProfile) perfStats.leafTacticalMs += performance.now() - tacticalStart;
+    if (searchProfile) perfStats.leafTacticalMs += performance.now() - threatStart;
 
     let redSafety = 0;
     let blackSafety = 0;

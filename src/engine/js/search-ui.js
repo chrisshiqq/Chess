@@ -125,8 +125,8 @@ const collectUiPiecesInfo = (gameStage) => {
             threatValue: 0,
             safetyValue: 0,
             mobilityValue: 0,
-            threat: [],
-            threatenedBy: [],
+            attack: [],
+            attackedBy: [],
             guard: [],
             guardedBy: [],
             control: []
@@ -410,21 +410,21 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
     const guardMask = boardInfo.guardMask;
 
     for (let ti = 0; ti < piecesInfo.length; ti++) {
-        const threatenedPiece = piecesInfo[ti];
-        const sq = threatenedPiece.r * 9 + threatenedPiece.c;
+        const attackedPiece = piecesInfo[ti];
+        const sq = attackedPiece.r * 9 + attackedPiece.c;
         const am = attackMask[sq];
         if (am === 0) continue;
         const firstAttacker = piecesInfo[lowestSetBitIndex(am)];
         const hasGuard = guardMask[sq] !== 0;
 
-        if ((threatenedPiece.pieceCode & 7) === 1) {
+        if ((attackedPiece.pieceCode & 7) === 1) {
             if (collectUi) {
                 let m = am >>> 0;
                 while (m !== 0) {
                     const bit = m & -m;
                     boardInfo.checks.push({
                         attacker: piecesInfo[31 - Math.clz32(bit)],
-                        target: threatenedPiece,
+                        target: attackedPiece,
                         isCheck: true
                     });
                     m ^= bit;
@@ -435,7 +435,7 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
         }
 
         if (!hasGuard) {
-            firstAttacker.threatValue += threatenedPiece.materialValue;
+            firstAttacker.threatValue += attackedPiece.materialValue;
             if (collectUi) {
                 if ((firstAttacker.pieceCode < 8) === (currentPlayer === SIDE_RED)) {
                     let m = am >>> 0;
@@ -449,12 +449,12 @@ const calculateTacticalValues = (piecesInfo, currentPlayer, boardInfo = null, bo
                         m ^= bit;
                     }
                 } else {
-                    boardInfo.threatenedPieces.push(threatenedPiece);
+                    boardInfo.threatenedPieces.push(attackedPiece);
                 }
             }
         } else {
             const sseScore = calculateStaticExchangeScoreFromMasks(
-                threatenedPiece, piecesInfo, attackMask, guardMask
+                attackedPiece, piecesInfo, attackMask, guardMask
             );
             if (sseScore > 0) {
                 firstAttacker.threatValue += sseScore >> 1;
@@ -626,8 +626,8 @@ export const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
     const bySq = new Array(REL_SQUARES);
     for (let i = 0; i < n; i++) {
         const info = piecesInfo[i];
-        info.threat = [];
-        info.threatenedBy = [];
+        info.attack = [];
+        info.attackedBy = [];
         info.guard = [];
         info.guardedBy = [];
         info.control = [];
@@ -653,8 +653,8 @@ export const hydrateRelationsFromMasks = (piecesInfo, boardInfo) => {
             const i = 31 - Math.clz32(bit);
             const attacker = piecesInfo[i];
             if (target && target !== attacker && (target.pieceCode < 8) !== (attacker.pieceCode < 8)) {
-                attacker.threat.push(target);
-                target.threatenedBy.push(attacker);
+                attacker.attack.push(target);
+                target.attackedBy.push(attacker);
             }
             am ^= bit;
         }

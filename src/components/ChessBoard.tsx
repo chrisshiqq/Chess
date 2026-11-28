@@ -26,8 +26,8 @@ interface ChessBoardProps {
   onDragStart?: (e: React.DragEvent, pos: Position) => void;
   onDrop?: (e: React.DragEvent, pos: Position) => void;
   pieceRelations?: {
-    threat: Position[]; // 当前棋子威胁的敌方棋子位置
-    threatenedBy: Position[]; // 威胁当前棋子的敌方棋子位置
+    attack: Position[]; // 当前棋子威胁的敌方棋子位置
+    attackedBy: Position[]; // 威胁当前棋子的敌方棋子位置
     guard: Position[]; // 当前棋子保护的友方棋子位置
     guardedBy: Position[]; // 保护当前棋子的友方棋子位置
     control?: Position[]; // 当前棋子控制的位置
@@ -434,8 +434,8 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
     if (pieceRelations) {
         // 判断当前是点击棋子还是空位置
         // 点击棋子时会有威胁或保护关系或控制关系，点击空位置时只有控制器关系
-        const hasPieceRelations = pieceRelations.threat.length > 0 || 
-                                  pieceRelations.threatenedBy.length > 0 || 
+        const hasPieceRelations = pieceRelations.attack.length > 0 || 
+                                  pieceRelations.attackedBy.length > 0 || 
                                   pieceRelations.guard.length > 0 || 
                                   pieceRelations.guardedBy.length > 0 ||
                                   (pieceRelations.control && pieceRelations.control.length > 0);
@@ -444,15 +444,15 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
         // 点击棋子时，显示该棋子的威胁、保护和控制关系
         if (isPieceClick) {
             // 红色：当前棋子威胁的敌方棋子（威胁者）
-            pieceRelations.threat.forEach(pos => {
+            pieceRelations.attack.forEach(pos => {
                 const { x, y } = toSVG(pos.r, pos.c);
-                indicators.push(<rect key={`threat-${pos.r}-${pos.c}`} x={x - CELL_SIZE/2} y={y - CELL_SIZE/2} width={CELL_SIZE} height={CELL_SIZE} fill="rgba(239, 68, 68, 0.4)" stroke="#ef4444" strokeWidth="4" opacity="0.8" pointerEvents="none" />);
+                indicators.push(<rect key={`attack-${pos.r}-${pos.c}`} x={x - CELL_SIZE/2} y={y - CELL_SIZE/2} width={CELL_SIZE} height={CELL_SIZE} fill="rgba(239, 68, 68, 0.4)" stroke="#ef4444" strokeWidth="4" opacity="0.8" pointerEvents="none" />);
             });
             
             // 黄色：威胁当前棋子的敌方棋子（被威胁者）
-            pieceRelations.threatenedBy.forEach(pos => {
+            pieceRelations.attackedBy.forEach(pos => {
                 const { x, y } = toSVG(pos.r, pos.c);
-                indicators.push(<rect key={`threatenedBy-${pos.r}-${pos.c}`} x={x - CELL_SIZE/2} y={y - CELL_SIZE/2} width={CELL_SIZE} height={CELL_SIZE} fill="rgba(234, 179, 8, 0.4)" stroke="#eab308" strokeWidth="4" opacity="0.8" pointerEvents="none" />);
+                indicators.push(<rect key={`attackedBy-${pos.r}-${pos.c}`} x={x - CELL_SIZE/2} y={y - CELL_SIZE/2} width={CELL_SIZE} height={CELL_SIZE} fill="rgba(234, 179, 8, 0.4)" stroke="#eab308" strokeWidth="4" opacity="0.8" pointerEvents="none" />);
             });
             
             // 绿色：当前棋子保护的友方棋子（保护者）
@@ -501,11 +501,11 @@ export const ChessBoard: React.FC<ChessBoardProps> = React.memo(({
         indicators.push(<line key="hidden-best-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#ef4444" strokeWidth="3" opacity="0.8" pointerEvents="none" markerEnd="url(#arrowhead)" />);
     }
     
-    // Analysis 最优着法（黄色虚线箭头）
+    // Analysis 最优着法：与 Auto 的提示线保持一致，仅使用黄色
     if (analysisBestMove && !isSetupMode) {
         const from = toSVG(analysisBestMove.from.r, analysisBestMove.from.c);
         const to = toSVG(analysisBestMove.to.r, analysisBestMove.to.c);
-        indicators.push(<line key="analysis-best-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#eab308" strokeWidth="3" strokeDasharray="5,5" opacity="0.9" pointerEvents="none" markerEnd="url(#arrowhead-dashed-yellow)" />);
+        indicators.push(<line key="analysis-best-move" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#eab308" strokeWidth="3" opacity="0.8" pointerEvents="none" markerEnd="url(#arrowhead-yellow)" />);
     }
     
     return indicators;

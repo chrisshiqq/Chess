@@ -57,8 +57,8 @@ const emptyPieceEvaluation = () => ({
 });
 
 const emptyRelations = () => ({
-  threat: [] as Array<{ r: number; c: number }>,
-  threatenedBy: [] as Array<{ r: number; c: number }>,
+  attack: [] as Array<{ r: number; c: number }>,
+  attackedBy: [] as Array<{ r: number; c: number }>,
   guard: [] as Array<{ r: number; c: number }>,
   guardedBy: [] as Array<{ r: number; c: number }>,
   control: [] as Array<{ r: number; c: number }>,
@@ -96,8 +96,8 @@ const buildSquareInspection = (
       const positions = (items: Array<{ r: number; c: number }> = []) =>
         items.map(({ r, c }) => ({ r, c }));
       relations = {
-        threat: positions(info.threat),
-        threatenedBy: positions(info.threatenedBy),
+        attack: positions(info.attack),
+        attackedBy: positions(info.attackedBy),
         guard: positions(info.guard),
         guardedBy: positions(info.guardedBy),
         control: positions(info.control),
